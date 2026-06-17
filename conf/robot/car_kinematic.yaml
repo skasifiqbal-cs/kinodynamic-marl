@@ -1,0 +1,8 @@
+type: car
+v_max: 1.5
+delta_max: 0.6
+wheelbase: 0.5
+shape:
+  type: box
+  width: 0.3
+  length: 0.5

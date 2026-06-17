@@ -1,0 +1,3 @@
+# @package shaping
+type: euclidean
+gamma: 0.99

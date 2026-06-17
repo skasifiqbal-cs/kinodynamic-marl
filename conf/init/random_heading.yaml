@@ -1,0 +1,4 @@
+# @package init
+type: random_heading
+# Fixed positions from env yaml, random theta each episode
+# Good for heading-invariant generalisation

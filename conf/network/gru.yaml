@@ -1,0 +1,8 @@
+# @package network
+# Recurrent policy — requires SequenceMemory in SKRL (auto-selected in train.py)
+type: gru
+hidden_size: 128
+num_layers: 1
+sequence_length: 16
+post_gru_hidden_sizes: [64]
+activation: tanh

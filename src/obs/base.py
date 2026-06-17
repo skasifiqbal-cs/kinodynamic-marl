@@ -1,0 +1,31 @@
+"""BaseObsBuilder: interface for observation assembly."""
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from typing import List
+
+import numpy as np
+
+from src.robot.base import BaseRobot
+from src.collision.shapes import Obstacle
+
+
+class BaseObsBuilder(ABC):
+    """Builds observation vector for one agent."""
+
+    @abstractmethod
+    def obs_dim(self) -> int:
+        """Dimension of the observation vector (fixed for all agents)."""
+        ...
+
+    @abstractmethod
+    def build(
+        self,
+        own_state: np.ndarray,
+        own_robot: BaseRobot,
+        goal: np.ndarray,
+        other_states: List[np.ndarray],
+        obstacles: List[Obstacle],
+    ) -> np.ndarray:
+        """Return float32 observation vector of length self.obs_dim()."""
+        ...

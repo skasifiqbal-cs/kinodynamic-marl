@@ -1,0 +1,4 @@
+# @package init
+type: random
+margin: 0.5         # minimum distance from world boundary
+max_attempts: 200   # collision-free placement attempts before fallback

@@ -1,0 +1,24 @@
+"""Observation builder factory."""
+from __future__ import annotations
+
+from omegaconf import DictConfig
+
+from src.obs.base import BaseObsBuilder
+from src.obs.full_state import FullStateObsBuilder
+from src.obs.lidar import LidarObsBuilder
+
+__all__ = ["BaseObsBuilder", "FullStateObsBuilder", "LidarObsBuilder", "build_obs_builder"]
+
+
+def build_obs_builder(cfg_obs: DictConfig, n_agents: int, n_obstacles: int) -> BaseObsBuilder:
+    t = cfg_obs.type
+    if t == "full_state":
+        return FullStateObsBuilder(n_agents=n_agents, n_obstacles=n_obstacles)
+    if t == "lidar":
+        return LidarObsBuilder(
+            n_agents=n_agents,
+            n_obstacles=n_obstacles,
+            num_rays=int(cfg_obs.num_rays),
+            max_range=float(cfg_obs.max_range),
+        )
+    raise ValueError(f"Unknown obs type: {t!r}. Choose 'full_state' or 'lidar'.")

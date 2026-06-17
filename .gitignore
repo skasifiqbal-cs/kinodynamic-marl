@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Hydra outputs
+outputs/
+runs/
+multirun/
+.hydra/
+
+# Weights & Biases
+wandb/
+
+# Checkpoints and artifacts
+*.pt
+*.pth
+*.ckpt
+episode.gif
+*.gif
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+*.swp
+
+# IDE
+.vscode/
+.idea/

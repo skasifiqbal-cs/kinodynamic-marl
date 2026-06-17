@@ -1,0 +1,8 @@
+type: unicycle
+v_max: 1.0
+v_min: -1.0
+omega_max: 3.14159
+omega_min: -3.14159
+shape:
+  type: circle
+  radius: 0.13

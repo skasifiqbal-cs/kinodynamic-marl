@@ -1,0 +1,4 @@
+# @package shaping
+type: dubins
+gamma: 0.99
+min_turning_radius: 0.5  # metres; rho = v_max / omega_max is a reasonable default
