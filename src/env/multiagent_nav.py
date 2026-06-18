@@ -79,15 +79,37 @@ class MultiAgentNav(ParallelEnv):
             )
             for i, a in enumerate(self.possible_agents)
         }
+        # Global state space: concatenated observations of all agents (required by skrl trainer)
+        _global_dim = obs_d * self._n
+        self._state_spaces = {
+            a: gym.spaces.Box(low=-np.inf, high=np.inf, shape=(_global_dim,), dtype=np.float32)
+            for a in self.possible_agents
+        }
 
-        # Runtime state (initialised on reset)
-        self.agents: List[str] = []
+        # Runtime state (initialised on reset; pre-set so num_agents is correct before first reset)
+        self.agents: List[str] = self.possible_agents[:]
         self._states: List[np.ndarray] = [np.zeros(3) for _ in range(self._n)]
         self._step_count: int = 0
         self._reached: List[bool] = [False] * self._n
         self._rng = np.random.default_rng()
 
     # ── PettingZoo API ────────────────────────────────────────────────────────
+
+    @property
+    def observation_spaces(self) -> dict:
+        return self._obs_spaces
+
+    @property
+    def action_spaces(self) -> dict:
+        return self._act_spaces
+
+    @property
+    def state_spaces(self) -> dict:
+        return self._state_spaces
+
+    def state(self) -> np.ndarray:
+        obs = self._build_obs()
+        return np.concatenate([obs[a] for a in self.possible_agents])
 
     def observation_space(self, agent: str) -> gym.Space:
         return self._obs_spaces[agent]

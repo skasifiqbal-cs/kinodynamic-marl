@@ -5,7 +5,7 @@ import torch
 from omegaconf import DictConfig
 
 from skrl.envs.wrappers.torch import wrap_env
-from skrl.memories.torch import RandomMemory, SequenceMemory
+from skrl.memories.torch import RandomMemory
 from skrl.multi_agents.torch.ippo import IPPO, IPPO_DEFAULT_CONFIG
 from skrl.trainers.torch import SequentialTrainer
 
@@ -46,15 +46,7 @@ def run_training(cfg: DictConfig) -> None:
             "policy": build_policy(obs_sp, act_sp, device, cfg.network).to(device),
             "value":  build_value(obs_sp, act_sp, device, cfg.network).to(device),
         }
-        if use_gru:
-            memories[agent_id] = SequenceMemory(
-                memory_size=rollouts,
-                sequence_length=int(cfg.network.get("sequence_length", 16)),
-                num_envs=1,
-                device=device,
-            )
-        else:
-            memories[agent_id] = RandomMemory(memory_size=rollouts, num_envs=1, device=device)
+        memories[agent_id] = RandomMemory(memory_size=rollouts, num_envs=1, device=device)
 
     wandb_cfg = cfg.get("wandb", {})
     use_wandb = bool(wandb_cfg.get("enabled", False))
