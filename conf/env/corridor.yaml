@@ -1,0 +1,35 @@
+# @package env
+# Narrow passage — agents must pass each other without collision
+world_size: 4.0
+dt: 0.05
+max_steps: 600
+goal_radius: 0.2
+
+reward:
+  reach: 10.0
+  collision: -5.0
+  step_penalty: -0.01
+
+obstacles:
+  - x: 1.0
+    y: 0.9
+    shape: {type: box, width: 0.2, length: 1.5}
+  - x: 1.0
+    y: 3.1
+    shape: {type: box, width: 0.2, length: 1.5}
+  - x: 3.0
+    y: 0.9
+    shape: {type: box, width: 0.2, length: 1.5}
+  - x: 3.0
+    y: 3.1
+    shape: {type: box, width: 0.2, length: 1.5}
+
+agents:
+  - id: agent_0
+    start: [0.4, 2.0, 0.0]
+    goal:  [3.6, 2.0, 0.0]
+    robot: unicycle_v1
+  - id: agent_1
+    start: [3.6, 2.0, 3.14159]
+    goal:  [0.4, 2.0, 0.0]
+    robot: unicycle_v1
