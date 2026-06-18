@@ -30,6 +30,9 @@ episode.gif
 # Jupyter
 .ipynb_checkpoints/
 
+# Local notes (not tracked)
+notes/
+
 # OS
 .DS_Store
 *.swp
