@@ -14,12 +14,12 @@ import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
 
-from src.env.multiagent_nav import MultiAgentNav
 from src.networks import build_policy
-from src.viz import render_frame_with_shapes
+
 # Single source of truth for env construction (egocentric obs, omega override,
 # auto-derived Dubins rho) — do not duplicate the build logic here.
 from src.training.train import _build_env
+from src.viz import render_frame_with_shapes
 
 
 def run_episode(env, policies, device, render=True, frame_skip=2, preprocessors=None):
@@ -62,6 +62,7 @@ def run_episode(env, policies, device, render=True, frame_skip=2, preprocessors=
                 reached=list(env._reached),
                 step=step,
                 step_rewards=rewards,
+                goal_radius=env.goal_radius,
             ))
         step += 1
 

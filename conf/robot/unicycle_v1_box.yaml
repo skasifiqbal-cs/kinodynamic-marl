@@ -1,9 +1,0 @@
-type: unicycle
-v_max: 1.0
-v_min: -1.0
-omega_max: 3.14159
-omega_min: -3.14159
-shape:
-  type: box
-  width: 0.28
-  length: 0.36

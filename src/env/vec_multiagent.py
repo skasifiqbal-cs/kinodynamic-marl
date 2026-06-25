@@ -12,12 +12,10 @@ issues a global reset when `env.agents` is empty, which we never allow.
 """
 from __future__ import annotations
 
-from typing import Any, List, Mapping, Tuple
+from typing import List, Mapping, Tuple
 
 import numpy as np
 import torch
-from omegaconf import DictConfig
-
 from skrl.envs.wrappers.torch.base import MultiAgentEnvWrapper
 
 from src.env.multiagent_nav import MultiAgentNav

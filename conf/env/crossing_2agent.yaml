@@ -41,8 +41,8 @@ agents:
   - id: agent_0
     start: [0.6, 2.3, 0.0, 0.0, 0.0]
     goal:  [5.4, 2.3, 0.0, 0.0, 0.0]
-    robot: dyn_unicycle
+    robot: unicycle_v2
   - id: agent_1
     start: [5.4, 3.7, 3.14159, 0.0, 0.0]
     goal:  [0.6, 3.7, 0.0, 0.0, 0.0]
-    robot: dyn_unicycle
+    robot: unicycle_v2

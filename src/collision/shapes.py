@@ -1,8 +1,8 @@
 """Shapes, obstacles, and collision detection (circle & OBB)."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Union, Tuple
+from dataclasses import dataclass
+from typing import Tuple, Union
 
 import numpy as np
 from omegaconf import DictConfig

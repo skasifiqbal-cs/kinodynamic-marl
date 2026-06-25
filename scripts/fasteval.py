@@ -109,6 +109,9 @@ def main(cfg: DictConfig) -> None:
         sr, avg_steps, crash, coll = _run(env, policies, device, preprocessors, n_episodes, det)
         print(f"  {label:13s}: success={sr:6.1%}  crash_rate={crash:6.1%}  "
               f"avg_collisions={coll:5.1f}  avg_steps_on_success={avg_steps:6.1f}")
+        # Machine-readable line for sweep scripts (stable, easy to grep/parse):
+        # RESULT,<mode>,<success>,<crash_rate>,<avg_collisions>,<avg_steps_on_success>
+        print(f"RESULT,{label},{sr:.4f},{crash:.4f},{coll:.2f},{avg_steps:.1f}")
 
 
 if __name__ == "__main__":

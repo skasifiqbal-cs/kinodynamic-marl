@@ -1,5 +1,5 @@
 defaults:
-  - env: demo_swap       # conf/env/*.yaml  — full scenario (world + obstacles + agents)
+  - env: crossing_2agent  # conf/env/*.yaml — full scenario (world + obstacles + agents)
   - shaping: dijkstra    # conf/shaping/*.yaml — none | euclidean | dubins | dijkstra
   - network: mlp         # conf/network/*.yaml — mlp | gru
   - obs: full_state      # conf/obs/*.yaml — full_state | lidar

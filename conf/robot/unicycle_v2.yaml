@@ -1,8 +1,13 @@
-type: unicycle
-v_max: 2.0
-v_min: -2.0
-omega_max: 4.0
-omega_min: -4.0
+type: unicycle2
+# Second-order (genuinely kinodynamic) unicycle. State [x,y,θ,v,ω]; action = accelerations.
+v_max: 1.0
+v_min: 0.0          # forward-only (diff-drive convention; reverse bloats exploration)
+omega_max: 1.5708   # pi/2 rad/s  -> turning radius rho = v_max/omega_max = 0.64 m
+omega_min: -1.5708
+# Acceleration limits — THIS is what makes it kinodynamic (not just curvature-constrained).
+# braking distance at v_max ~ v_max^2 / (2 a_max) = 0.25 m  (> goal_radius 0.25 -> must brake early).
+a_max: 2.0          # linear accel  [m/s^2]
+alpha_max: 5.0      # angular accel [rad/s^2]
 shape:
   type: circle
   radius: 0.13

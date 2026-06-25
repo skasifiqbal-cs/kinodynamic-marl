@@ -4,8 +4,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 from omegaconf import DictConfig
-
-from skrl.models.torch import Model, GaussianMixin
+from skrl.models.torch import GaussianMixin, Model
 
 _ACTIVATIONS = {"tanh": nn.Tanh, "relu": nn.ReLU, "elu": nn.ELU}
 

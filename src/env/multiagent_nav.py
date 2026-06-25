@@ -7,15 +7,15 @@ from __future__ import annotations
 
 from typing import Any, List
 
-import numpy as np
 import gymnasium as gym
-from pettingzoo import ParallelEnv
+import numpy as np
 from omegaconf import DictConfig
+from pettingzoo import ParallelEnv
 
-from src.robot import BaseRobot, build_robot, load_robot_cfg
-from src.collision.shapes import Obstacle, build_obstacle, collides, collides_wall, clip_to_world
-from src.obs.base import BaseObsBuilder
+from src.collision.shapes import Obstacle, build_obstacle, clip_to_world, collides, collides_wall
 from src.init.initializer import BaseInitializer
+from src.obs.base import BaseObsBuilder
+from src.robot import BaseRobot
 from src.shaping.base import BasePotential
 
 

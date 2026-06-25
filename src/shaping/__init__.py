@@ -4,10 +4,10 @@ from __future__ import annotations
 from omegaconf import DictConfig
 
 from .base import BasePotential
-from .no_potential import NoPotential
-from .euclidean import EuclideanPotential
-from .dubins_potential import DubinsPotential
 from .dijkstra_potential import DijkstraPotential
+from .dubins_potential import DubinsPotential
+from .euclidean import EuclideanPotential
+from .no_potential import NoPotential
 
 __all__ = ["BasePotential", "NoPotential", "EuclideanPotential", "DubinsPotential",
            "DijkstraPotential", "build_potential"]

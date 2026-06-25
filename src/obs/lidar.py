@@ -5,9 +5,9 @@ from typing import List
 
 import numpy as np
 
+from src.collision.shapes import CircleShape, Obstacle, ray_distance
 from src.obs.base import BaseObsBuilder
 from src.robot.base import BaseRobot
-from src.collision.shapes import Obstacle, ray_distance, CircleShape
 
 
 class LidarObsBuilder(BaseObsBuilder):

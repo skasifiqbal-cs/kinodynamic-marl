@@ -19,9 +19,9 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
-from .base import BasePotential
 from src.collision.shapes import CircleShape, build_obstacle, collides
 
+from .base import BasePotential
 
 # 8-connected neighbourhood (dx, dy) with step costs (orthogonal=1, diagonal=√2).
 _NEIGHBORS = [

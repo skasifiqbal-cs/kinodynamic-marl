@@ -12,9 +12,9 @@ from typing import List
 
 import numpy as np
 
+from src.collision.shapes import Obstacle
 from src.obs.base import BaseObsBuilder
 from src.robot.base import BaseRobot
-from src.collision.shapes import Obstacle
 
 # Per-obstacle encoding (body frame): [rel_x, rel_y, hw, hl, sin(a-θ), cos(a-θ)] — 6 values.
 OBS_PER_OBSTACLE = 6

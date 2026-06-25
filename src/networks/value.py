@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import torch.nn as nn
 from omegaconf import DictConfig
+from skrl.models.torch import DeterministicMixin, Model
 
-from skrl.models.torch import Model, DeterministicMixin
 from src.networks.policy import _mlp_stack
 
 

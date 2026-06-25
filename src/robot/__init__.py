@@ -5,12 +5,12 @@ import os
 
 from omegaconf import DictConfig, OmegaConf
 
-from src.robot.base import BaseRobot
-from src.robot.unicycle import UnicycleModel, DynUnicycleModel
-from src.robot.car import KinematicCarModel
 from src.collision.shapes import build_shape
+from src.robot.base import BaseRobot
+from src.robot.car import KinematicCarModel
+from src.robot.unicycle import Unicycle2Model, UnicycleModel
 
-__all__ = ["BaseRobot", "UnicycleModel", "DynUnicycleModel", "KinematicCarModel",
+__all__ = ["BaseRobot", "UnicycleModel", "Unicycle2Model", "KinematicCarModel",
            "build_robot", "load_robot_cfg"]
 
 
@@ -43,8 +43,8 @@ def build_robot(cfg: DictConfig) -> BaseRobot:
             omega_min=float(cfg.get("omega_min", -cfg.omega_max)),
             shape=shape,
         )
-    if t == "dyn_unicycle":
-        return DynUnicycleModel(
+    if t == "unicycle2":
+        return Unicycle2Model(
             v_max=float(cfg.v_max),
             v_min=float(cfg.get("v_min", 0.0)),
             omega_max=float(cfg.omega_max),

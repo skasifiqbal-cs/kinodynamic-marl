@@ -1,10 +1,10 @@
 """SKRL IPPO training — fully modular."""
 from __future__ import annotations
 
-import torch
 from datetime import datetime
-from omegaconf import DictConfig, OmegaConf
 
+import torch
+from omegaconf import DictConfig, OmegaConf
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
 from skrl.multi_agents.torch.ippo import IPPO, IPPO_DEFAULT_CONFIG
@@ -13,11 +13,11 @@ from skrl.resources.schedulers.torch import KLAdaptiveLR
 from skrl.trainers.torch import SequentialTrainer
 
 from src.env.multiagent_nav import MultiAgentNav
-from src.robot import build_robot, load_robot_cfg
-from src.shaping import build_potential
-from src.obs import build_obs_builder
 from src.init import build_initializer
 from src.networks import build_policy, build_value
+from src.obs import build_obs_builder
+from src.robot import build_robot, load_robot_cfg
+from src.shaping import build_potential
 
 
 def _build_env(cfg: DictConfig) -> MultiAgentNav:
@@ -74,7 +74,6 @@ def run_training(cfg: DictConfig) -> None:
         env = wrap_env(raw_env, wrapper="pettingzoo")
 
     rollouts = cfg.train.rollouts
-    use_gru = cfg.network.type == "gru"
 
     models: dict[str, dict] = {}
     memories: dict[str, object] = {}

@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.robot.base import BaseRobot
 from src.collision.shapes import Shape
+from src.robot.base import BaseRobot
 
 
 class KinematicCarModel(BaseRobot):

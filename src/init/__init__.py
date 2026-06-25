@@ -1,5 +1,11 @@
 from omegaconf import DictConfig
-from src.init.initializer import BaseInitializer, FixedInitializer, RandomInitializer, RandomHeadingInitializer
+
+from src.init.initializer import (
+    BaseInitializer,
+    FixedInitializer,
+    RandomHeadingInitializer,
+    RandomInitializer,
+)
 
 __all__ = ["BaseInitializer", "FixedInitializer", "RandomInitializer",
            "RandomHeadingInitializer", "build_initializer"]

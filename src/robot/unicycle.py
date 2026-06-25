@@ -2,10 +2,9 @@
 from __future__ import annotations
 
 import numpy as np
-from omegaconf import DictConfig
 
-from src.robot.base import BaseRobot
 from src.collision.shapes import Shape
+from src.robot.base import BaseRobot
 
 
 class UnicycleModel(BaseRobot):
@@ -51,7 +50,7 @@ class UnicycleModel(BaseRobot):
         return next_state
 
 
-class DynUnicycleModel(BaseRobot):
+class Unicycle2Model(BaseRobot):
     """Second-order (genuinely kinodynamic) unicycle.
 
     State:  [x, y, θ, v, ω]   — velocity is part of the STATE (momentum).

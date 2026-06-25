@@ -6,8 +6,8 @@ from typing import List
 
 import numpy as np
 
-from src.robot.base import BaseRobot
 from src.collision.shapes import Obstacle
+from src.robot.base import BaseRobot
 
 
 class BaseObsBuilder(ABC):

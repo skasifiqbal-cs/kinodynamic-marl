@@ -1,5 +1,5 @@
-from .policy import build_policy, MLPPolicy, GRUPolicy
-from .value import build_value, MLPValue, GRUValue
+from .policy import GRUPolicy, MLPPolicy, build_policy
+from .value import GRUValue, MLPValue, build_value
 
 __all__ = ["build_policy", "build_value",
            "MLPPolicy", "GRUPolicy", "MLPValue", "GRUValue"]

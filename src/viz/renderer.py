@@ -4,14 +4,15 @@ from __future__ import annotations
 import io
 from typing import Dict, List, Optional
 
-import numpy as np
 import matplotlib
+import numpy as np
+
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon
 
-from src.collision.shapes import Obstacle, CircleShape, BoxShape
+from src.collision.shapes import BoxShape, CircleShape, Obstacle
 
 AGENT_COLORS = ["#E63946", "#457B9D", "#2A9D8F", "#E9C46A"]
 GOAL_COLORS  = ["#FF6B6B", "#74B9FF", "#52D9CC", "#F4D35E"]
@@ -87,6 +88,7 @@ def render_frame(
     step: int,
     fig_px: int = 480,
     step_rewards: Optional[Dict[str, float]] = None,
+    goal_radius: float = 0.2,
 ) -> np.ndarray:
     dpi = 96
     fig_in = fig_px / dpi
@@ -104,7 +106,7 @@ def render_frame(
 
     for i, goal in enumerate(goals):
         c = GOAL_COLORS[i % len(GOAL_COLORS)]
-        ax.add_patch(mpatches.Circle((goal[0], goal[1]), 0.2,
+        ax.add_patch(mpatches.Circle((goal[0], goal[1]), goal_radius,
                                      color=c, alpha=0.25, zorder=1))
         ax.plot(goal[0], goal[1], "*", color=c, markersize=11, zorder=3)
 
@@ -144,6 +146,7 @@ def render_frame_with_shapes(
     step: int,
     fig_px: int = 480,
     step_rewards: Optional[Dict[str, float]] = None,
+    goal_radius: float = 0.2,
 ) -> np.ndarray:
     """Full render with correct robot shapes (circle or OBB) and heading wedge."""
     dpi = 96
@@ -162,7 +165,7 @@ def render_frame_with_shapes(
 
     for i, goal in enumerate(goals):
         c = GOAL_COLORS[i % len(GOAL_COLORS)]
-        ax.add_patch(mpatches.Circle((goal[0], goal[1]), 0.2, color=c, alpha=0.25, zorder=1))
+        ax.add_patch(mpatches.Circle((goal[0], goal[1]), goal_radius, color=c, alpha=0.25, zorder=1))
         ax.plot(goal[0], goal[1], "*", color=c, markersize=11, zorder=3)
 
     for i, trail in enumerate(trails):

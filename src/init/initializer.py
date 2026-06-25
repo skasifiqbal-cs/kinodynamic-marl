@@ -7,8 +7,7 @@ from typing import List, Tuple
 import numpy as np
 from omegaconf import DictConfig
 
-from src.collision.shapes import Obstacle, CircleShape, collides
-
+from src.collision.shapes import CircleShape, Obstacle, collides
 
 Starts = List[np.ndarray]
 Goals = List[np.ndarray]

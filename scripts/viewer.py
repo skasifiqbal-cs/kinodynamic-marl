@@ -68,13 +68,14 @@ def load_checkpoint(ckpt_path: str, run_dir: str):
     with initialize_config_dir(config_dir=str(ROOT / "conf"), version_base="1.3"):
         cfg = compose("config", overrides=overrides)
 
+    from skrl.resources.preprocessors.torch import RunningStandardScaler
+
+    from src.env.multiagent_nav import MultiAgentNav
+    from src.init import build_initializer
+    from src.networks import build_policy
+    from src.obs import build_obs_builder
     from src.robot import build_robot, load_robot_cfg
     from src.shaping import build_potential
-    from src.obs import build_obs_builder
-    from src.init import build_initializer
-    from src.env.multiagent_nav import MultiAgentNav
-    from src.networks import build_policy
-    from skrl.resources.preprocessors.torch import RunningStandardScaler
 
     agent_cfgs = list(cfg.env.agents)
     robots = [build_robot(load_robot_cfg(a.robot)) for a in agent_cfgs]
