@@ -71,17 +71,17 @@ the straight line.)*
 
 ## Experiments (falsifiable, runnable on this codebase)
 
-Single second-order robot (`dyn_unicycle`), isolating shaping from multi-agent coordination.
+Single second-order robot (`unicycle_v2`), isolating shaping from multi-agent coordination.
 Shaping ∈ {`none`, `euclidean`, `dijkstra`}. Potentials already implemented; the robot exposes
 both knobs (`omega_max`, `a_max`). Metric: success vs training steps; steps-to-70%; final
 success at a fixed budget. Seeds 0–4.
 
-- **E1 — core (clutter).** `theory_corridor` (goal behind a barrier). Prediction:
+- **E1 — core (clutter).** `corridor_1agent` (goal behind a barrier). Prediction:
   `euclidean ≤ none < dijkstra`. The decisive plot: Euclidean *below* no-shaping.
 - **E2 — curvature sweep.** Vary `env.omega_max_override` ∈ {π, π/2, π/3, π/6}. Plot
   (none − euclidean) success gap vs ρ. Prediction: gap grows with ρ.
 - **E3 — momentum sweep.** Vary `a_max` ∈ {8, 4, 2, 1}. Plot harm vs B. Prediction: grows.
-- **E4 — open-world control.** `theory_open` (no barrier). Prediction: `euclidean ≳ none`
+- **E4 — open-world control.** `open_1agent` (no barrier). Prediction: `euclidean ≳ none`
   (harm vanishes) — proves the harm is constraint-induced, not generic.
 
 Runner: `experiments/run_theory.sh` (sweeps shaping × knob × seed, logs success curves).

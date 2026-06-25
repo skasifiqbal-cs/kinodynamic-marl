@@ -1,7 +1,7 @@
 tag,env,shaping,omega,a_max,seed,steps,det_sr,stoch_sr
-pilot,theory_corridor,none,-,-,0,250000,0.0,0.0
-pilot,theory_corridor,euclidean,-,-,0,250000,0.0,0.0
-pilot,theory_corridor,dijkstra,-,-,0,250000,0.0,0.0
-pilot2,theory_corridor,none,-,-,0,400000,0.0%,0.0%
-pilot2,theory_corridor,euclidean,-,-,0,400000,100.0%,100.0%
-pilot2,theory_corridor,dijkstra,-,-,0,400000,100.0%,100.0%
+pilot,corridor_1agent,none,-,-,0,250000,0.0,0.0
+pilot,corridor_1agent,euclidean,-,-,0,250000,0.0,0.0
+pilot,corridor_1agent,dijkstra,-,-,0,250000,0.0,0.0
+pilot2,corridor_1agent,none,-,-,0,400000,0.0%,0.0%
+pilot2,corridor_1agent,euclidean,-,-,0,400000,100.0%,100.0%
+pilot2,corridor_1agent,dijkstra,-,-,0,400000,100.0%,100.0%

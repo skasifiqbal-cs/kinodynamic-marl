@@ -35,19 +35,19 @@ train_eval () {
 
 case "${1:-pilot}" in
   pilot)
-    for S in none euclidean dijkstra; do train_eval pilot theory_corridor $S - - 0 250000; done ;;
+    for S in none euclidean dijkstra; do train_eval pilot corridor_1agent $S - - 0 250000; done ;;
   E1)
     for SEED in 0 1 2; do for S in none euclidean dijkstra; do
-      train_eval E1 theory_corridor $S - - $SEED 400000; done; done ;;
+      train_eval E1 corridor_1agent $S - - $SEED 400000; done; done ;;
   E2)
     for OM in 3.14159 1.5708 1.0472 0.5236; do for S in none euclidean dijkstra; do
-      train_eval E2 theory_corridor $S $OM - 0 400000; done; done ;;
+      train_eval E2 corridor_1agent $S $OM - 0 400000; done; done ;;
   E3)
     for AM in 8 4 2 1; do for S in none euclidean dijkstra; do
-      train_eval E3 theory_corridor $S - $AM 0 400000; done; done ;;
+      train_eval E3 corridor_1agent $S - $AM 0 400000; done; done ;;
   E4)
     for SEED in 0 1 2; do for S in none euclidean dijkstra; do
-      train_eval E4 theory_open $S - - $SEED 400000; done; done ;;
+      train_eval E4 open_1agent $S - - $SEED 400000; done; done ;;
   *) echo "unknown: $1"; exit 1 ;;
 esac
 echo "DONE $1"
