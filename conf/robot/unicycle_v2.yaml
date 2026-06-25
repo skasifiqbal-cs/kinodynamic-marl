@@ -8,6 +8,10 @@ omega_min: -1.5708
 # braking distance at v_max ~ v_max^2 / (2 a_max) = 0.25 m  (> goal_radius 0.25 -> must brake early).
 a_max: 2.0          # linear accel  [m/s^2]
 alpha_max: 5.0      # angular accel [rad/s^2]
+# Lower accel bounds are optional: omitted -> symmetric (-a_max / -alpha_max), i.e. brake
+# force == throttle force. Set them for asymmetric braking, e.g. a_min: -4.0 (brake harder).
+# a_min: -2.0
+# alpha_min: -5.0
 shape:
   type: circle
   radius: 0.13

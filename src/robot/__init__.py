@@ -44,6 +44,8 @@ def build_robot(cfg: DictConfig) -> BaseRobot:
             shape=shape,
         )
     if t == "unicycle2":
+        a_min = cfg.get("a_min", None)
+        alpha_min = cfg.get("alpha_min", None)
         return Unicycle2Model(
             v_max=float(cfg.v_max),
             v_min=float(cfg.get("v_min", 0.0)),
@@ -51,6 +53,8 @@ def build_robot(cfg: DictConfig) -> BaseRobot:
             omega_min=float(cfg.get("omega_min", -cfg.omega_max)),
             a_max=float(cfg.a_max),
             alpha_max=float(cfg.alpha_max),
+            a_min=None if a_min is None else float(a_min),
+            alpha_min=None if alpha_min is None else float(alpha_min),
             shape=shape,
         )
     if t == "car":

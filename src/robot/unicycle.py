@@ -64,13 +64,18 @@ class Unicycle2Model(BaseRobot):
     """
 
     def __init__(self, v_max: float, v_min: float, omega_max: float, omega_min: float,
-                 a_max: float, alpha_max: float, shape: Shape) -> None:
+                 a_max: float, alpha_max: float, shape: Shape,
+                 a_min: float | None = None, alpha_min: float | None = None) -> None:
         self.v_max = v_max
         self.v_min = v_min
         self.omega_max = omega_max
         self.omega_min = omega_min
         self.a_max = a_max
         self.alpha_max = alpha_max
+        # Lower acceleration bounds. Default to the symmetric -a_max / -alpha_max
+        # (brake force == throttle force); set explicitly for asymmetric braking.
+        self.a_min = -a_max if a_min is None else a_min
+        self.alpha_min = -alpha_max if alpha_min is None else alpha_min
         self.shape = shape
 
     @property
@@ -83,7 +88,7 @@ class Unicycle2Model(BaseRobot):
 
     @property
     def action_low(self) -> np.ndarray:
-        return np.array([-self.a_max, -self.alpha_max], dtype=np.float32)
+        return np.array([self.a_min, self.alpha_min], dtype=np.float32)
 
     @property
     def action_high(self) -> np.ndarray:
@@ -115,8 +120,8 @@ class Unicycle2Model(BaseRobot):
         )
 
     def step(self, state: np.ndarray, action: np.ndarray, dt: float) -> np.ndarray:
-        a = np.clip(action[0], -self.a_max, self.a_max)
-        alpha = np.clip(action[1], -self.alpha_max, self.alpha_max)
+        a = np.clip(action[0], self.a_min, self.a_max)
+        alpha = np.clip(action[1], self.alpha_min, self.alpha_max)
         u = np.array([a, alpha], dtype=np.float64)
 
         k1 = self._f(state, u)

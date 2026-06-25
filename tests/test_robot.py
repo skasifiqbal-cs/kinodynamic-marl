@@ -18,8 +18,18 @@ def test_dyn_dims():
     assert r.state_dim == 5
     assert r.action_dim == 2
     assert r.n_dynamic_features == 2
-    assert np.allclose(r.action_low, [-2.0, -5.0])
+    assert np.allclose(r.action_low, [-2.0, -5.0])   # symmetric default: a_min = -a_max
     assert np.allclose(r.action_high, [2.0, 5.0])
+
+
+def test_asymmetric_accel_bounds():
+    r = make_dyn(a_min=-4.0, alpha_min=-3.0)         # brake harder than throttle
+    assert np.allclose(r.action_low, [-4.0, -3.0])
+    assert np.allclose(r.action_high, [2.0, 5.0])
+    # a strong brake command is honored down to a_min, not clipped at -a_max
+    s = np.array([0.0, 0.0, 0.0, 1.0, 0.0])
+    s2 = r.step(s, np.array([-4.0, 0.0]), 0.05)
+    assert s2[3] == pytest.approx(1.0 - 4.0 * 0.05, abs=1e-6)
 
 
 def test_accel_raises_velocity_and_coast_holds():
