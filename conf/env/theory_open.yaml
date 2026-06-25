@@ -23,6 +23,6 @@ obstacles: []
 
 agents:
   - id: agent_0
-    start: [1.0, 2.0, 0.0, 0.0, 0.0]
-    goal:  [5.0, 2.0, 0.0, 0.0, 0.0]
+    start: [1.0, 3.0, 0.0, 0.0, 0.0]
+    goal:  [5.0, 3.0, 0.0, 0.0, 0.0]
     robot: dyn_unicycle
