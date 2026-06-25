@@ -1,0 +1,28 @@
+# @package env
+# Paper-1 control env (E4): same single robot + start/goal as theory_corridor but NO barrier.
+# Prediction: with no detour required, Euclidean shaping is NOT harmful (euclidean >= none),
+# proving the harm in theory_corridor is induced by the constraint/clutter, not generic.
+world_size: 6.0
+dt: 0.05
+max_steps: 500
+goal_radius: 0.25
+
+reward:
+  reach: 50.0
+  collision: -2.0
+  step_penalty: -0.01
+  shaping_scale: 8.0
+  effort_penalty: 0.0
+
+omega_max_override: null
+a_max_override: null
+terminate_on_collision: false
+require_stop_at_goal: false
+
+obstacles: []
+
+agents:
+  - id: agent_0
+    start: [1.0, 2.0, 0.0, 0.0, 0.0]
+    goal:  [5.0, 2.0, 0.0, 0.0, 0.0]
+    robot: dyn_unicycle

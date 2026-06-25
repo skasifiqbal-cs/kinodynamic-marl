@@ -26,6 +26,9 @@ def _build_env(cfg: DictConfig) -> MultiAgentNav:
     # constraint without a per-radius robot yaml. Robot configs are loaded outside
     # hydra (by name), so a `robot.omega_max=` CLI override cannot reach them.
     omega_override = cfg.env.get("omega_max_override", None)
+    # a_max_override (null by default) sweeps the acceleration limit — the "momentum knob"
+    # B = v_max^2/(2 a_max r_goal) — for the Paper-1 kinodynamic shaping experiments.
+    a_override = cfg.env.get("a_max_override", None)
     robots = []
     for a in agent_cfgs:
         rc = load_robot_cfg(a.robot)
@@ -33,6 +36,8 @@ def _build_env(cfg: DictConfig) -> MultiAgentNav:
             rc = OmegaConf.merge(
                 rc, {"omega_max": float(omega_override), "omega_min": -float(omega_override)}
             )
+        if a_override is not None:
+            rc = OmegaConf.merge(rc, {"a_max": float(a_override)})
         robots.append(build_robot(rc))
     # Obstacle-aware potentials (e.g. dijkstra) need world geometry; pass it through.
     obstacles = list(cfg.env.obstacles)

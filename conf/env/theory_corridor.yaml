@@ -1,0 +1,34 @@
+# @package env
+# Paper-1 theory env. ONE second-order robot; goal directly behind a barrier. The straight
+# (Euclidean-gradient) path slams into the wall; the solution requires temporarily moving
+# AWAY from the goal (up and over the top gap) — exactly the move Euclidean shaping penalises.
+# This is the corridor MDP made concrete: it should expose euclidean <= none < dijkstra.
+world_size: 6.0
+dt: 0.05
+max_steps: 500
+goal_radius: 0.25
+
+reward:
+  reach: 50.0
+  collision: -2.0
+  step_penalty: -0.01
+  shaping_scale: 8.0
+  effort_penalty: 0.0      # 0 for theory runs — don't confound shaping effect with smoothing
+
+omega_max_override: null   # set per E2 sweep (curvature knob ρ = v_max/ω_max)
+a_max_override: null       # set per E3 sweep (momentum knob B = v_max²/(2·a_max·r_goal))
+terminate_on_collision: false
+require_stop_at_goal: false
+
+# Vertical barrier at x=3 covering y in [0, 4]; a 2 m gap at the TOP (y in [4, 6]).
+obstacles:
+  - x: 3.0
+    y: 2.0
+    angle: 0.0
+    shape: {type: box, width: 0.3, length: 4.0}
+
+agents:
+  - id: agent_0
+    start: [1.0, 2.0, 0.0, 0.0, 0.0]
+    goal:  [5.0, 2.0, 0.0, 0.0, 0.0]
+    robot: dyn_unicycle
