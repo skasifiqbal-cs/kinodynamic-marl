@@ -1,8 +1,12 @@
 type: unicycle
 v_max: 1.0
-v_min: -1.0
-omega_max: 3.14159
-omega_min: -3.14159
+v_min: 0.0   # forward-only. Reverse is a redundant action that bloats exploration and
+             # weakens the non-holonomic/Dubins premise; diff-drive nav literature uses [0, v_max].
+# omega_max = pi/3 -> turning radius rho = v_max/omega_max = 0.955 m.
+# Constrained turning is what makes Dubins cost-to-go differ from Euclidean
+# (near-holonomic omega=pi made the robot able to spin in place -> Dubins~=Euclidean).
+omega_max: 1.0472   # pi/3
+omega_min: -1.0472
 shape:
   type: circle
   radius: 0.13

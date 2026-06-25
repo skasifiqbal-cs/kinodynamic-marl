@@ -1,0 +1,44 @@
+# @package env
+# GAP test (harder coordination): two SECOND-ORDER robots must pass head-on through ONE
+# narrow gap in a wall. A small lane offset (y=2.7 vs 3.3, gap centred at 3.0) lets them
+# pass side-by-side on opposite sides of the gap — a collision-free optimum exists, but
+# the corridor is tight so the policy must hold its lane while braking/threading.
+world_size: 6.0
+dt: 0.05
+max_steps: 500
+goal_radius: 0.25
+
+reward:
+  reach: 50.0
+  collision: -2.0
+  step_penalty: -0.01
+  shaping_scale: 8.0
+  effort_penalty: 0.0005   # small: too large makes the agents timid (won't commit to the gap)
+
+omega_max_override: null
+terminate_on_collision: false
+require_stop_at_goal: true
+stop_speed: 0.2
+
+# Vertical wall at x=3.0 with a 1.8 m gap at y in [2.1, 3.9]. Robot diameter 0.26 m;
+# the two agents' lanes (y=2.5 and 3.5) sit on opposite sides of the gap centre so a
+# clear collision-free pass exists (verified by the feasibility probe).
+obstacles:
+  - x: 3.0
+    y: 1.05
+    angle: 0.0
+    shape: {type: box, width: 0.3, length: 2.1}    # covers y in [0, 2.1]
+  - x: 3.0
+    y: 4.95
+    angle: 0.0
+    shape: {type: box, width: 0.3, length: 2.1}    # covers y in [3.9, 6]
+
+agents:
+  - id: agent_0
+    start: [0.6, 2.5, 0.0, 0.0, 0.0]
+    goal:  [5.4, 2.5, 0.0, 0.0, 0.0]
+    robot: dyn_unicycle
+  - id: agent_1
+    start: [5.4, 3.5, 3.14159, 0.0, 0.0]
+    goal:  [0.6, 3.5, 0.0, 0.0, 0.0]
+    robot: dyn_unicycle

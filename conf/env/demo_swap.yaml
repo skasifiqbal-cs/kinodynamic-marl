@@ -1,0 +1,48 @@
+# @package env
+# DEMO (paper 2): two SECOND-ORDER (kinodynamic) robots swap sides through a gap
+# between two obstacles. They must (a) route around the obstacles, (b) brake to stop
+# at the goal (momentum), and (c) avoid each other in the shared gap. Slight y-offset
+# between the two start/goal lines breaks head-on symmetry so they pass cleanly.
+world_size: 6.0
+dt: 0.05
+max_steps: 500
+goal_radius: 0.25      # >= braking distance v_max^2/(2 a_max)=0.25 so a stop is feasible
+
+reward:
+  reach: 50.0
+  collision: -2.0      # softer: a single brush shouldn't swamp the shaping gradient
+  step_penalty: -0.01
+  shaping_scale: 8.0
+  effort_penalty: 0.002  # -coef*‖[a,α]‖² — smooths the brake-and-settle wiggle at the goal
+
+omega_max_override: null
+# Soft collisions during training (penalty, no episode kill) converge faster; the
+# obstacle-aware potential keeps the robot off obstacles so tunneling is not rewarded.
+terminate_on_collision: false
+# Clean controlled stop: "reached" requires the robot to be nearly at rest at the goal.
+require_stop_at_goal: true
+stop_speed: 0.15
+
+# Two staggered obstacles, one on each agent's lane, forcing a detour. Lanes are
+# offset (y=2.3 vs 3.7) so the clean solution is "each detours AWAY from the other" —
+# a collision-free optimum provably exists (see feasibility probe).
+obstacles:
+  - x: 2.6
+    y: 2.3
+    shape: {type: circle, radius: 0.45}
+  - x: 3.4
+    y: 3.7
+    shape: {type: circle, radius: 0.45}
+
+# Second-order states are FULL [x, y, θ, v, ω]: start AND goal specify linear and
+# angular velocity. Here both start at rest (v=ω=0) and must come to rest at the goal
+# (v=ω=0), enforced by require_stop_at_goal above.
+agents:
+  - id: agent_0
+    start: [0.6, 2.3, 0.0, 0.0, 0.0]
+    goal:  [5.4, 2.3, 0.0, 0.0, 0.0]
+    robot: dyn_unicycle
+  - id: agent_1
+    start: [5.4, 3.7, 3.14159, 0.0, 0.0]
+    goal:  [0.6, 3.7, 0.0, 0.0, 0.0]
+    robot: dyn_unicycle

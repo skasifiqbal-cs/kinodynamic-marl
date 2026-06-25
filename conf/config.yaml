@@ -1,6 +1,6 @@
 defaults:
-  - env: crossing        # conf/env/*.yaml  — full scenario (world + obstacles + agents)
-  - shaping: euclidean   # conf/shaping/*.yaml — none | euclidean | dubins
+  - env: demo_swap       # conf/env/*.yaml  — full scenario (world + obstacles + agents)
+  - shaping: dijkstra    # conf/shaping/*.yaml — none | euclidean | dubins | dijkstra
   - network: mlp         # conf/network/*.yaml — mlp | gru
   - obs: full_state      # conf/obs/*.yaml — full_state | lidar
   - init: fixed          # conf/init/*.yaml — fixed | random_heading | random
@@ -17,6 +17,6 @@ wandb:
 
 eval:
   checkpoint: null
-  episodes: 3
+  episodes: 1
   gif_path: episode.gif
   fps: 15

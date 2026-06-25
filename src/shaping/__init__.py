@@ -7,20 +7,46 @@ from .base import BasePotential
 from .no_potential import NoPotential
 from .euclidean import EuclideanPotential
 from .dubins_potential import DubinsPotential
+from .dijkstra_potential import DijkstraPotential
 
-__all__ = ["BasePotential", "NoPotential", "EuclideanPotential", "DubinsPotential", "build_potential"]
+__all__ = ["BasePotential", "NoPotential", "EuclideanPotential", "DubinsPotential",
+           "DijkstraPotential", "build_potential"]
 
 
-def build_potential(cfg: DictConfig, v_max: float) -> BasePotential:
-    """cfg.shaping.type in {'none', 'euclidean', 'dubins'}."""
+def build_potential(cfg: DictConfig, v_max: float, omega_max: float | None = None,
+                    obstacles=None, world_size: float | None = None,
+                    robot=None) -> BasePotential:
+    """cfg.shaping.type in {'none', 'euclidean', 'dubins', 'dijkstra'}.
+
+    For dubins, min_turning_radius=null auto-derives rho = v_max / omega_max so the
+    Dubins cost-to-go always matches the robot's true turning constraint.
+    For dijkstra (obstacle-aware), world geometry is supplied by the env builder.
+    """
     t = cfg.shaping.type
     if t == "none":
         return NoPotential()
     if t == "euclidean":
         return EuclideanPotential()
-    if t == "dubins":
-        return DubinsPotential(
-            min_turning_radius=cfg.shaping.min_turning_radius,
+    if t == "dijkstra":
+        if world_size is None:
+            raise ValueError("dijkstra shaping needs world_size (pass from _build_env).")
+        margin = float(cfg.shaping.get("clearance_margin", 0.05))
+        body_r = getattr(getattr(robot, "shape", None), "bounding_radius", 0.13)
+        return DijkstraPotential(
+            obstacles_cfg=obstacles or [],
+            world_size=float(world_size),
             v_max=v_max,
+            clearance=float(body_r) + margin,
+            cell_size=float(cfg.shaping.get("cell_size", 0.1)),
         )
+    if t == "dubins":
+        rho = cfg.shaping.get("min_turning_radius", None)
+        if rho is None:
+            if not omega_max or omega_max <= 0:
+                raise ValueError(
+                    "dubins shaping with min_turning_radius=null needs a positive "
+                    "omega_max to derive rho = v_max / omega_max."
+                )
+            rho = v_max / omega_max
+        return DubinsPotential(min_turning_radius=float(rho), v_max=v_max)
     raise ValueError(f"Unknown shaping type: {t!r}. Choose 'none', 'euclidean', or 'dubins'.")

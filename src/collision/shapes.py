@@ -188,3 +188,35 @@ def _ray_obb(origin, direction, pose, box: BoxShape, max_range):
         return max_range
     t_hit = t_enter if t_enter >= 0 else t_exit
     return float(t_hit) if 0 <= t_hit <= max_range else max_range
+
+
+# ── World-boundary collision (Minkowski sum, uniform with collides()) ─────────
+
+def collides_wall(shape: Shape, pose: Pose, world_size: float) -> bool:
+    """True if shape at pose intersects any world boundary.
+
+    Uses same Minkowski sum principle as collides(): robot physical shape, not
+    point approximation. Circle: exact. Box: exact at any orientation.
+    """
+    x, y, theta = pose
+    if isinstance(shape, CircleShape):
+        r = shape.radius
+        return x < r or x > world_size - r or y < r or y > world_size - r
+    hw, hl = shape.width / 2, shape.length / 2
+    ct, st = abs(np.cos(theta)), abs(np.sin(theta))
+    dx = hw * ct + hl * st
+    dy = hw * st + hl * ct
+    return x - dx < 0.0 or x + dx > world_size or y - dy < 0.0 or y + dy > world_size
+
+
+def clip_to_world(shape: Shape, pose: Pose, world_size: float) -> Tuple[float, float]:
+    """Return (x, y) clipped so shape just touches world boundary (theta unchanged)."""
+    x, y, theta = pose
+    if isinstance(shape, CircleShape):
+        r = shape.radius
+        return float(np.clip(x, r, world_size - r)), float(np.clip(y, r, world_size - r))
+    hw, hl = shape.width / 2, shape.length / 2
+    ct, st = abs(np.cos(theta)), abs(np.sin(theta))
+    dx = hw * ct + hl * st
+    dy = hw * st + hl * ct
+    return float(np.clip(x, dx, world_size - dx)), float(np.clip(y, dy, world_size - dy))

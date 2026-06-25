@@ -19,9 +19,10 @@ class LidarObsBuilder(BaseObsBuilder):
     """
 
     def __init__(self, n_agents: int, n_obstacles: int,
-                 num_rays: int, max_range: float) -> None:
+                 num_rays: int, max_range: float, world_size: float) -> None:
         self._num_rays = num_rays
         self._max_range = max_range
+        self._ws = world_size
         self._dim = 4 + 4 + num_rays
         self._angles = np.linspace(0, 2 * np.pi, num_rays, endpoint=False)
 
@@ -43,9 +44,12 @@ class LidarObsBuilder(BaseObsBuilder):
 
         origin = np.array(own_state[:2], dtype=np.float64)
         ranges = np.full(self._num_rays, self._max_range)
+        ws = self._ws
 
         for i, angle in enumerate(self._angles):
-            direction = np.array([np.cos(angle), np.sin(angle)])
+            dx = np.cos(angle)
+            dy = np.sin(angle)
+            direction = np.array([dx, dy])
 
             # Static obstacles
             for obs in obstacles:
@@ -60,6 +64,31 @@ class LidarObsBuilder(BaseObsBuilder):
                 d = ray_distance(origin, direction, agent_shape, agent_pose, self._max_range)
                 if d < ranges[i]:
                     ranges[i] = d
+
+            # World boundary walls — effective surface at robot bounding_radius offset
+            ox, oy = float(origin[0]), float(origin[1])
+            r = own_robot.shape.bounding_radius
+            wall_hits = []
+            if dx < -1e-9:                     # left effective wall at x=r
+                t = -(ox - r) / dx
+                if 0.0 < t and r <= oy + t * dy <= ws - r:
+                    wall_hits.append(t)
+            if dx > 1e-9:                      # right effective wall at x=ws-r
+                t = (ws - r - ox) / dx
+                if 0.0 < t and r <= oy + t * dy <= ws - r:
+                    wall_hits.append(t)
+            if dy < -1e-9:                     # bottom effective wall at y=r
+                t = -(oy - r) / dy
+                if 0.0 < t and r <= ox + t * dx <= ws - r:
+                    wall_hits.append(t)
+            if dy > 1e-9:                      # top effective wall at y=ws-r
+                t = (ws - r - oy) / dy
+                if 0.0 < t and r <= ox + t * dx <= ws - r:
+                    wall_hits.append(t)
+            if wall_hits:
+                t_wall = min(wall_hits)
+                if t_wall < ranges[i]:
+                    ranges[i] = t_wall
 
         normalised = (ranges / self._max_range).astype(np.float32)
         return np.concatenate([own, goal_feat, normalised])

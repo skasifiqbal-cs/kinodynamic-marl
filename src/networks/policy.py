@@ -28,10 +28,18 @@ class MLPPolicy(GaussianMixin, Model):
         act = network_cfg.get("activation", "tanh")
         self.net, last_dim = _mlp_stack(obs_space.shape[0], hidden, act)
         self.head = nn.Linear(last_dim, act_space.shape[0])
-        self.log_std = nn.Parameter(torch.zeros(act_space.shape[0]))
+        # Action-space scale/bias so the tanh-bounded mean lands inside [low, high].
+        low  = torch.as_tensor(act_space.low,  dtype=torch.float32, device=device)
+        high = torch.as_tensor(act_space.high, dtype=torch.float32, device=device)
+        self.register_buffer("_act_scale", (high - low) / 2.0)
+        self.register_buffer("_act_bias",  (high + low) / 2.0)
+        # Init std ≈ 0.3·range (log(0.3) ≈ -1.2) — far smaller than the old std=1.0.
+        self.log_std = nn.Parameter(torch.full((act_space.shape[0],), -1.2))
 
     def compute(self, inputs, role):
-        return self.head(self.net(inputs["states"])), self.log_std, {}
+        raw = self.head(self.net(inputs["states"]))
+        mean = torch.tanh(raw) * self._act_scale + self._act_bias
+        return mean, self.log_std, {}
 
 
 class GRUPolicy(GaussianMixin, Model):
@@ -65,7 +73,11 @@ class GRUPolicy(GaussianMixin, Model):
             last_dim = self.hidden_size
 
         self.head = nn.Linear(last_dim, act_space.shape[0])
-        self.log_std = nn.Parameter(torch.zeros(act_space.shape[0]))
+        low  = torch.as_tensor(act_space.low,  dtype=torch.float32, device=device)
+        high = torch.as_tensor(act_space.high, dtype=torch.float32, device=device)
+        self.register_buffer("_act_scale", (high - low) / 2.0)
+        self.register_buffer("_act_bias",  (high + low) / 2.0)
+        self.log_std = nn.Parameter(torch.full((act_space.shape[0],), -1.2))
 
     def get_specification(self):
         return {
@@ -88,7 +100,8 @@ class GRUPolicy(GaussianMixin, Model):
 
         out, h_n = self.gru(states, h0)
         out = self.post(out[:, -1, :])
-        return self.head(out), self.log_std, {"rnn": [h_n]}
+        mean = torch.tanh(self.head(out)) * self._act_scale + self._act_bias
+        return mean, self.log_std, {"rnn": [h_n]}
 
 
 def build_policy(obs_space, act_space, device, network_cfg: DictConfig) -> Model:

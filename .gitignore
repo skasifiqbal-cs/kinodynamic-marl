@@ -40,3 +40,6 @@ notes/
 # IDE
 .vscode/
 .idea/
+
+# Claude local
+.claude/
