@@ -1,4 +1,5 @@
 defaults:
+  - approach: reinforcement_learning  # conf/approach/*.yaml — reinforcement_learning | planning
   - env: crossing_2agent  # conf/env/*.yaml — full scenario (world + obstacles + agents)
   - shaping: dijkstra    # conf/shaping/*.yaml — none | euclidean | dubins | dijkstra
   - network: mlp         # conf/network/*.yaml — mlp | gru

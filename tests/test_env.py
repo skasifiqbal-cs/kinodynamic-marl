@@ -9,11 +9,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def build(env="crossing_2agent"):
-    from src.training.train import _build_env
+    from src.env.factory import build_env
     GlobalHydra.instance().clear()
     with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
         cfg = compose("config", overrides=[f"env={env}", "shaping=dijkstra", "init=fixed"])
-    return _build_env(cfg)
+    return build_env(cfg)
 
 
 def test_build_and_obs_dim():

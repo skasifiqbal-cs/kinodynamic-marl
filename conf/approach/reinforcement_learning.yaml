@@ -1,0 +1,4 @@
+# @package approach
+# Reinforcement-learning approach: train a skrl IPPO policy (the original path).
+# RL hyperparameters live in the train/ network/ shaping/ obs groups — unchanged.
+type: reinforcement_learning

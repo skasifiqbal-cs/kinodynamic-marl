@@ -1,0 +1,26 @@
+# @package approach
+# Planning approach: solve with a classical / kinodynamic planner instead of RL.
+# No training, no checkpoint — controls are computed online over the same env.
+#
+#   python main.py approach=planning approach.method=rrt
+#   python main.py approach=planning approach.method=kinodynamic_rrt eval.episodes=50
+#
+# Each method reads its own same-named param block below (build_planner passes it in).
+type: planning
+method: rrt            # rrt | kinodynamic_rrt | optimization
+
+rrt:
+  max_iters: 5000
+  step_size: 0.3
+  goal_sample_rate: 0.1
+
+kinodynamic_rrt:
+  max_iters: 10000
+  n_control_samples: 10
+  propagation_dt: 0.05
+  propagation_steps: 5
+
+optimization:
+  solver: ipopt       # nonlinear solver (e.g. CasADi+IPOPT, or scipy SLSQP)
+  horizon: 50
+  max_iters: 200
