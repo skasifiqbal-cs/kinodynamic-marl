@@ -1,5 +1,6 @@
 """Shaping potentials: Euclidean, PBRS telescoping, obstacle-aware Dijkstra."""
 import numpy as np
+import pytest
 from omegaconf import OmegaConf
 
 from src.shaping.dijkstra_potential import DijkstraPotential
@@ -50,3 +51,38 @@ def test_dijkstra_routes_around_obstacle():
     before_wall = np.array([2.7, 3.0, 0.0])
     euclid = -np.linalg.norm(before_wall[:2] - g[:2])   # / v_max=1
     assert pot.phi(before_wall, g) < euclid             # routed cost > straight (more negative)
+
+
+def test_shaping_gamma_differs_from_learner_gamma_and_idle_is_free():
+    """Pins the gamma convention the report (paper/implementation_report.tex S6.2) analyses.
+
+    Shaping uses gamma_shape=1.0 while IPPO discounts at gamma_learn=0.99, so the
+    Ng-Harada-Russell invariance theorem does NOT cover this configuration. The choice is
+    deliberate: at gamma_shape=gamma_learn an idle agent would earn
+    k*(1-gamma)*|phi| ~ 8.0*0.01*8.0 = +0.64/step against a -0.01 step penalty.
+
+    If either constant moves, the report's numbers are stale -- fix the report, not this
+    test.
+    """
+    from src.shaping.braking_potential import bangbang_time
+
+    g_shape = float(OmegaConf.load("conf/shaping/braking.yaml").gamma)
+    g_learn = float(OmegaConf.load("conf/train/ppo_default.yaml").discount)
+    k = float(OmegaConf.load("conf/env/swap2_unicycle2.yaml").reward.shaping_scale)
+    step_penalty = float(OmegaConf.load("conf/env/swap2_unicycle2.yaml").reward.step_penalty)
+
+    assert g_shape == 1.0 and g_learn == 0.99, "report S6.2 assumes 1.0 vs 0.99"
+
+    # gamma_shape=1 makes standing still worth exactly nothing.
+    phi = -bangbang_time(3.0, 0.0, v_max=0.5, a_max=0.25)   # swap2 start, at rest
+    assert k * (g_shape * phi - phi) == 0.0
+
+    # ...whereas the theorem-correct gamma would pay a large multiple of the step
+    # penalty for doing nothing. Pin the physics constant and the qualitative claim,
+    # not the multiple itself -- the latter tracks reward.shaping_scale, which is tuned.
+    assert abs(phi) == pytest.approx(8.0, abs=1e-9)   # bang-bang time over swap2's 3 m
+    idle = k * (g_learn * phi - phi)
+    assert idle > 0.0
+    assert idle / abs(step_penalty) > 10.0, (
+        "matched-gamma idling must dwarf the step penalty -- the reason gamma_shape=1"
+    )

@@ -49,6 +49,13 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # viewer chdir's to the repo root before importing the streamlit app modules.
 "scripts/viewer.py" = ["E402"]
+# One-off numerical diagnostics, written dense on purpose (`a = x; b = y` tables of
+# constants, `if cond: return` guards) so the physics reads as physics rather than as a
+# paragraph of Python. I001 because the `sys.path.insert` bootstrap has to precede the
+# src/ imports it enables, which is the order isort wants to undo. Not imported by src/.
+"scripts/ics_diag.py" = ["E701", "E702", "E731", "I001"]
+"scripts/probe_progress.py" = ["E701", "E702", "I001"]
+"scripts/shaping_gap.py" = ["E702"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

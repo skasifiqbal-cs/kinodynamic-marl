@@ -57,3 +57,9 @@ notes/
 
 # graphify knowledge graph (generated)
 graphify-out/
+
+# Diagnostic sweep outputs (regenerate with scripts/, not tracked)
+experiments/
+
+# Compiled paper (build from paper/*.tex)
+paper/*.pdf
