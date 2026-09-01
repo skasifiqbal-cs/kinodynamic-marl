@@ -11,8 +11,9 @@ Execution detail: the trajectories are solved on the **env's** time grid
 ``act``. ``solve_trajectory`` also supports a free ``dt`` (true minimum-time, K-ARC's
 actual objective) -- use that for planning-quality comparisons, not for execution.
 
-Params (``cfg.approach.optimization``): ``horizon``, ``effort_weight``,
-``goal_tol``, ``max_iters``.
+All settings come from the shared ``cfg.approach.trajopt`` block, so this planner
+and :class:`~src.approach.planning.karc.KARCPlanner` solve identical programs and
+only their coordination differs.
 """
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ class OptimizationPlanner(BasePlanner):
     method = "optimization"
 
     def reset(self, env) -> None:
-        p = self.params
+        p = self.approach_cfg.get("trajopt", {})
         horizon = p.get("horizon", None)
         if horizon is None:
             horizon = self._auto_horizon(env, float(p.get("slack", 1.5)))

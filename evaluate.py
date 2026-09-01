@@ -59,12 +59,14 @@ def main(cfg: DictConfig) -> None:
     use_wandb = cfg.get("wandb", OmegaConf.create({})).get("enabled", False)
     if use_wandb:
         import wandb
+        # cfg.network exists only for the RL approach (planning drops the group).
+        net = cfg.network.type if "network" in cfg else cfg.approach.get("method", "n/a")
         wb_run = wandb.init(
             project=cfg.wandb.project,
             entity=cfg.wandb.get("entity", None),
-            name=f"eval_{cfg.approach.type}_{cfg.network.type}",
+            name=f"eval_{cfg.approach.type}_{net}",
             config=OmegaConf.to_container(cfg, resolve=True),
-            tags=[cfg.approach.type, cfg.network.type, cfg.obs.type, "eval"],
+            tags=[cfg.approach.type, net, cfg.obs.type, "eval"],
         )
         wb_run.log({
             "eval/success_rate": success_rate,

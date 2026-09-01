@@ -1,31 +1,87 @@
-# @package approach
+# @package _global_
 # Planning approach: solve with a classical / kinodynamic planner instead of RL.
 # No training, no checkpoint — controls are computed online over the same env.
 #
-#   python main.py approach=planning approach.method=rrt
-#   python main.py approach=planning approach.method=kinodynamic_rrt eval.episodes=50
+#   python main.py approach=planning approach.method=karc
+#   python evaluate.py approach=planning approach.method=optimization eval.episodes=50
 #
-# Each method reads its own same-named param block below (build_planner passes it in).
-type: planning
-method: rrt            # rrt | kinodynamic_rrt | optimization
+# Everything a planning run depends on lives under `approach:` below, so
+# `python main.py approach=planning --cfg job` shows the full experiment.
+approach:
+  type: planning
+  method: karc         # rrt | kinodynamic_rrt | optimization | karc
 
-rrt:
-  max_iters: 5000
-  step_size: 0.3
-  goal_sample_rate: 0.1
+  # ── Shared nonlinear-program settings ───────────────────────────────────────
+  # Read by every optimisation-based method (`optimization`, `karc`), so the
+  # solver behaves identically across them and only the coordination differs.
+  trajopt:
+    solver: ipopt      # CasADi + IPOPT — pip install -e ".[planning]"
+    # Time budget. horizon * env.dt is the trajectory duration the program may
+    # use, so a hardcoded value silently goes infeasible when dt or the robot
+    # changes. null derives it from the bang-bang traverse time; `slack` is the
+    # multiplier over that straight-line optimum, leaving room for detours.
+    horizon: null
+    slack: 1.5
+    # Objective is  effort_weight * sum||u||^2 + T.  Larger = smoother, slower.
+    effort_weight: 0.01
+    goal_tol: 0.2      # metres; keep <= env.goal_radius
+    # Separation margin added to every clearance constraint. Not cosmetic:
+    # minimising time drives the solution onto the constraint boundary, and a
+    # trajectory clearing an obstacle by millimetres at the knots overlaps it
+    # once execution drifts off them.
+    clearance: 0.05
+    max_iters: 500
+    # dt is a DECISION VARIABLE when free (true minimum time, K-ARC's objective).
+    # Execution needs the env's grid, so planners pass dt_fixed=env.dt; these
+    # bounds apply only to free-dt solves used for planning-quality comparisons.
+    dt_bounds: [0.02, 0.5]
 
-kinodynamic_rrt:
-  max_iters: 10000
-  n_control_samples: 10
-  propagation_dt: 0.05
-  propagation_steps: 5
+  # ── K-ARC (arXiv:2501.01559) ────────────────────────────────────────────────
+  karc:
+    # Number of equal segments the reference path is split into (K-ARC's `m`).
+    # Segmentation synchronises milestones so robots share a time grid, which is
+    # what makes the inter-robot constraints meaningful. The paper does not publish
+    # its value, and results are SENSITIVE to it -- on the three 2-robot scenarios
+    # (swap2 / crossing / gap) m=1 and m=4 solve all three, while m=2, 3 and 6 each
+    # fail at least one. No m produced a collision, so the cost of a bad m is a robot
+    # that stops short, not one that crashes. Sweep it before reporting anything.
+    m_segments: 4
+    # Conflict predicate: robots closer than d_min at the same index conflict.
+    # null -> sum of the two bounding radii + trajopt.clearance. This is a purely
+    # GEOMETRIC test with no velocity term, faithful to K-ARC Eq. 6.
+    d_min: null
+    # Resolution ladder. Each rung is tried in order on a failed subproblem; drop one
+    # to ablate its contribution.
+    #   prioritized  - re-solve the conflicting robots one at a time, each avoiding the
+    #                  trajectories already fixed this round. Cheapest.
+    #   relaxed_goal - same, but lower-priority robots get a looser terminal tolerance
+    #                  (see relax_per_level), so they may stop short rather than fail.
+    #   joint        - K-ARC's AdaptSubProblem: put the conflicting robots in ONE
+    #                  program so both can yield. The only rung that solves a symmetric
+    #                  head-on swap, and the most expensive; keep it last.
+    ladder: [prioritized, relaxed_goal, joint]
+    # Cap on resolution rounds per segment before the segment is committed as-is.
+    max_rounds: 3
+    # Priority order within a subproblem: index (agent order) or distance
+    # (closest-to-goal first).
+    priority: index
+    # Terminal tolerance granted to lower-priority robots, in multiples of
+    # trajopt.goal_tol, per priority level. 1.0 makes the `relaxed_goal` rung a
+    # no-op (identical to `prioritized`), so it must exceed 1 to do anything.
+    relax_per_level: 3.0
 
-optimization:
-  solver: ipopt       # CasADi + IPOPT (pip install -e ".[planning]")
-  horizon: null         # null -> derived from the bang-bang traverse time (see _auto_horizon)
-  slack: 1.5            # time-budget multiplier over the straight-line optimum
-  effort_weight: 0.01   # weight on sum||u||^2 against trajectory duration
-  goal_tol: 0.2         # metres; keep <= env.goal_radius
-  clearance: 0.05       # separation margin; 0 puts the solution ON the constraint
-                        # boundary, where execution drift becomes a real collision
-  max_iters: 500
+  # ── Sampling-based methods ──────────────────────────────────────────────────
+  rrt:
+    max_iters: 5000
+    step_size: 0.3
+    goal_sample_rate: 0.1
+
+  kinodynamic_rrt:
+    max_iters: 10000
+    n_control_samples: 10
+    propagation_dt: 0.05
+    propagation_steps: 5
+
+  # `optimization` (prioritised one-shot trajopt, K-ARC's first ladder rung)
+  # takes all of its settings from `trajopt` above and needs no block.
+  optimization: {}

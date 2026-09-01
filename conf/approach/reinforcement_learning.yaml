@@ -1,4 +1,15 @@
-# @package approach
-# Reinforcement-learning approach: train a skrl IPPO policy (the original path).
-# RL hyperparameters live in the train/ network/ shaping/ obs groups — unchanged.
-type: reinforcement_learning
+# @package _global_
+# Reinforcement-learning approach: train a skrl IPPO/MAPPO policy.
+#
+# The network/ and train/ groups are pulled in HERE rather than by conf/config.yaml,
+# because they only mean anything to this approach. approach=planning therefore has
+# no cfg.network and no cfg.train at all, so `--cfg job` shows only the knobs that
+# actually affect the run. Both groups still override normally from the CLI, e.g.
+#   python train.py network=gru train.learning_rate=1e-4
+defaults:
+  - /network: mlp
+  - /train: ppo_default
+  - _self_
+
+approach:
+  type: reinforcement_learning

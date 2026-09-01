@@ -84,3 +84,77 @@ def test_horizon_is_derived_not_hardcoded():
             for i in range(env._n)
         )
         assert h * env.dt >= need, f"{name}: budget {h * env.dt:.2f}s < traverse {need:.2f}s"
+
+
+def test_planning_config_drops_learning_groups():
+    """approach=planning must not carry network/train: they belong to the RL approach,
+    so `--cfg job` shows only knobs that actually affect the run."""
+    plan, rl = _cfg("swap2_unicycle2"), None
+    GlobalHydra.instance().clear()
+    with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
+        rl = compose("config", overrides=["env=swap2_unicycle2"])
+
+    assert "network" not in plan and "train" not in plan
+    assert "network" in rl and "train" in rl          # RL keeps them
+    # everything a planning run needs is still there, and is configurable
+    assert plan.approach.karc.m_segments >= 1
+    assert plan.approach.trajopt.clearance > 0
+
+
+def test_karc_solves_obstacle_scenario_collision_free():
+    from src.approach.planning import build_planner
+    from src.approach.rollout import run_episode
+    from src.env.factory import build_env
+
+    cfg = _cfg("crossing_2agent", **{"approach.method": "karc"})
+    env = build_env(cfg)
+    planner = build_planner(cfg.approach)
+    stats, _ = run_episode(env, planner, render=False)
+
+    assert all(planner._solved.values())
+    assert stats["success"] and stats["collisions"] == 0.0
+    assert planner.stats["braked_segments"] == 0     # no segment was abandoned
+
+
+def test_separate_pulls_coinciding_milestones_apart_laterally():
+    """Two robots swapping head-on descend the SAME reference path, so their k-th
+    milestones coincide — and since a milestone is a segment's terminal constraint while
+    the robots must stay r_i+r_j+clearance apart at every index, that segment is
+    infeasible by construction. No solver rung can repair it; the milestones must move.
+    """
+    from src.approach.planning.karc import KARCPlanner
+
+    # Both robots travel along y = 2.5 in opposite directions and meet in the middle.
+    ms = [
+        [np.array([1.8, 2.5, 0.0]), np.array([2.53, 2.5, 0.0]), np.array([4.0, 2.5, 0.0])],
+        [np.array([3.2, 2.5, 0.0]), np.array([2.50, 2.5, 0.0]), np.array([1.0, 2.5, 0.0])],
+    ]
+    radii, clearance = [0.28, 0.28], 0.05
+    need = sum(radii) + clearance
+    assert np.linalg.norm(ms[0][1][:2] - ms[1][1][:2]) < need   # infeasible before
+
+    out = KARCPlanner._separate(ms, radii, clearance, world_size=5.0)
+
+    assert np.linalg.norm(out[0][1][:2] - out[1][1][:2]) >= need
+    # The offset must be LATERAL. Pushing head-on robots apart ALONG their shared path
+    # only reorders the milestones and still routes them through each other.
+    assert abs(out[0][1][1] - out[1][1][1]) > 0.5 * need, "milestones not split across y"
+    # The final milestone is the true goal and must never move.
+    assert np.allclose(out[0][-1][:2], [4.0, 2.5])
+    assert np.allclose(out[1][-1][:2], [1.0, 2.5])
+
+
+def test_karc_solves_symmetric_head_on_swap():
+    """swap2 is the case prioritised resolution cannot fix: whichever robot is ordered
+    second has nowhere to yield to. Needs the joint rung AND separated milestones."""
+    from src.approach.planning import build_planner
+    from src.approach.rollout import run_episode
+    from src.env.factory import build_env
+
+    cfg = _cfg("swap2_unicycle2", **{"approach.method": "karc"})
+    env = build_env(cfg)
+    planner = build_planner(cfg.approach)
+    stats, _ = run_episode(env, planner, render=False)
+
+    assert stats["success"], "symmetric head-on swap not solved"
+    assert stats["collisions"] == 0.0

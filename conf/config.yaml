@@ -1,11 +1,11 @@
 defaults:
+  # `approach` also pulls in the groups that are specific to it: the RL approach
+  # owns network/ and train/, so a planning run has neither.
   - approach: reinforcement_learning  # conf/approach/*.yaml — reinforcement_learning | planning
   - env: crossing_2agent  # conf/env/*.yaml — full scenario (world + obstacles + agents)
   - shaping: dijkstra    # conf/shaping/*.yaml — none | euclidean | dubins | dijkstra
-  - network: mlp         # conf/network/*.yaml — mlp | gru
   - obs: full_state      # conf/obs/*.yaml — full_state | lidar
   - init: fixed          # conf/init/*.yaml — fixed | random_heading | random
-  - train: ppo_default   # conf/train/*.yaml
   - _self_
 
 # Robot yamls live in conf/robot/ and are loaded at runtime by name (no listing needed here).
