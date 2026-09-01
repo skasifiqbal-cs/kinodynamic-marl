@@ -43,3 +43,17 @@ notes/
 
 # Claude local
 .claude/
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.bbl
+*.blg
+
+# graphify knowledge graph (generated)
+graphify-out/
