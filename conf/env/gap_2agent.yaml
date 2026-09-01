@@ -12,8 +12,12 @@ reward:
   reach: 50.0
   collision: -2.0
   step_penalty: -0.01
-  shaping_scale: 8.0
+  shaping_scale: 4.0
   effort_penalty: 0.0005   # small: too large makes the agents timid (won't commit to the gap)
+  # -coef*ω² per step. effort_penalty charges angular ACCEL, so a constant-rate spin
+  # (α=0) is free without this. 0.004*omega_max² = 0.004*1.5708² ≈ 0.01 = |step_penalty|,
+  # i.e. a sustained full-rate spin costs about one extra step.
+  omega_penalty: 0.004
 
 omega_max_override: null
 terminate_on_collision: false

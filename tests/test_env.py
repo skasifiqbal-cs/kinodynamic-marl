@@ -2,6 +2,7 @@
 import os
 
 import numpy as np
+import pytest
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 
@@ -56,3 +57,25 @@ def test_five_element_start_goal_loaded():
     env.reset(seed=0)
     # goals carry the full [x,y,theta,v,omega] from config
     assert env._goals[0].shape[0] >= 3
+
+
+def test_omega_penalty_charges_constant_rate_spin():
+    """A spin at constant rate has alpha=0, so effort_penalty is blind to it.
+
+    Regression for the loopy-path bug: the reward must still charge for rotating.
+    """
+    env = build()
+    env.reset(seed=0)
+    coef = env.omega_penalty
+    assert coef > 0, "crossing_2agent must set reward.omega_penalty"
+
+    a0 = env.possible_agents[0]
+    env._states[0][3] = 0.0          # not translating
+    env._states[0][4] = 1.0          # spinning at 1 rad/s
+    zero = {a: np.zeros(env.action_space(a).shape, dtype=np.float32) for a in env.agents}
+    _, rew, _, _, _ = env.step(zero)  # alpha = 0 -> effort term contributes nothing
+
+    # step_penalty + omega_penalty * omega^2, with omega propagated by one RK4 step.
+    charged = env.step_penalty - rew[a0]
+    assert charged > 0, "constant-rate spin must not be free"
+    assert charged == pytest.approx(coef * float(env._states[0][4]) ** 2, rel=1e-6)

@@ -63,6 +63,12 @@ class MultiAgentNav(ParallelEnv):
         # Control-effort penalty: -coef * ‖action‖² per step. Smooths second-order
         # trajectories (less brake-and-re-aim wiggle near the goal). 0 = off.
         self.effort_penalty = float(cfg.env.reward.get("effort_penalty", 0.0))
+        # Angular-velocity penalty: -coef * ω² per step. The effort term above charges
+        # angular ACCELERATION, so a robot that spins up once and then holds α=0 rotates
+        # at max rate for free — this closes that hole. Second-order robots only (ω is
+        # state[4]); 0 = off. Size it against step_penalty: coef * omega_max² ≈ |step_penalty|
+        # makes a sustained full-rate spin cost about one extra step.
+        self.omega_penalty = float(cfg.env.reward.get("omega_penalty", 0.0))
         # Stop-at-goal: count "reached" only when the robot is also nearly at rest
         # (speed < stop_speed). Forces a clean controlled stop instead of charging the
         # goal and overshooting — only meaningful for second-order robots (state has v).
@@ -207,6 +213,11 @@ class MultiAgentNav(ParallelEnv):
             if self.effort_penalty:
                 act = np.asarray(actions[agent], dtype=np.float64)
                 rewards[agent] -= self.effort_penalty * float(np.dot(act, act))
+
+            # Angular-velocity penalty — charges ω itself, not just α. Without it a
+            # constant-rate spin (α=0) is free and the policy wanders in loops.
+            if self.omega_penalty and self._states[i].size > 4:
+                rewards[agent] -= self.omega_penalty * float(self._states[i][4]) ** 2
 
             # Potential-based shaping (scaled by shared k)
             rewards[agent] += self.shaping_scale * self.potentials[i].shaping(
