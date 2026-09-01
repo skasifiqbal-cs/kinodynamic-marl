@@ -1,0 +1,52 @@
+# @package env
+# db-CBS benchmark instance `swap2_unicycle2.yaml`, ported verbatim.
+#   https://github.com/IMRCLab/db-CBS  example/swap2_unicycle2.yaml
+#     environment: min [0,0] max [5,5], obstacles: []
+#     robots: 2x unicycle_second_order_0
+#       start [1,2.5,0,0,0]    goal [4,2.5,0,0,0]
+#       start [4,2.5,3.14,0,0] goal [1,2.5,3.14,0,0]
+# KNOWN DEVIATIONS from the benchmark (see also conf/robot/unicycle_db.yaml):
+#   goal test  - we use position-radius + speed gate; db-CBS uses one weighted
+#                state-space distance. Approximated below.
+#   reward     - the benchmark instances are planning problems and carry no reward;
+#                everything under `reward:` is ours and has no benchmark counterpart.
+#   max_steps  - ours; the benchmark has no horizon.
+#
+# NOTE: both robots sit on the SAME line y=2.5 head-on. There is no lane offset,
+# unlike our hand-made crossing_2agent / gap_2agent. This is the symmetric conflict
+# that notes/paper2.md lists as unsolved.
+world_size: 5.0
+dt: 0.1              # dynobench unicycle2_v0 dt
+max_steps: 300       # 30 s; the 3 m traverse at v_max=0.5 needs >= 6 s plus braking
+# Goal tolerance: db-CBS example/algorithms.yaml uses `goal_epsilon: 0.2` for the
+# sampling planners (SST / K-CBS / S2M2) and `delta_0: 0.5` for db-CBS itself.
+goal_radius: 0.2
+
+reward:
+  reach: 50.0
+  collision: -2.0
+  step_penalty: -0.01
+  shaping_scale: 8.0
+  effort_penalty: 0.002
+
+omega_max_override: null
+terminate_on_collision: false
+require_stop_at_goal: true
+# DEVIATION. The benchmark has no separate speed gate: it tests a WEIGHTED state-space
+# distance, distance_weights [1, 0.5, 0.25, 0.25] over (pos, theta, v, omega), against
+# goal_epsilon. Spending the whole 0.2 budget on velocity gives |dv| <~ 0.4, i.e. 0.8*v_max,
+# so the benchmark's stop requirement is far LOOSER than a tight speed gate. 0.4 keeps this
+# env from being accidentally harder to stop in than the instance it claims to port.
+stop_speed: 0.4
+
+obstacles: []
+
+agents:
+  - id: agent_0
+    start: [1.0, 2.5, 0.0, 0.0, 0.0]
+    goal:  [4.0, 2.5, 0.0, 0.0, 0.0]
+    robot: unicycle_db
+  - id: agent_1
+    start: [4.0, 2.5, 3.14, 0.0, 0.0]
+    goal:  [1.0, 2.5, 3.14, 0.0, 0.0]
+    robot: unicycle_db
