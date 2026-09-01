@@ -23,6 +23,8 @@ dependencies = [
 [project.optional-dependencies]
 # `dubins` is optional — code falls back to the bundled pure-Python implementation.
 dubins = ["dubins>=1.0.1"]
+# Trajectory-optimisation planner (approach=planning approach.method=optimization).
+planning = ["casadi>=3.6"]
 wandb = ["wandb>=0.17.0"]
 viewer = ["streamlit>=1.30.0"]
 dev = ["pytest>=7.0", "ruff>=0.4.0"]

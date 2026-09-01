@@ -21,6 +21,11 @@ kinodynamic_rrt:
   propagation_steps: 5
 
 optimization:
-  solver: ipopt       # nonlinear solver (e.g. CasADi+IPOPT, or scipy SLSQP)
-  horizon: 50
-  max_iters: 200
+  solver: ipopt       # CasADi + IPOPT (pip install -e ".[planning]")
+  horizon: null         # null -> derived from the bang-bang traverse time (see _auto_horizon)
+  slack: 1.5            # time-budget multiplier over the straight-line optimum
+  effort_weight: 0.01   # weight on sum||u||^2 against trajectory duration
+  goal_tol: 0.2         # metres; keep <= env.goal_radius
+  clearance: 0.05       # separation margin; 0 puts the solution ON the constraint
+                        # boundary, where execution drift becomes a real collision
+  max_iters: 500
