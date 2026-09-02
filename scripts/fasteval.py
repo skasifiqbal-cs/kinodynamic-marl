@@ -6,13 +6,20 @@ deterministic mean can be timid while the sampled policy is competent. For
 planning there is no such split — a single line labelled by the method is emitted.
 
 Usage (hydra overrides identical to training):
-    # RL
-    PYTHONPATH=. python scripts/fasteval.py \
-        eval.checkpoint=runs/.../best_agent.pt \
-        env=single_agent shaping=dubins init=random eval.episodes=100
+    # RL — a checkpoint from a run trained after config saving needs nothing else
+    python scripts/fasteval.py eval.checkpoint=runs/.../checkpoints/agent_400000.pt \
+        eval.episodes=100
     # Planning
-    PYTHONPATH=. python scripts/fasteval.py \
-        approach=planning approach.method=rrt env=single_agent eval.episodes=100
+    python scripts/fasteval.py approach=planning approach.method=karc \
+        env=crossing_2agent eval.episodes=100
+
+Use evaluate.py instead when you want to watch an episode rather than count them.
+
+Four entry points, one job each:
+    main.py              dispatch on `approach`: train (RL) or plan+evaluate (planning)
+    train.py             train an RL policy
+    evaluate.py          render an episode to GIF and report success
+    scripts/fasteval.py  the same scoring, headless and in bulk — no rendering
 
 Thin shim over ``src.approach``: builds the approach's evaluation controller and
 scores it with the shared rollout loop.
@@ -20,15 +27,21 @@ scores it with the shared rollout loop.
 from __future__ import annotations
 
 import os
+import pathlib
 import sys
 
 import hydra
 import torch
 from omegaconf import DictConfig, OmegaConf
 
-from src.approach import build_approach
-from src.approach.rollout import run_episode, summarize
-from src.env.factory import build_env
+# Python puts THIS file's directory (scripts/) on sys.path, not the repo root, so `src`
+# is not importable from here the way it is from evaluate.py at the top level. Resolved
+# from __file__ rather than cwd because hydra chdir's into its output dir before main().
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+
+from src.approach import build_approach  # noqa: E402
+from src.approach.rollout import run_episode, summarize  # noqa: E402
+from src.env.factory import build_env  # noqa: E402
 
 
 def _score(env, controller, n_episodes: int) -> dict:

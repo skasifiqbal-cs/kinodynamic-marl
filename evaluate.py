@@ -9,6 +9,14 @@
     # Planning: no checkpoint — the planner computes controls online
     python evaluate.py approach=planning approach.method=rrt
 
+Renders. For bulk scoring with no GIF, use scripts/fasteval.py instead.
+
+Four entry points, one job each:
+    main.py              dispatch on `approach`: train (RL) or plan+evaluate (planning)
+    train.py             train an RL policy
+    evaluate.py          render an episode to GIF and report success
+    scripts/fasteval.py  the same scoring, headless and in bulk — no rendering
+
 Thin shim over ``src.approach``: builds the env, asks the approach for an
 evaluation ``Controller`` (RL loads the checkpoint; a planner returns itself),
 and rolls episodes out through the shared loop in ``src.approach.rollout``.

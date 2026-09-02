@@ -24,7 +24,9 @@ src/approach/
     __init__.py        build_planner  (the dispatch table — register here)
     rrt.py             <- implement
     kinodynamic_rrt.py <- implement
-    optimization.py    <- implement
+    optimization.py    done — prioritised minimum-time NLP
+    karc.py            done — K-ARC (segmentation + conflict ladder)
+    trajopt.py         the CasADi program both of those call
 conf/approach/planning.yaml   parameters for each method
 ```
 
@@ -68,11 +70,13 @@ A planner **is a `Controller`**: implement two methods.
    ```
 5. **Score** it (success / crash / collisions / steps):
    ```bash
-   PYTHONPATH=. python scripts/fasteval.py approach=planning approach.method=prm eval.episodes=100
+   python scripts/fasteval.py approach=planning approach.method=prm eval.episodes=100
    ```
 
-The three stubs (`rrt`, `kinodynamic_rrt`, `optimization`) are already registered
-and carry a step-by-step TODO in their docstrings — start with `rrt.py`.
+`rrt` and `kinodynamic_rrt` are still stubs and carry a step-by-step TODO in their
+docstrings — start with `rrt.py`. `optimization` and `karc` are implemented; read
+`trajopt.py` first if you want to see how they talk to the solver. Those two need
+CasADi: `pip install -e ".[dev,planning]"`.
 
 ## Env cheat-sheet (everything a planner can query)
 
@@ -87,7 +91,7 @@ All are live attributes on the env passed to `reset(env)` / `act(obs, env)`:
 | propagate a control | `env.robots[i].step(state, u, dt)` (RK4) |
 | control bounds | `env.robots[i].action_low` / `.action_high` |
 | body shape | `env.robots[i].shape` |
-| world half-extent | `env._world_size` |
+| world size | `env._world_size` — the world is `[0, world_size]` on BOTH axes, not a half-extent |
 | success threshold | `env.goal_radius` |
 | timestep | `env.dt` |
 

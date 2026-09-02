@@ -73,3 +73,30 @@ def test_kinematic_unicycle_basic():
     assert r.state_dim == 3
     s = r.step(np.array([0.0, 0.0, 0.0]), np.array([1.0, 0.0]), 0.1)
     assert s[0] > 0.0                          # drives forward along +x
+
+
+def test_load_robot_cfg_does_not_depend_on_the_launch_directory(tmp_path, monkeypatch):
+    """Robots are referenced by name from an env config, so they load outside hydra's
+    composition. Resolving only against the cwd made every entry point silently
+    dependent on where it was invoked from — scripts/fasteval.py run by absolute path
+    from another directory could not find conf/robot/ at all."""
+    from src.robot import load_robot_cfg
+
+    monkeypatch.chdir(tmp_path)
+    cfg = load_robot_cfg("unicycle_v2")
+    assert cfg.shape.radius == 0.13
+
+
+def test_load_robot_cfg_prefers_a_local_override(tmp_path, monkeypatch):
+    """A conf/robot/ next to where you launched shadows the repo's, which is how you
+    try a modified robot without editing the shipped one."""
+    from omegaconf import OmegaConf
+
+    from src.robot import load_robot_cfg
+
+    d = tmp_path / "conf" / "robot"
+    d.mkdir(parents=True)
+    OmegaConf.save(OmegaConf.create({"type": "unicycle2", "shape": {"radius": 0.99}}),
+                   d / "unicycle_v2.yaml")
+    monkeypatch.chdir(tmp_path)
+    assert load_robot_cfg("unicycle_v2").shape.radius == 0.99

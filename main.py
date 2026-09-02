@@ -1,10 +1,17 @@
-"""Unified entry point — dispatches on the selected approach.
+"""Run whichever approach the config selects, without caring which one it is.
 
-    python main.py                                          # reinforcement_learning (default): train
-    python main.py approach=planning approach.method=rrt    # planning: plan + evaluate
+    python main.py                                        # RL (default): train
+    python main.py approach=planning approach.method=karc # planning: plan + evaluate
 
-`train.py` / `evaluate.py` / `scripts/fasteval.py` remain as focused entry
-points; this is the single dispatcher over every approach.
+Use this when the approach is a variable — a sweep across RL and planning, or a script
+that should not know the difference. When you already know which one you want, the
+focused entry points below say so at the call site and are easier to read in history.
+
+Four entry points, one job each:
+    main.py              dispatch on `approach`: train (RL) or plan+evaluate (planning)
+    train.py             train an RL policy
+    evaluate.py          render an episode to GIF and report success
+    scripts/fasteval.py  the same scoring, headless and in bulk — no rendering
 """
 import hydra
 from omegaconf import DictConfig

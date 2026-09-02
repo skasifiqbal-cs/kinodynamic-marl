@@ -15,19 +15,38 @@ __all__ = ["BaseRobot", "UnicycleModel", "Unicycle2Model", "KinematicCarModel",
 
 
 def load_robot_cfg(robot_name: str) -> DictConfig:
-    """Load conf/robot/<robot_name>.yaml relative to the project root."""
+    """Load ``conf/robot/<robot_name>.yaml``.
+
+    Robots are referenced by NAME from an env config, so they are loaded outside hydra's
+    composition and need their own path resolution. Two candidates, in order:
+
+    1. the directory the command was launched from — so a local ``conf/robot/`` still
+       shadows the repo's, which is how you try a modified robot without editing one;
+    2. the repo root derived from this file — so anything that is not launched from the
+       repo (``scripts/`` run by absolute path, an installed package, a test with a
+       different cwd) still finds the shipped configs.
+
+    Resolving only against the cwd, as this used to, made every entry point silently
+    dependent on where it was invoked from.
+    """
     try:
         from hydra.utils import get_original_cwd
-        cwd = get_original_cwd()
+        launch_dir = get_original_cwd()
     except Exception:
-        cwd = os.getcwd()
-    path = os.path.join(cwd, "conf", "robot", f"{robot_name}.yaml")
-    if not os.path.exists(path):
-        raise FileNotFoundError(
-            f"Robot config not found: {path}\n"
-            f"Create conf/robot/{robot_name}.yaml with fields: type, v_max, ..."
-        )
-    return OmegaConf.load(path)
+        launch_dir = os.getcwd()
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidates = [
+        os.path.join(launch_dir, "conf", "robot", f"{robot_name}.yaml"),
+        os.path.join(os.path.dirname(repo_root), "conf", "robot", f"{robot_name}.yaml"),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return OmegaConf.load(path)
+    raise FileNotFoundError(
+        f"Robot config not found: {robot_name}.yaml\n"
+        f"Looked in: {', '.join(candidates)}\n"
+        f"Create conf/robot/{robot_name}.yaml with fields: type, v_max, ..."
+    )
 
 
 def build_robot(cfg: DictConfig) -> BaseRobot:

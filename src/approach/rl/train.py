@@ -1,8 +1,7 @@
-"""SKRL IPPO training — relocated under the `reinforcement_learning` approach.
+"""SKRL IPPO training, under the `reinforcement_learning` approach.
 
-Logic is unchanged from the original `src/training/train.py`; only the env
-builder moved to `src.env.factory.build_env` (paradigm-neutral). Checkpoints,
-IPPO config, and run-directory layout are byte-for-byte identical.
+Env construction lives in `src.env.factory.build_env`, which is paradigm-neutral so
+the planning approach builds the same env from the same config.
 """
 from __future__ import annotations
 
