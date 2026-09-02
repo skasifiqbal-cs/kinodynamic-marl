@@ -79,3 +79,25 @@ def test_omega_penalty_charges_constant_rate_spin():
     charged = env.step_penalty - rew[a0]
     assert charged > 0, "constant-rate spin must not be free"
     assert charged == pytest.approx(coef * float(env._states[0][4]) ** 2, rel=1e-6)
+
+
+def test_checkpoint_obs_dim_mismatch_names_the_cause():
+    """A checkpoint fits only the env it was trained on: obs width depends on the agent
+    and obstacle counts, so a single-agent policy cannot run on a 2-agent map. torch
+    reports that as a bare size mismatch on net.0.weight, which does not say what to fix.
+    """
+    import pytest
+    import torch
+
+    from src.approach.rl.controller import check_obs_dim
+
+    trained_on_swap1 = {"net.0.weight": torch.zeros(128, 11), "net.0.bias": torch.zeros(128)}
+    check_obs_dim(trained_on_swap1, 11, "agent_0", "ckpt.pt")          # matching env: silent
+
+    with pytest.raises(ValueError) as e:
+        check_obs_dim(trained_on_swap1, 25, "agent_0", "ckpt.pt")      # crossing_2agent
+    msg = str(e.value)
+    assert "11" in msg and "25" in msg and "ckpt.pt" in msg
+
+    # No 2-D weight to inspect (unexpected layout): stay out of the way, let torch speak.
+    check_obs_dim({"log_std": torch.zeros(2)}, 25, "agent_0", "ckpt.pt")

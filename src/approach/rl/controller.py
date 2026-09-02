@@ -14,6 +14,29 @@ from src.approach.base import Controller
 from src.networks import build_policy
 
 
+def check_obs_dim(state_dict, expected: int, agent_id: str, checkpoint: str) -> None:
+    """Fail with the reason, not with a tensor shape.
+
+    A checkpoint only fits the env it was trained on: the observation is
+    ``2 + 3 + 2*n_other + 6*n_obstacles + 4 + n_dyn`` (``src/obs/full_state.py``), so
+    changing the agent count or the obstacle count changes its width and no policy
+    transfers across that. torch reports this as a bare size mismatch on ``net.0.weight``,
+    which says nothing about which env to pass instead.
+    """
+    first = next((v for k, v in state_dict.items()
+                  if k.endswith(".weight") and getattr(v, "ndim", 0) == 2), None)
+    if first is None or first.shape[1] == expected:
+        return
+    raise ValueError(
+        f"Checkpoint does not fit this environment.\n"
+        f"  checkpoint : {checkpoint}\n"
+        f"  {agent_id} policy expects an observation of {first.shape[1]}, env builds {expected}.\n"
+        f"  obs_dim = 2 + 3 + 2*n_other + 6*n_obstacles + 4 + n_dyn "
+        f"(src/obs/full_state.py).\n"
+        f"  Pass the env this checkpoint was trained on, or retrain for this one."
+    )
+
+
 class RLController(Controller):
     def __init__(self, cfg, env, checkpoint: str | None, device, deterministic: bool = True):
         self.cfg = cfg
@@ -40,9 +63,12 @@ class RLController(Controller):
         from skrl.resources.preprocessors.torch import RunningStandardScaler
         ckpt = torch.load(checkpoint, map_location=self.device)
         for agent_id, policy in self.policies.items():
+            expected = int(env.observation_space(agent_id).shape[0])
             if agent_id in ckpt and "policy" in ckpt[agent_id]:
+                check_obs_dim(ckpt[agent_id]["policy"], expected, agent_id, checkpoint)
                 policy.load_state_dict(ckpt[agent_id]["policy"], strict=False)
             elif f"{agent_id}/policy" in ckpt:
+                check_obs_dim(ckpt[f"{agent_id}/policy"], expected, agent_id, checkpoint)
                 policy.load_state_dict(ckpt[f"{agent_id}/policy"], strict=False)
             else:
                 print(f"[warn] {agent_id}/policy not in checkpoint — random weights")
