@@ -50,8 +50,9 @@ nothing, and it costs one solve per agent per env.
 
 Collision checking is O(N^2). Time a single N=32 episode before queueing a long run.
 
-`AGENT_COLORS` has four entries and cycles (`src/viz/renderer.py:17`), so GIFs above four robots
-repeat colours. Cosmetic, ignore it.
+The renderer is greyscale and numbers each robot and its goal (`src/viz/renderer.py`), so any N
+renders without repeats. Above ~16 robots the bodies get small; raise `fig_px` rather than
+changing the renderer.
 
 Put a deviations header on every generated file the way swap2 does at lines 8-13. K-ARC publishes
 no workspace dimensions, no d_min, no segment count, no timestep and no velocity limits, and runs

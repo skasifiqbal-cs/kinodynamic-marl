@@ -1,4 +1,9 @@
-"""Stateless matplotlib renderer — supports circle and box shapes."""
+"""Stateless matplotlib renderer — supports circle and box shapes.
+
+Greyscale on purpose. Robots and their goals are told apart by an index printed on
+them, not by hue: figures survive a black-and-white print, and the count of robots is
+no longer capped by the length of a colour palette.
+"""
 from __future__ import annotations
 
 import io
@@ -14,11 +19,14 @@ from matplotlib.patches import Polygon
 
 from src.collision.shapes import BoxShape, CircleShape, Obstacle
 
-AGENT_COLORS = ["#E63946", "#457B9D", "#2A9D8F", "#E9C46A"]
-GOAL_COLORS  = ["#FF6B6B", "#74B9FF", "#52D9CC", "#F4D35E"]
-OBS_COLOR    = "#6C757D"
-BG_COLOR     = "#F1F3F4"
-GRID_COLOR   = "#DADCE0"
+# Neutral greys only: R == G == B. The blue-tinted "greys" this replaced (#F1F3F4,
+# #6C757D) survive a mono print but are not actually greyscale, and a figure that is
+# 87% off-neutral pixels is a colour figure as far as a journal is concerned.
+ROBOT_COLOR = "#2B2B2B"   # body: near-black, so a white index reads on top of it
+GOAL_COLOR  = "#8A8A8A"   # goal ring and its index
+TRAIL_COLOR = "#B0B0B0"
+OBS_COLOR   = "#777777"
+BG_COLOR    = "#F2F2F2"
 
 
 def _obb_corners(x: float, y: float, theta: float, w: float, l: float) -> np.ndarray:
@@ -29,23 +37,27 @@ def _obb_corners(x: float, y: float, theta: float, w: float, l: float) -> np.nda
     return (R @ local.T).T + np.array([x, y])
 
 
-def _draw_circle_robot(ax, x, y, theta, r, color, alpha):
-    """Draw circular robot body with heading wedge."""
-    ax.add_patch(mpatches.Circle((x, y), r, color=color, alpha=alpha, zorder=5))
-    angle_deg = np.degrees(theta)
-    ax.add_patch(mpatches.Wedge(
-        (x, y), r * 0.88, angle_deg - 30, angle_deg + 30,
-        color="white", alpha=0.85, zorder=6,
-    ))
+def _index_fontsize(radius: float, world_size: float, fig_px: int) -> float:
+    """Size the index to the body drawn on screen, not to a fixed point size.
+
+    Robot radii differ by more than 2x across configs (0.13 circle vs 0.2795 for the
+    dynobench box), so one hard-coded size either overflows the small bodies or gets
+    lost inside the large ones.
+    """
+    px = 2.0 * radius / max(world_size, 1e-9) * fig_px
+    # 0.55 puts the digit's cap height at roughly half the body it sits in. The bounds
+    # are there for degenerate cases only -- a ceiling low enough to bind at ordinary
+    # radii silently turns this back into the fixed size it exists to avoid.
+    return float(np.clip(0.55 * px, 5.0, 40.0))
 
 
-def _draw_box_robot(ax, x, y, theta, shape: BoxShape, color, alpha):
-    """Draw OBB robot body with heading line."""
-    corners = _obb_corners(x, y, theta, shape.width, shape.length)
-    ax.add_patch(Polygon(corners, closed=True, color=color, alpha=alpha, zorder=5))
-    front_x = x + (shape.length / 2) * np.cos(theta)
-    front_y = y + (shape.length / 2) * np.sin(theta)
-    ax.plot([x, front_x], [y, front_y], color="white", lw=2.0, zorder=6)
+def _draw_heading(ax, x, y, theta, reach, alpha):
+    """Heading nub OUTSIDE the body, so it never collides with the index on top of it."""
+    ax.plot(
+        [x + reach * np.cos(theta), x + 1.55 * reach * np.cos(theta)],
+        [y + reach * np.sin(theta), y + 1.55 * reach * np.sin(theta)],
+        color=ROBOT_COLOR, lw=1.4, alpha=alpha, solid_capstyle="round", zorder=6,
+    )
 
 
 def _draw_shape(ax, x, y, theta, shape, color, alpha=1.0, zorder=2):
@@ -60,12 +72,8 @@ def _draw_shape(ax, x, y, theta, shape, color, alpha=1.0, zorder=2):
 
 def _add_reward_bar(fig, ax, step_rewards: Dict[str, float]) -> None:
     """Add per-agent step reward text below the axes."""
-    parts = []
-    for i, (agent, r) in enumerate(sorted(step_rewards.items())):
-        label = f"A{i}"
-        parts.append(f"{label}: {r:+.2f}")
-    text = "    ".join(parts)
-    ax.set_xlabel(text, fontsize=8, labelpad=4, family="monospace")
+    parts = [f"{i}: {r:+.2f}" for i, (_a, r) in enumerate(sorted(step_rewards.items()))]
+    ax.set_xlabel("    ".join(parts), fontsize=8, labelpad=4, family="monospace")
 
 
 def _finish_frame(fig, ax, dpi: int) -> np.ndarray:
@@ -76,63 +84,6 @@ def _finish_frame(fig, ax, dpi: int) -> np.ndarray:
     plt.close(fig)
     from PIL import Image
     return np.array(Image.open(buf).convert("RGB"))
-
-
-def render_frame(
-    states: List[np.ndarray],
-    goals: List[np.ndarray],
-    obstacles: List[Obstacle],
-    trails: List[List[np.ndarray]],
-    world_size: float,
-    reached: List[bool],
-    step: int,
-    fig_px: int = 480,
-    step_rewards: Optional[Dict[str, float]] = None,
-    goal_radius: float = 0.2,
-) -> np.ndarray:
-    dpi = 96
-    fig_in = fig_px / dpi
-    fig, ax = plt.subplots(figsize=(fig_in, fig_in), dpi=dpi)
-    ax.set_facecolor(BG_COLOR)
-    ax.set_xlim(0, world_size)
-    ax.set_ylim(0, world_size)
-    ax.set_aspect("equal")
-    ax.grid(True, color=GRID_COLOR, linewidth=0.5, zorder=0)
-    ax.set_title(f"step {step}", fontsize=9, pad=3)
-
-    for obs in obstacles:
-        _draw_shape(ax, obs.x, obs.y, obs.angle, obs.shape,
-                    color=OBS_COLOR, alpha=0.75, zorder=2)
-
-    for i, goal in enumerate(goals):
-        c = GOAL_COLORS[i % len(GOAL_COLORS)]
-        ax.add_patch(mpatches.Circle((goal[0], goal[1]), goal_radius,
-                                     color=c, alpha=0.25, zorder=1))
-        ax.plot(goal[0], goal[1], "*", color=c, markersize=11, zorder=3)
-
-    for i, trail in enumerate(trails):
-        if len(trail) > 1:
-            t = np.array(trail)
-            c = AGENT_COLORS[i % len(AGENT_COLORS)]
-            ax.plot(t[:, 0], t[:, 1], color=c, alpha=0.25, linewidth=1.2, zorder=3)
-
-    for i, state in enumerate(states):
-        x, y, theta = state[0], state[1], state[2]
-        c = AGENT_COLORS[i % len(AGENT_COLORS)]
-        alpha = 0.5 if reached[i] else 1.0
-        _draw_circle_robot(ax, x, y, theta, 0.13, c, alpha)
-        label = f"A{i}✓" if reached[i] else f"A{i}"
-        ax.text(x + 0.17, y + 0.17, label, fontsize=7, color=c,
-                fontweight="bold", zorder=8)
-
-    handles = [mpatches.Patch(color=AGENT_COLORS[i % len(AGENT_COLORS)], label=f"Agent {i}")
-               for i in range(len(states))]
-    ax.legend(handles=handles, fontsize=7, loc="upper right", framealpha=0.7, borderpad=0.4)
-
-    if step_rewards is not None:
-        _add_reward_bar(fig, ax, step_rewards)
-
-    return _finish_frame(fig, ax, dpi)
 
 
 def render_frame_with_shapes(
@@ -148,7 +99,12 @@ def render_frame_with_shapes(
     step_rewards: Optional[Dict[str, float]] = None,
     goal_radius: float = 0.2,
 ) -> np.ndarray:
-    """Full render with correct robot shapes (circle or OBB) and heading wedge."""
+    """Render one frame with correct robot shapes (circle or OBB).
+
+    Robot ``i`` is drawn with ``i`` on its body; its goal is the dashed ring labelled
+    ``i``. Indices match the agent order in the env, so they line up with ``agent_0``,
+    ``agent_1``, ... and with the reward bar underneath.
+    """
     dpi = 96
     fig_in = fig_px / dpi
     fig, ax = plt.subplots(figsize=(fig_in, fig_in), dpi=dpi)
@@ -156,7 +112,8 @@ def render_frame_with_shapes(
     ax.set_xlim(0, world_size)
     ax.set_ylim(0, world_size)
     ax.set_aspect("equal")
-    ax.grid(True, color=GRID_COLOR, linewidth=0.5, zorder=0)
+    ax.set_xticks([])
+    ax.set_yticks([])
     ax.set_title(f"step {step}", fontsize=9, pad=3)
 
     for obs in obstacles:
@@ -164,32 +121,28 @@ def render_frame_with_shapes(
                     color=OBS_COLOR, alpha=0.75, zorder=2)
 
     for i, goal in enumerate(goals):
-        c = GOAL_COLORS[i % len(GOAL_COLORS)]
-        ax.add_patch(mpatches.Circle((goal[0], goal[1]), goal_radius, color=c, alpha=0.25, zorder=1))
-        ax.plot(goal[0], goal[1], "*", color=c, markersize=11, zorder=3)
+        ax.add_patch(mpatches.Circle(
+            (goal[0], goal[1]), goal_radius, facecolor="none", edgecolor=GOAL_COLOR,
+            linestyle="--", linewidth=1.2, zorder=3,
+        ))
+        ax.text(goal[0], goal[1], str(i), fontsize=_index_fontsize(goal_radius, world_size, fig_px),
+                color=GOAL_COLOR, fontweight="bold", ha="center", va="center", zorder=4)
 
-    for i, trail in enumerate(trails):
+    for trail in trails:
         if len(trail) > 1:
             t = np.array(trail)
-            ax.plot(t[:, 0], t[:, 1], color=AGENT_COLORS[i % len(AGENT_COLORS)],
-                    alpha=0.25, linewidth=1.2, zorder=3)
+            ax.plot(t[:, 0], t[:, 1], color=TRAIL_COLOR, linewidth=1.2, zorder=3)
 
     for i, state in enumerate(states):
         x, y, theta = state[0], state[1], state[2]
-        c = AGENT_COLORS[i % len(AGENT_COLORS)]
-        alpha = 0.5 if reached[i] else 1.0
+        alpha = 0.45 if reached[i] else 1.0
         shape = robot_shapes[i]
-        if isinstance(shape, CircleShape):
-            _draw_circle_robot(ax, x, y, theta, shape.radius, c, alpha)
-        else:
-            _draw_box_robot(ax, x, y, theta, shape, c, alpha)
-        label = f"A{i}✓" if reached[i] else f"A{i}"
-        ax.text(x + 0.17, y + 0.17, label, fontsize=7, color=c,
-                fontweight="bold", zorder=8)
-
-    handles = [mpatches.Patch(color=AGENT_COLORS[i % len(AGENT_COLORS)], label=f"Agent {i}")
-               for i in range(len(states))]
-    ax.legend(handles=handles, fontsize=7, loc="upper right", framealpha=0.7, borderpad=0.4)
+        _draw_shape(ax, x, y, theta, shape, ROBOT_COLOR, alpha=alpha, zorder=5)
+        # Half-width for a box: the index has to fit across the NARROW axis.
+        reach = shape.radius if isinstance(shape, CircleShape) else shape.width / 2
+        _draw_heading(ax, x, y, theta, reach, alpha)
+        ax.text(x, y, str(i), fontsize=_index_fontsize(reach, world_size, fig_px),
+                color="white", fontweight="bold", ha="center", va="center", zorder=7)
 
     if step_rewards is not None:
         _add_reward_bar(fig, ax, step_rewards)

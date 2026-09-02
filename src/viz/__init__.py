@@ -1,3 +1,3 @@
-from .renderer import render_frame, render_frame_with_shapes
+from .renderer import render_frame_with_shapes
 
-__all__ = ["render_frame", "render_frame_with_shapes"]
+__all__ = ["render_frame_with_shapes"]
