@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 
 from src.collision.shapes import CircleShape
-from src.viz.renderer import _index_fontsize, render_frame_with_shapes
+from src.viz.renderer import _forward_reach, _label_fontsize, render_frame_with_shapes
 
 
 def _frame(n: int, world: float = 6.0, radius: float = 0.2795, fig_px: int = 480):
@@ -35,17 +35,29 @@ def test_robot_count_is_not_capped_by_a_palette():
     assert _frame(12).shape[2] == 3
 
 
-def test_index_fontsize_tracks_body_size_on_screen():
-    """Radii differ by >2x across configs (0.13 circle vs 0.2795 dynobench box), so a
-    fixed point size either overflows small bodies or vanishes inside large ones."""
-    small = _index_fontsize(0.13, world_size=5.0, fig_px=480)
-    large = _index_fontsize(0.2795, world_size=5.0, fig_px=480)
-    assert large > small
-    # A big robot in a big world is no larger on screen than a small one up close.
-    assert _index_fontsize(1.0, 40.0, 480) == _index_fontsize(0.25, 10.0, 480)
-    # The ceiling must not bind at radii the repo actually uses, or the scaling is
-    # decorative and every robot gets the same size anyway.
-    assert small < 40.0 and large < 40.0
-    # Clamped both ways for degenerate inputs.
-    assert _index_fontsize(0.001, 100.0, 480) >= 5.0
-    assert _index_fontsize(50.0, 1.0, 480) <= 40.0
+def test_label_fontsize_scales_with_the_figure():
+    """Labels sit outside the bodies, so they track figure size, not robot radius."""
+    assert _label_fontsize(960) > _label_fontsize(480)
+    assert 6.0 <= _label_fontsize(64) and _label_fontsize(4000) <= 14.0
+
+
+def test_forward_reach_uses_the_box_axis_the_robot_actually_points_along():
+    """conf/robot/unicycle_db.yaml sets width as the extent along local x (forward), to
+    match dynobench's size[0], and _obb_corners lays the box out on that axis. Taking
+    `length` instead draws the heading line out through the robot's side."""
+    from src.collision.shapes import BoxShape
+
+    assert _forward_reach(BoxShape(width=0.5, length=0.25)) == 0.25   # width/2
+    assert _forward_reach(CircleShape(0.13)) == 0.13
+
+
+def test_robot_and_goal_labels_go_to_opposite_corners():
+    """A robot parked on its own goal is the normal end state. Same-side labels would
+    put a0 on top of g0 exactly then."""
+    from src.viz.renderer import _label_pos
+
+    ax, ay = _label_pos(2.5, 2.5, 0.13, 5.0, side=1)     # robot
+    gx, gy = _label_pos(2.5, 2.5, 0.20, 5.0, side=-1)    # its goal, same spot
+    assert ax > 2.5 and ay > 2.5
+    assert gx < 2.5 and gy < 2.5
+    assert np.hypot(ax - gx, ay - gy) > 0.3

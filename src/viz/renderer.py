@@ -1,8 +1,9 @@
 """Stateless matplotlib renderer — supports circle and box shapes.
 
-Greyscale on purpose. Robots and their goals are told apart by an index printed on
-them, not by hue: figures survive a black-and-white print, and the count of robots is
-no longer capped by the length of a colour palette.
+Greyscale on purpose. Robots and their goals are told apart by a label, not by hue:
+figures survive a black-and-white print, and the number of robots is not capped by the
+length of a colour palette. Robot i is ``a{i}``, its goal ``g{i}``, matching the env's
+``agent_{i}`` ids. Both labels sit outside the shape they name so they never cover it.
 """
 from __future__ import annotations
 
@@ -22,10 +23,11 @@ from src.collision.shapes import BoxShape, CircleShape, Obstacle
 # Neutral greys only: R == G == B. The blue-tinted "greys" this replaced (#F1F3F4,
 # #6C757D) survive a mono print but are not actually greyscale, and a figure that is
 # 87% off-neutral pixels is a colour figure as far as a journal is concerned.
-ROBOT_COLOR = "#2B2B2B"   # body: near-black, so a white index reads on top of it
-GOAL_COLOR  = "#8A8A8A"   # goal ring and its index
-TRAIL_COLOR = "#B0B0B0"
-OBS_COLOR   = "#777777"
+EDGE_COLOR  = "#2B2B2B"   # robot outline, heading line, and both label texts
+BODY_COLOR  = "#C8C8C8"   # robot fill, light enough to keep the outline readable
+GOAL_COLOR  = "#5E5E5E"   # goal star and its tolerance ring
+TRAIL_COLOR = "#AFAFAF"
+OBS_COLOR   = "#8C8C8C"
 BG_COLOR    = "#F2F2F2"
 
 
@@ -37,42 +39,50 @@ def _obb_corners(x: float, y: float, theta: float, w: float, l: float) -> np.nda
     return (R @ local.T).T + np.array([x, y])
 
 
-def _index_fontsize(radius: float, world_size: float, fig_px: int) -> float:
-    """Size the index to the body drawn on screen, not to a fixed point size.
+def _forward_reach(shape) -> float:
+    """Half-extent along the robot's own heading.
 
-    Robot radii differ by more than 2x across configs (0.13 circle vs 0.2795 for the
-    dynobench box), so one hard-coded size either overflows the small bodies or gets
-    lost inside the large ones.
+    For a box that is ``width``, not ``length``: conf/robot/unicycle_db.yaml defines
+    width as the extent along local x (forward) to match dynobench's size[0], and
+    _obb_corners lays the box out on that axis. Reading ``length`` here would draw the
+    heading line out through the robot's side.
     """
-    px = 2.0 * radius / max(world_size, 1e-9) * fig_px
-    # 0.55 puts the digit's cap height at roughly half the body it sits in. The bounds
-    # are there for degenerate cases only -- a ceiling low enough to bind at ordinary
-    # radii silently turns this back into the fixed size it exists to avoid.
-    return float(np.clip(0.55 * px, 5.0, 40.0))
+    return shape.radius if isinstance(shape, CircleShape) else shape.width / 2
 
 
-def _draw_heading(ax, x, y, theta, reach, alpha):
-    """Heading nub OUTSIDE the body, so it never collides with the index on top of it."""
-    ax.plot(
-        [x + reach * np.cos(theta), x + 1.55 * reach * np.cos(theta)],
-        [y + reach * np.sin(theta), y + 1.55 * reach * np.sin(theta)],
-        color=ROBOT_COLOR, lw=1.4, alpha=alpha, solid_capstyle="round", zorder=6,
-    )
+def _label_fontsize(fig_px: int) -> float:
+    """Labels sit OUTSIDE the bodies, so they scale with the figure, not with a radius."""
+    return float(np.clip(8.0 * fig_px / 480.0, 6.0, 14.0))
 
 
-def _draw_shape(ax, x, y, theta, shape, color, alpha=1.0, zorder=2):
+def _label_pos(x: float, y: float, reach: float, world_size: float,
+               side: int = 1) -> tuple[float, float]:
+    """Label position, diagonally clear of the shape it names.
+
+    ``side`` is +1 (up-right) for robots and -1 (down-left) for goals. Opposite corners
+    on purpose: a robot parked on its own goal is the normal end state, and with both
+    labels on the same side ``a0`` and ``g0`` land on top of each other exactly when the
+    reader most wants to see them. The gap is floored on world size so a small robot in
+    a big world still gets one."""
+    off = reach + max(0.35 * reach, 0.030 * world_size)
+    d = side * off / np.sqrt(2.0)
+    return x + d, y + d
+
+
+def _draw_shape(ax, x, y, theta, shape, color, alpha=1.0, zorder=2, edge=None, lw=0.0):
     if isinstance(shape, CircleShape):
-        ax.add_patch(mpatches.Circle((x, y), shape.radius,
-                                     color=color, alpha=alpha, zorder=zorder))
+        ax.add_patch(mpatches.Circle((x, y), shape.radius, facecolor=color,
+                                     edgecolor=edge, linewidth=lw, alpha=alpha,
+                                     zorder=zorder))
     elif isinstance(shape, BoxShape):
         corners = _obb_corners(x, y, theta, shape.width, shape.length)
-        ax.add_patch(Polygon(corners, closed=True,
-                             color=color, alpha=alpha, zorder=zorder))
+        ax.add_patch(Polygon(corners, closed=True, facecolor=color, edgecolor=edge,
+                             linewidth=lw, alpha=alpha, zorder=zorder))
 
 
 def _add_reward_bar(fig, ax, step_rewards: Dict[str, float]) -> None:
     """Add per-agent step reward text below the axes."""
-    parts = [f"{i}: {r:+.2f}" for i, (_a, r) in enumerate(sorted(step_rewards.items()))]
+    parts = [f"a{i}: {r:+.2f}" for i, (_a, r) in enumerate(sorted(step_rewards.items()))]
     ax.set_xlabel("    ".join(parts), fontsize=8, labelpad=4, family="monospace")
 
 
@@ -101,9 +111,9 @@ def render_frame_with_shapes(
 ) -> np.ndarray:
     """Render one frame with correct robot shapes (circle or OBB).
 
-    Robot ``i`` is drawn with ``i`` on its body; its goal is the dashed ring labelled
-    ``i``. Indices match the agent order in the env, so they line up with ``agent_0``,
-    ``agent_1``, ... and with the reward bar underneath.
+    Shapes come from the robot config, so a circular robot draws as a circle and a box
+    robot as a box — ``conf/robot/unicycle_v2.yaml`` is a 0.13 m disc while
+    ``unicycle_db.yaml`` is dynobench's 0.5 x 0.25 m rectangle.
     """
     dpi = 96
     fig_in = fig_px / dpi
@@ -115,18 +125,23 @@ def render_frame_with_shapes(
     ax.set_xticks([])
     ax.set_yticks([])
     ax.set_title(f"step {step}", fontsize=9, pad=3)
+    fs = _label_fontsize(fig_px)
 
     for obs in obstacles:
-        _draw_shape(ax, obs.x, obs.y, obs.angle, obs.shape,
-                    color=OBS_COLOR, alpha=0.75, zorder=2)
+        _draw_shape(ax, obs.x, obs.y, obs.angle, obs.shape, OBS_COLOR, alpha=0.85,
+                    zorder=2, edge=EDGE_COLOR, lw=0.8)
 
     for i, goal in enumerate(goals):
-        ax.add_patch(mpatches.Circle(
-            (goal[0], goal[1]), goal_radius, facecolor="none", edgecolor=GOAL_COLOR,
-            linestyle="--", linewidth=1.2, zorder=3,
-        ))
-        ax.text(goal[0], goal[1], str(i), fontsize=_index_fontsize(goal_radius, world_size, fig_px),
-                color=GOAL_COLOR, fontweight="bold", ha="center", va="center", zorder=4)
+        gx, gy = float(goal[0]), float(goal[1])
+        ax.add_patch(mpatches.Circle((gx, gy), goal_radius, facecolor="none",
+                                     edgecolor=GOAL_COLOR, linestyle="--",
+                                     linewidth=1.1, zorder=3))
+        ax.plot(gx, gy, marker="*", markersize=13, markerfacecolor=BODY_COLOR,
+                markeredgecolor=EDGE_COLOR, markeredgewidth=0.9, linestyle="none",
+                zorder=4)
+        lx, ly = _label_pos(gx, gy, goal_radius, world_size, side=-1)
+        ax.text(lx, ly, f"g{i}", fontsize=fs, color=GOAL_COLOR, fontweight="bold",
+                ha="center", va="center", zorder=4)
 
     for trail in trails:
         if len(trail) > 1:
@@ -134,15 +149,18 @@ def render_frame_with_shapes(
             ax.plot(t[:, 0], t[:, 1], color=TRAIL_COLOR, linewidth=1.2, zorder=3)
 
     for i, state in enumerate(states):
-        x, y, theta = state[0], state[1], state[2]
+        x, y, theta = float(state[0]), float(state[1]), float(state[2])
         alpha = 0.45 if reached[i] else 1.0
         shape = robot_shapes[i]
-        _draw_shape(ax, x, y, theta, shape, ROBOT_COLOR, alpha=alpha, zorder=5)
-        # Half-width for a box: the index has to fit across the NARROW axis.
-        reach = shape.radius if isinstance(shape, CircleShape) else shape.width / 2
-        _draw_heading(ax, x, y, theta, reach, alpha)
-        ax.text(x, y, str(i), fontsize=_index_fontsize(reach, world_size, fig_px),
-                color="white", fontweight="bold", ha="center", va="center", zorder=7)
+        _draw_shape(ax, x, y, theta, shape, BODY_COLOR, alpha=alpha, zorder=5,
+                    edge=EDGE_COLOR, lw=1.4)
+        # Heading inside the body: the label is outside now, so nothing collides here.
+        reach = _forward_reach(shape)
+        ax.plot([x, x + reach * np.cos(theta)], [y, y + reach * np.sin(theta)],
+                color=EDGE_COLOR, lw=1.4, alpha=alpha, solid_capstyle="round", zorder=6)
+        lx, ly = _label_pos(x, y, reach, world_size)
+        ax.text(lx, ly, f"a{i}", fontsize=fs, color=EDGE_COLOR, fontweight="bold",
+                ha="center", va="center", zorder=7)
 
     if step_rewards is not None:
         _add_reward_bar(fig, ax, step_rewards)
