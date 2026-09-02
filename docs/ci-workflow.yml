@@ -1,0 +1,35 @@
+# NOT ACTIVE YET. Copy this file to .github/workflows/ci.yml through GitHub's web
+# editor (Add file -> Create new file) to turn CI on.
+#
+# It could not be pushed from the command line: GitHub refuses to let an OAuth app
+# create or update anything under .github/workflows/ without the `workflow` scope,
+# which the token used for that push did not have. Nothing is wrong with the file.
+# Once `gh auth refresh -s workflow` has been run, it can be committed normally and
+# this copy deleted.
+
+name: CI
+
+on:
+  # Every branch, not just main: the work happens on feature branches, and a check that
+  # only fires on main reports the drift after it has already landed.
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          # `planning` too: the planner tests importorskip casadi, so a dev-only install
+          # makes them vanish silently rather than fail loudly.
+          pip install -e ".[dev,planning]"
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Tests (pytest)
+        run: pytest -q
