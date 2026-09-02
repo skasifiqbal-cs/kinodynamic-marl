@@ -6,10 +6,11 @@ IPPO config, and run-directory layout are byte-for-byte identical.
 """
 from __future__ import annotations
 
+import pathlib
 from datetime import datetime
 
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from skrl.envs.wrappers.torch import wrap_env
 from skrl.memories.torch import RandomMemory
 from skrl.multi_agents.torch.ippo import IPPO, IPPO_DEFAULT_CONFIG
@@ -84,11 +85,20 @@ def run_training(cfg: DictConfig) -> None:
         ippo_cfg["value_preprocessor"]       = None
     run_dir = f"{cfg.shaping.type}_{cfg.network.type}_{cfg.obs.type}"
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    # Save the config NEXT TO the checkpoints. Hydra already writes it, but into its own
+    # outputs/<date>/<time>/ tree with no link back here, and the two timestamps do not
+    # even agree — so given a checkpoint there was no way to tell which env trained it.
+    # evaluate.py reads this back, which is what makes a checkpoint path self-sufficient.
+    exp_dir = pathlib.Path("runs") / run_dir / timestamp
+    exp_dir.mkdir(parents=True, exist_ok=True)
+    OmegaConf.save(cfg, exp_dir / "config.yaml")
     ippo_cfg["experiment"] = {
         "directory": f"runs/{run_dir}",
         "experiment_name": timestamp,
         "write_interval": 1000,
-        "checkpoint_interval": 50_000,
+        # A short run used to finish with an empty checkpoints/ dir, so there was
+        # nothing to evaluate or render until 50k steps had gone by.
+        "checkpoint_interval": int(cfg.train.get("checkpoint_interval", 50_000)),
         "wandb": use_wandb,
         "wandb_kwargs": {
             "project": wandb_cfg.get("project", "kinodynamic-rl"),

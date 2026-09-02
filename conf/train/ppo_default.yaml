@@ -16,3 +16,7 @@ kl_threshold: 0.01         # tighter trust region — smaller, more stable updat
 min_lr: 1.0e-5             # KL-adaptive LR floor
 max_lr: 1.0e-4             # KL-adaptive LR ceiling — lower (e.g. 6e-5) to curb post-convergence divergence
 seed: 42
+
+# Steps between checkpoint writes. Lower it for a quick run you intend to render:
+# a short run at the default finishes with an empty checkpoints/ dir.
+checkpoint_interval: 50_000
