@@ -14,7 +14,10 @@ defaults:
 wandb:
   enabled: false
   project: kinodynamic-rl
-  entity: null
+  # Which W&B account/team the runs land in. Defaults to $WANDB_ENTITY so a collaborator
+  # sets it once in their shell; left unset, runs go to whoever is logged in locally,
+  # where the rest of us cannot see them. See docs/dhrubo_wandb.md.
+  entity: ${oc.env:WANDB_ENTITY,null}
 
 eval:
   checkpoint: null

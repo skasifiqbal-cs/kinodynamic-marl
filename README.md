@@ -131,7 +131,7 @@ src/
   viz/           greyscale matplotlib renderer
 scripts/         fasteval.py (bulk metrics), viewer.py (streamlit), numerical diagnostics
 tests/           pytest: robot dynamics, shaping, env contract, planners, renderer, eval
-docs/            task notes for collaborators
+docs/            task notes for collaborators (INTERN.md, dhrubo_wandb.md, ...)
 paper/ notes/    write-ups and results
 main.py train.py evaluate.py   Hydra entry points
 ```
