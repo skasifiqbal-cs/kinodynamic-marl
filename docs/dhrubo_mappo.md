@@ -60,3 +60,31 @@ Two things not to do. Don't add neighbour velocity to the observation. It is mis
 `src/obs/full_state.py:74-80` and it looks like an easy win, but it is exactly the information
 MAPPO's critic is supposed to have and the actors are not — change both at once and the
 comparison means nothing. Separate PR. And don't remove the IPPO path; it is the paper's baseline.
+
+## Reporting runs
+
+Train with W&B on, always:
+
+```bash
+python train.py train.algorithm=mappo env=gap_2agent wandb.enabled=true
+```
+
+Checkpoints stay out of git — they are permanent once committed and a full-length run writes
+about 18 MB of them. What gets shared instead: the curves stream to W&B live, and at the end of
+training the run's `config.yaml` and `best_agent.pt` are published as a W&B artifact
+(`src/approach/rl/train.py:upload_run_artifact`). Only the 4 KB `config.yaml` is committed, so
+the diff still records what you ran.
+
+That artifact is what lets someone else check your result rather than take it on trust:
+
+```bash
+wandb artifact get kinodynamic-rl/<run_name>:latest --root /tmp/r
+python evaluate.py eval.checkpoint=/tmp/r/checkpoints/best_agent.pt
+```
+
+No other flags — env, shaping, obs and network come from the config travelling with it. Run
+those two lines yourself before saying a run is done; if they do not reproduce your number, the
+run is not reportable.
+
+To see the episode rather than the numbers, add `wandb.enabled=true` to the evaluate line and
+the GIF lands in the same project.

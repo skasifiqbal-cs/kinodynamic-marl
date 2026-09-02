@@ -13,9 +13,20 @@ venv/
 
 # Hydra outputs
 outputs/
-runs/
 multirun/
 .hydra/
+
+# Training runs: weights and tensorboard logs stay out of git (they are permanent once
+# committed, and a full-length run writes ~18 MB of checkpoints). Curves and the best
+# policy go to W&B instead — `train.py ... wandb.enabled=true` publishes an artifact.
+# The per-run config.yaml IS tracked: it is 4 KB and it is the record of what was run,
+# so a collaborator's results are reviewable in the diff.
+runs/*
+!runs/*/
+runs/*/*
+!runs/*/*/
+runs/*/*/*
+!runs/*/*/config.yaml
 
 # Weights & Biases
 wandb/

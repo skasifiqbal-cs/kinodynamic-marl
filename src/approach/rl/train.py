@@ -129,3 +129,43 @@ def run_training(cfg: DictConfig) -> None:
         cfg={"timesteps": cfg.train.timesteps, "headless": True},
     )
     trainer.train()
+
+    if use_wandb:
+        upload_run_artifact(exp_dir)
+
+
+def upload_run_artifact(exp_dir: pathlib.Path) -> None:
+    """Publish the run's config and best policy to W&B so someone else can render it.
+
+    skrl's W&B integration logs scalars and syncs tensorboard; it never uploads the
+    checkpoints (no wandb.save, no artifact, verified in skrl/multi_agents/torch/base.py).
+    Without this the reviewer gets curves and has to take the rest on trust, because the
+    weights exist only on the machine that trained them.
+
+    The artifact preserves the run's own layout — ``config.yaml`` beside
+    ``checkpoints/`` — because that is what evaluate.py looks for. After
+
+        wandb artifact get <project>/<name>:latest --root /tmp/r
+        python evaluate.py eval.checkpoint=/tmp/r/checkpoints/best_agent.pt
+
+    the env, shaping, obs and network come from the downloaded config, so the reviewer
+    renders the same policy without being told a single flag.
+    """
+    import wandb
+
+    if wandb.run is None:                       # training ran with wandb off, or it died
+        return
+    best = exp_dir / "checkpoints" / "best_agent.pt"
+    cfg_file = exp_dir / "config.yaml"
+    if not best.is_file():
+        print(f"[warn] no best_agent.pt in {exp_dir} — nothing to publish.")
+        return
+
+    # "/" is not legal in an artifact name, and run_dir/timestamp both contain one.
+    name = f"{exp_dir.parent.name}_{exp_dir.name}".replace("/", "_")
+    art = wandb.Artifact(name, type="model")
+    art.add_file(str(best), name="checkpoints/best_agent.pt")
+    if cfg_file.is_file():
+        art.add_file(str(cfg_file), name="config.yaml")
+    wandb.log_artifact(art)
+    print(f"Published W&B artifact: {name} (config.yaml + best_agent.pt)")
