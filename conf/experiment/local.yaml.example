@@ -1,0 +1,31 @@
+# @package _global_
+#
+# YOUR personal experiment settings. Copy this file to `conf/experiment/local.yaml`
+# (that name is gitignored) and edit it instead of `conf/config.yaml`:
+#
+#     cp conf/experiment/local.yaml.example conf/experiment/local.yaml
+#
+# Then `python main.py` and `python evaluate.py` pick it up with no arguments. Because
+# the file is untracked, you and everyone else can run different experiments without
+# ever producing a merge conflict — which is exactly what editing conf/config.yaml
+# caused. Delete the file to go back to the committed defaults.
+#
+# `override /group: value` switches a config group; plain keys set values directly.
+# Comment out what you are not using; anything absent falls through to conf/config.yaml.
+
+defaults:
+  - override /env: swap2_unicycle2     # conf/env/*.yaml
+  - override /shaping: braking         # none | euclidean | dubins | dijkstra | braking
+  # - override /approach: planning     # uncomment for a planner run instead of RL
+  # - override /obs: lidar
+  # - override /init: random_heading
+
+# Plain value overrides, same paths as in conf/config.yaml.
+eval:
+  episodes: 5
+
+# approach:
+#   method: karc                       # rrt | kinodynamic_rrt | optimization | karc
+
+# wandb:
+#   enabled: true

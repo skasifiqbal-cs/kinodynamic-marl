@@ -11,6 +11,11 @@ build/
 venv/
 /env/
 
+# Per-person experiment selection. Everyone edits this instead of conf/config.yaml, so
+# two people running different experiments never conflict in a tracked file. The
+# committed template next to it (local.yaml.example) is what a new clone copies.
+conf/experiment/local.yaml
+
 # Hydra outputs
 outputs/
 multirun/

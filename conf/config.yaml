@@ -7,6 +7,12 @@ defaults:
   - obs: full_state      # conf/obs/*.yaml — full_state | lidar
   - init: fixed          # conf/init/*.yaml — fixed | random_heading | random
   - _self_
+  # YOUR experiment goes in conf/experiment/local.yaml, which is gitignored — see
+  # conf/experiment/local.yaml.example. `optional` means Hydra silently skips it when
+  # the file is absent, so a fresh clone runs the defaults above unchanged. Listed
+  # last so it overrides everything, and untracked so two people changing experiments
+  # never collide in this file. Do NOT edit the defaults above to switch experiments.
+  - optional experiment: local
 
 # Robot yamls live in conf/robot/ and are loaded at runtime by name (no listing needed here).
 # To add a robot: create conf/robot/my_robot.yaml and reference it in an env yaml.

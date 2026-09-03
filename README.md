@@ -51,6 +51,24 @@ python evaluate.py                   # render one episode to GIF + report succes
 python scripts/fasteval.py           # same scoring, headless and in bulk, no rendering
 ```
 
+## Choosing an experiment
+
+Copy the template once, then edit that file instead of `conf/config.yaml`:
+
+```bash
+cp conf/experiment/local.yaml.example conf/experiment/local.yaml
+```
+
+`conf/experiment/local.yaml` is **gitignored**, and `conf/config.yaml` loads it last
+(`- optional experiment: local`), so it overrides everything and `python main.py` needs
+no arguments. Because it is untracked, two people can run different experiments without
+ever colliding — editing `conf/config.yaml` to switch experiments produces a merge
+conflict on a shared file, which is why it is off-limits for that. Delete the file to
+fall back to the committed defaults.
+
+Command-line overrides still work and still win over `local.yaml`, which is what the
+examples below use so they stay copy-pasteable.
+
 ## Running
 
 ```bash
