@@ -9,22 +9,25 @@ import numpy as np
 from omegaconf import DictConfig
 
 from src.approach import build_approach
+from src.conflict import braking_margin
 from src.env.factory import build_env
 
 
 def margins(env):
+    """Reciprocal braking margin for every pair, via the shared predicate."""
     out = []
     for i in range(len(env.robots)):
-        for j in range(i+1, len(env.robots)):
+        for j in range(i + 1, len(env.robots)):
             si, sj = env._states[i], env._states[j]
-            ri = env.robots[i].shape.bounding_radius; rj = env.robots[j].shape.bounding_radius
-            p = sj[:2] - si[:2]; d = np.linalg.norm(p)
-            vi = si[3]*np.array([np.cos(si[2]), np.sin(si[2])])
-            vj = sj[3]*np.array([np.cos(sj[2]), np.sin(sj[2])])
-            s = -(vj - vi) @ (p/max(d,1e-9))
-            a = env.robots[i].a_max + env.robots[j].a_max
-            out.append(d - (ri+rj) - max(s,0.0)**2/(2*a))
+            out.append(braking_margin(
+                si[:2], si[3] * np.array([np.cos(si[2]), np.sin(si[2])]),
+                env.robots[i].shape.bounding_radius, env.robots[i].a_max,
+                sj[:2], sj[3] * np.array([np.cos(sj[2]), np.sin(sj[2])]),
+                env.robots[j].shape.bounding_radius, env.robots[j].a_max,
+                conservative=False,   # closing-speed form: what this diagnostic always used
+            ))
     return out
+
 
 @hydra.main(config_path="../conf", config_name="config", version_base="1.3")
 def main(cfg: DictConfig):
