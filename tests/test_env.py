@@ -9,11 +9,11 @@ from hydra.core.global_hydra import GlobalHydra
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def build(env="crossing_2agent"):
+def build(env="crossing_2agent", shaping="dijkstra"):
     from src.env.factory import build_env
     GlobalHydra.instance().clear()
     with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
-        cfg = compose("config", overrides=[f"env={env}", "shaping=dijkstra", "init=fixed"])
+        cfg = compose("config", overrides=[f"env={env}", f"shaping={shaping}", "init=fixed"])
     return build_env(cfg)
 
 
@@ -67,7 +67,7 @@ def test_omega_penalty_charges_constant_rate_spin():
     env = build()
     env.reset(seed=0)
     coef = env.omega_penalty
-    assert coef > 0, "crossing_2agent must set reward.omega_penalty"
+    assert coef < 0, "crossing_2agent must set reward.omega_penalty, and it is negative"
 
     a0 = env.possible_agents[0]
     env._states[0][3] = 0.0          # not translating
@@ -78,7 +78,7 @@ def test_omega_penalty_charges_constant_rate_spin():
     # step_penalty + omega_penalty * omega^2, with omega propagated by one RK4 step.
     charged = env.step_penalty - rew[a0]
     assert charged > 0, "constant-rate spin must not be free"
-    assert charged == pytest.approx(coef * float(env._states[0][4]) ** 2, rel=1e-6)
+    assert charged == pytest.approx(-coef * float(env._states[0][4]) ** 2, rel=1e-6)
 
 
 def test_checkpoint_obs_dim_mismatch_names_the_cause():
@@ -101,3 +101,63 @@ def test_checkpoint_obs_dim_mismatch_names_the_cause():
 
     # No 2-D weight to inspect (unexpected layout): stay out of the way, let torch speak.
     check_obs_dim({"log_std": torch.zeros(2)}, 25, "agent_0", "ckpt.pt")
+
+
+def test_reward_decomposition_pins_every_sign():
+    """r = step + effort*||u||^2 + omega*w^2, every coefficient signed in config and ADDED.
+
+    Runs on shaping=none so phi is identically zero and the shaping term drops out,
+    leaving three terms that are exactly computable. This is the check that fails if any
+    coefficient's sign is flipped in config or in step() -- a flip is otherwise invisible,
+    since training still runs and only the learned behaviour is wrong.
+    """
+    env = build(shaping="none")
+    env.reset(seed=0)
+    a0 = env.possible_agents[0]
+
+    env._states[0][:2] = [1.5, 1.5]      # away from goal, walls, and the other agent
+    env._states[0][3] = 0.3              # translating
+    env._states[0][4] = 0.8              # and spinning, so the omega term is non-zero
+
+    act = np.array([0.7, -0.4], dtype=np.float32)
+    actions = {a: np.zeros(env.action_space(a).shape, dtype=np.float32) for a in env.agents}
+    actions[a0] = act
+    _, rew, _, _, _ = env.step(actions)
+
+    # If the placement above ever starts colliding or reaching, the arithmetic below is
+    # no longer the whole reward -- say so rather than failing on a confusing mismatch.
+    assert env._collision_count == 0, "test placement collided; move it, do not relax this"
+    assert not env._reached[0], "test placement reached the goal; move it further away"
+
+    # float64, matching the cast step() makes at multiagent_nav.py:214 -- computing
+    # ||u||^2 in the action space's float32 disagrees in the 11th decimal.
+    u = np.asarray(act, dtype=np.float64)
+    expected = (env.step_penalty
+                + env.effort_penalty * float(np.dot(u, u))
+                + env.omega_penalty * float(env._states[0][4]) ** 2)
+    assert rew[a0] == pytest.approx(expected, rel=1e-9)
+
+    # And the directions, stated independently of the arithmetic.
+    assert env.step_penalty < 0
+    assert env.effort_penalty < 0
+    assert env.omega_penalty < 0
+    assert env.reach_reward > 0
+    assert env.collision_penalty < 0
+    assert rew[a0] < env.step_penalty, "effort and spin must COST, not pay"
+
+
+def test_wrong_signed_reward_coefficient_is_rejected():
+    """An old config carrying a positive effort_penalty must fail loudly, not invert."""
+    from src.env.multiagent_nav import check_reward_signs
+
+    check_reward_signs({"reach": 50.0, "collision": -2.0, "effort_penalty": -0.002})
+    check_reward_signs({"collision": 0.0})                       # zero disables, allowed
+
+    with pytest.raises(ValueError, match="effort_penalty"):
+        check_reward_signs({"effort_penalty": 0.002})            # the pre-change convention
+    with pytest.raises(ValueError, match="omega_penalty"):
+        check_reward_signs({"omega_penalty": 0.04})
+    with pytest.raises(ValueError, match="collision"):
+        check_reward_signs({"collision": 2.0})                   # would reward crashing
+    with pytest.raises(ValueError, match="reach"):
+        check_reward_signs({"reach": -50.0})

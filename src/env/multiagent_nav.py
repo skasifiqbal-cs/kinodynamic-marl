@@ -18,6 +18,45 @@ from src.obs.base import BaseObsBuilder
 from src.robot import BaseRobot
 from src.shaping.base import BasePotential
 
+# Sign convention for every coefficient under `cfg.env.reward`: the value is SIGNED IN
+# CONFIG and `step()` only ever ADDS it, so a penalty is negative and a reward is positive.
+#
+# Enforced rather than merely documented. `effort_penalty` and `omega_penalty` were once
+# magnitudes that `step()` subtracted, so a config predating this -- an old
+# `runs/<exp>/<ts>/config.yaml` restored by `evaluate.py`, say -- carries them POSITIVE.
+# Added rather than subtracted, that pays the policy to thrash its actuators and spin in
+# place, and nothing downstream looks wrong: training proceeds, the loss curve is fine,
+# and only the behaviour is quietly inverted. Fail loudly instead.
+_REWARD_SIGNS = {
+    "reach": +1,
+    "collision": -1,
+    "step_penalty": -1,
+    "effort_penalty": -1,
+    "omega_penalty": -1,
+    "shaping_scale": +1,
+}
+
+
+def check_reward_signs(reward_cfg) -> None:
+    """Reject reward coefficients whose sign contradicts the convention. Zero is fine."""
+    for key, want in _REWARD_SIGNS.items():
+        if key not in reward_cfg:
+            continue
+        val = float(reward_cfg[key])
+        if val == 0.0 or val * want > 0:
+            continue
+        expected = "positive" if want > 0 else "negative"
+        hint = ""
+        if key in ("effort_penalty", "omega_penalty"):
+            hint = (f" This one changed convention: it used to be a magnitude that was "
+                    f"subtracted, and is now added like every other term, so negate it "
+                    f"({val} -> {-val}).")
+        raise ValueError(
+            f"cfg.env.reward.{key} = {val} but must be {expected}. Every reward "
+            f"coefficient is signed in config and added by MultiAgentNav.step(), so a "
+            f"penalty is negative and a reward is positive.{hint}"
+        )
+
 
 class MultiAgentNav(ParallelEnv):
     """Kinodynamic N-agent navigation.
@@ -44,6 +83,8 @@ class MultiAgentNav(ParallelEnv):
         self.initializer = initializer
         self.gamma = cfg.shaping.gamma
 
+        check_reward_signs(cfg.env.reward)
+
         # Scenario params
         self.dt = cfg.env.dt
         self.max_steps = cfg.env.max_steps
@@ -60,10 +101,10 @@ class MultiAgentNav(ParallelEnv):
         # collisions the robot can tunnel through a wall and still "reach" the goal, which
         # inflates success. Default False preserves the open-world (no-obstacle) behavior.
         self.terminate_on_collision = bool(cfg.env.get("terminate_on_collision", False))
-        # Control-effort penalty: -coef * ‖action‖² per step. Smooths second-order
+        # Control-effort penalty: coef * ‖action‖² per step, coef <= 0. Smooths second-order
         # trajectories (less brake-and-re-aim wiggle near the goal). 0 = off.
         self.effort_penalty = float(cfg.env.reward.get("effort_penalty", 0.0))
-        # Angular-velocity penalty: -coef * ω² per step. The effort term above charges
+        # Angular-velocity penalty: coef * ω² per step, coef <= 0. The effort term above charges
         # angular ACCELERATION, so a robot that spins up once and then holds α=0 rotates
         # at max rate for free — this closes that hole. Second-order robots only (ω is
         # state[4]); 0 = off. Size it against step_penalty: coef * omega_max² ≈ |step_penalty|
@@ -212,12 +253,12 @@ class MultiAgentNav(ParallelEnv):
             # Control-effort penalty — smooths second-order trajectories
             if self.effort_penalty:
                 act = np.asarray(actions[agent], dtype=np.float64)
-                rewards[agent] -= self.effort_penalty * float(np.dot(act, act))
+                rewards[agent] += self.effort_penalty * float(np.dot(act, act))
 
             # Angular-velocity penalty — charges ω itself, not just α. Without it a
             # constant-rate spin (α=0) is free and the policy wanders in loops.
             if self.omega_penalty and self._states[i].size > 4:
-                rewards[agent] -= self.omega_penalty * float(self._states[i][4]) ** 2
+                rewards[agent] += self.omega_penalty * float(self._states[i][4]) ** 2
 
             # Potential-based shaping (scaled by shared k)
             rewards[agent] += self.shaping_scale * self.potentials[i].shaping(
