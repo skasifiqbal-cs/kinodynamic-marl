@@ -9,7 +9,7 @@ from hydra.core.global_hydra import GlobalHydra
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def build(env="crossing_2agent", shaping="dijkstra"):
+def build(env="gap_2agent", shaping="dijkstra"):
     from src.env.factory import build_env
     GlobalHydra.instance().clear()
     with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
@@ -67,7 +67,7 @@ def test_omega_penalty_charges_constant_rate_spin():
     env = build()
     env.reset(seed=0)
     coef = env.omega_penalty
-    assert coef < 0, "crossing_2agent must set reward.omega_penalty, and it is negative"
+    assert coef < 0, "gap_2agent must set reward.omega_penalty, and it is negative"
 
     a0 = env.possible_agents[0]
     env._states[0][3] = 0.0          # not translating
@@ -95,7 +95,7 @@ def test_checkpoint_obs_dim_mismatch_names_the_cause():
     check_obs_dim(trained_on_swap1, 11, "agent_0", "ckpt.pt")          # matching env: silent
 
     with pytest.raises(ValueError) as e:
-        check_obs_dim(trained_on_swap1, 25, "agent_0", "ckpt.pt")      # crossing_2agent
+        check_obs_dim(trained_on_swap1, 25, "agent_0", "ckpt.pt")      # gap_2agent
     msg = str(e.value)
     assert "11" in msg and "25" in msg and "ckpt.pt" in msg
 
@@ -161,3 +161,41 @@ def test_wrong_signed_reward_coefficient_is_rejected():
         check_reward_signs({"collision": 2.0})                   # would reward crashing
     with pytest.raises(ValueError, match="reach"):
         check_reward_signs({"reach": -50.0})
+
+
+def test_circle_obstacle_is_built_encoded_and_collided():
+    """crossing_2agent was the only config with `shape: {type: circle}` as an OBSTACLE.
+
+    Robot shapes still cover CircleShape, and gap_2agent's boxes cover the circle-box
+    collision branch, but nothing left in conf/ sends a circle through build_obstacle,
+    Obstacle.obs_repr or the obstacle half of the observation. Deleting that scenario
+    would have dropped the path silently, so it is exercised here directly.
+    """
+    from omegaconf import OmegaConf
+
+    from src.collision.shapes import CircleShape, collides
+    from src.env.factory import build_env
+
+    GlobalHydra.instance().clear()
+    with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
+        cfg = compose("config", overrides=["env=gap_2agent", "shaping=euclidean", "init=fixed"])
+    cfg.env.obstacles = OmegaConf.create(
+        [{"x": 3.0, "y": 2.5, "shape": {"type": "circle", "radius": 0.45}}]
+    )
+    env = build_env(cfg)
+    obs, _ = env.reset(seed=0)
+
+    obstacle = env._obstacles[0]
+    assert isinstance(obstacle.shape, CircleShape)
+    # Circles are shape-unified into the box encoding as [r, r, sin 0, cos 0].
+    assert list(obstacle.obs_repr[2:]) == [0.45, 0.45, 0.0, 1.0]
+
+    for a in env.possible_agents:
+        assert obs[a].shape == tuple(env.observation_space(a).shape)
+        assert np.all(np.isfinite(obs[a]))
+
+    # One circle, so the obstacle block is 6 wide: 2 heading + 3 goal + 2 other + 6 + 4 wall + 2 dyn.
+    assert obs["agent_0"].shape == (19,)
+    r = env.robots[0].shape
+    assert collides(r, (3.0, 2.5, 0.0), obstacle.shape, obstacle.pose)
+    assert not collides(r, (3.0, 0.5, 0.0), obstacle.shape, obstacle.pose)

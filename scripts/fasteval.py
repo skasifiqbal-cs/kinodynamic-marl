@@ -11,7 +11,7 @@ Usage (hydra overrides identical to training):
         eval.episodes=100
     # Planning
     python scripts/fasteval.py approach=planning approach.method=karc \
-        env=crossing_2agent eval.episodes=100
+        env=gap_2agent eval.episodes=100
 
 Use evaluate.py instead when you want to watch an episode rather than count them.
 

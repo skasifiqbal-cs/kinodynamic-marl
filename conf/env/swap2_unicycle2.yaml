@@ -13,7 +13,7 @@
 #   max_steps  - ours; the benchmark has no horizon.
 #
 # NOTE: both robots sit on the SAME line y=2.5 head-on. There is no lane offset,
-# unlike our hand-made crossing_2agent / gap_2agent. This is the symmetric conflict
+# unlike our hand-made gap_2agent. This is the symmetric conflict
 # that notes/paper2.md lists as unsolved.
 world_size: 5.0
 dt: 0.1              # dynobench unicycle2_v0 dt

@@ -74,7 +74,7 @@ def test_horizon_is_derived_not_hardcoded():
     from src.env.factory import build_env
     from src.shaping.braking_potential import bangbang_time
 
-    for name in ("swap2_unicycle2", "crossing_2agent"):
+    for name in ("swap2_unicycle2", "gap_2agent"):
         env = build_env(_cfg(name))
         env.reset(seed=0)
         h = build_planner(_cfg(name).approach)._auto_horizon(env, 1.5)
@@ -106,7 +106,7 @@ def test_karc_solves_obstacle_scenario_collision_free():
     from src.approach.rollout import run_episode
     from src.env.factory import build_env
 
-    cfg = _cfg("crossing_2agent", **{"approach.method": "karc"})
+    cfg = _cfg("gap_2agent", **{"approach.method": "karc"})
     env = build_env(cfg)
     planner = build_planner(cfg.approach)
     stats, _ = run_episode(env, planner, render=False)

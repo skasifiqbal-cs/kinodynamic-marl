@@ -41,9 +41,10 @@ approach:
     # Number of equal segments the reference path is split into (K-ARC's `m`).
     # Segmentation synchronises milestones so robots share a time grid, which is
     # what makes the inter-robot constraints meaningful. The paper does not publish
-    # its value, and results are SENSITIVE to it -- on the three 2-robot scenarios
-    # (swap2 / crossing / gap) m=1 and m=4 solve all three, while m=2, 3 and 6 each
-    # fail at least one. No m produced a collision, so the cost of a bad m is a robot
+    # its value, and results are SENSITIVE to it -- measured on the three 2-robot
+    # scenarios in the repo at the time (swap2 / crossing_2agent / gap), m=1 and m=4
+    # solved all three while m=2, 3 and 6 each failed at least one. crossing_2agent has
+    # since been deleted as a near-duplicate of gap, so re-sweep before quoting this. No m produced a collision, so the cost of a bad m is a robot
     # that stops short, not one that crashes. Sweep it before reporting anything.
     m_segments: 4
     # Conflict predicate: robots closer than d_min at the same index conflict.

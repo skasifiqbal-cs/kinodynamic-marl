@@ -16,7 +16,7 @@ def _cfgs():
         "eval": {"episodes": 3, "checkpoint": None, "gif_path": "episode.gif"},
     })
     cfg = OmegaConf.create({
-        "env": {"name": "crossing_2agent", "world_size": 9.0},   # hydra's default
+        "env": {"name": "swap2_unicycle2", "world_size": 9.0},   # hydra's default
         "shaping": {"type": "dijkstra"},
         "network": {"type": "gru"},
         "eval": {"episodes": 3, "checkpoint": None, "gif_path": "episode.gif"},
@@ -40,8 +40,8 @@ def test_typed_group_overrides_the_run():
     """Group overrides name a file to compose, so they are taken from cfg wholesale
     rather than applied as key=value."""
     cfg, saved = _cfgs()
-    out = merge_saved(cfg, saved, ["eval.checkpoint=c.pt", "env=crossing_2agent"])
-    assert out.env.name == "crossing_2agent"
+    out = merge_saved(cfg, saved, ["eval.checkpoint=c.pt", "env=swap2_unicycle2"])
+    assert out.env.name == "swap2_unicycle2"
     assert out.env.world_size == 9.0          # the WHOLE group, not just the name
     assert out.shaping.type == "euclidean"    # untyped, still from the run
 

@@ -110,7 +110,6 @@ goal. `unicycle_db` is a **box**, which is why `swap1`/`swap2` render as rectang
 
 | Env | Agents | Robot | Description |
 |---|---|---|---|
-| `crossing_2agent` | 2 | `unicycle_v2` | open workspace, 2 staggered obstacles, robots swap sides |
 | `gap_2agent` | 2 | `unicycle_v2` | head-on through one shared narrow gap |
 | `swap1_unicycle2` | 1 | `unicycle_db` | db-CBS port; single robot, empty world — for testing a *potential* |
 | `swap2_unicycle2` | 2 | `unicycle_db` | db-CBS port; symmetric head-on swap — a *coordination* problem |
