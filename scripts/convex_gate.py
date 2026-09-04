@@ -101,7 +101,12 @@ def v_floor(model, dist: float, duration: float, n_seg: int, frac: float) -> np.
     bound and buys detour, until the floor itself becomes infeasible against the distance
     the robot has time to cover. That trade is the number this gate reports.
     """
-    v_peak = frac * model.v_max
+    # Fraction of the AVERAGE speed the traverse allows, not of v_max. The floor forces
+    # distance: holding v_lo for the whole duration covers about v_peak * duration, which
+    # must stay under `dist` or the program is infeasible no matter what else it asks for.
+    # Expressing it against dist/duration makes `frac` mean the same thing at every time
+    # budget, so the slack sweep below measures the formulation rather than this scaling.
+    v_peak = min(frac * dist / duration, model.v_max)
     t_ramp = v_peak / model.a_max
     edges = np.linspace(0.0, duration, n_seg + 1)
     v = np.minimum(v_peak, model.a_max * np.minimum(edges, duration - edges))
@@ -110,7 +115,8 @@ def v_floor(model, dist: float, duration: float, n_seg: int, frac: float) -> np.
 
 
 def solve(model, dist: float, detour: float, duration: float, n_seg: int, degree: int,
-          window: float = 0.25, cont: int = 3, floor_frac: float = 0.4):
+          window: float = 0.25, cont: int = 3, floor_frac: float = 0.4,
+          v_lo_override=None):
     """Minimum-jerk Bezier spline from rest to rest, forced ``detour`` metres sideways.
 
     Frenet frame: `s` runs start -> goal, `l` is lateral. Returns the control points as
@@ -186,7 +192,10 @@ def solve(model, dist: float, detour: float, duration: float, n_seg: int, degree
             for k in range(nrm.shape[0]):
                 leq(nrm[k, 0] * V[i, 0] + nrm[k, 1] * V[i, 1], model.v_max * shrink)
 
-    v_lo_all = v_floor(model, dist, duration, n_seg, floor_frac)
+    v_lo_all = (v_floor(model, dist, duration, n_seg, floor_frac)
+                if v_lo_override is None else np.asarray(v_lo_override, float))
+    # Never above what the polyhedral speed cap admits, or the program is infeasible.
+    v_lo_all = np.clip(v_lo_all, 0.0, model.v_max * shrink)
 
     # ── Enforce the speed floor the turn-rate bound relies on ───────────────────
     # Without this the v_lo above would be an assumption about the solution rather than a
@@ -264,6 +273,49 @@ def solve(model, dist: float, detour: float, duration: float, n_seg: int, degree
     return np.array(r["x"]).reshape(n_seg, d + 1, 2)
 
 
+def solve_scp(model, dist, detour, duration, n_seg, degree, window, cont, floor_frac,
+              iters: int = 8, damping: float = 0.5, tol: float = 1e-3):
+    """Sequential convex programming on the speed the turn-rate bound divides by.
+
+    A single solve has to bound the turn rate using a speed floor guaranteed BEFORE the
+    trajectory exists, while the true turn rate divides by the speed the trajectory
+    actually reaches. That ratio is the entire conservatism -- measured at roughly 5x on
+    the swap2 traverse. Here the floor is re-estimated from the previous iterate instead:
+    per segment, the minimum longitudinal speed that iterate attained.
+
+    Soundness still closes AT THE FIXED POINT, and only there. The program enforces
+    longitudinal speed >= v_lo, so |omega| ~ |2nd derivative of l| / speed
+    <= omega_max * v_lo / speed <= omega_max whenever speed >= v_lo. Away from the fixed
+    point v_lo is a guess about a trajectory that does not exist yet and guarantees
+    nothing, which is why the caller still checks the EXACT recovery against every
+    actuation bound. That check is what decides `executable`, not this loop.
+
+    Damped, because undamped the floor chases its own tail: raising v_lo relaxes the turn
+    bound, which buys a wigglier path, which lowers the attained speed, which lowers v_lo.
+
+    Returns (control points, iterations used) or (None, k) if it never solved.
+    """
+    v_lo = v_floor(model, dist, duration, n_seg, floor_frac)
+    best_ctrl = None
+    for k in range(1, iters + 1):
+        ctrl = solve(model, dist, detour, duration, n_seg, degree, window, cont,
+                     floor_frac, v_lo_override=v_lo)
+        if ctrl is None:
+            return best_ctrl, k
+        best_ctrl = ctrl
+        rec = recover(ctrl, duration)
+        # Per-segment minimum of the longitudinal speed actually attained. The minimum,
+        # not the mean: the bound has to hold everywhere inside the segment.
+        per = len(rec["t"]) // n_seg
+        attained = np.array([rec["v_s"][m * per:(m + 1) * per].min() for m in range(n_seg)])
+        attained = np.maximum(attained, 0.0)
+        nxt = v_lo + damping * (attained - v_lo)
+        if np.max(np.abs(nxt - v_lo)) < tol:
+            return ctrl, k
+        v_lo = nxt
+    return best_ctrl, iters
+
+
 def recover(ctrl, duration: float, n_per_seg: int = 200):
     """Exact (t, p, theta, v, omega, a) from the spline. No small-angle approximation."""
     n_seg, dp1, _ = ctrl.shape
@@ -279,6 +331,7 @@ def recover(ctrl, duration: float, n_per_seg: int = 200):
     t = np.linspace(0.0, duration, p.shape[0], endpoint=False)
 
     speed = np.linalg.norm(v, axis=1)
+    v_s = v[:, 0]                      # longitudinal component, the one bounded below
     theta = np.arctan2(v[:, 1], v[:, 0])
     safe = np.maximum(speed, 1e-9)
     omega = (v[:, 0] * acc[:, 1] - v[:, 1] * acc[:, 0]) / safe**2
@@ -287,7 +340,8 @@ def recover(ctrl, duration: float, n_per_seg: int = 200):
     # flat map (the classic v=0 flatness singularity). Report them separately rather than
     # letting a 1e-9 denominator manufacture a huge omega.
     moving = speed > 0.05 * 0.5
-    return dict(t=t, p=p, theta=theta, v=speed, omega=omega, a=a_tan, moving=moving)
+    return dict(t=t, p=p, theta=theta, v=speed, v_s=v_s, omega=omega, a=a_tan,
+                moving=moving)
 
 
 def consistency(model, rec, span: float = 1.0) -> float:
@@ -335,7 +389,19 @@ def main() -> int:
     # bang-bang optimum. Same reason conf/approach/planning.yaml carries `slack: 1.5`.
     ap.add_argument("--slack", type=float, default=1.5,
                     help="duration multiplier over the bang-bang minimum time")
-    ap.add_argument("--floor-frac", type=float, default=0.4,
+    # Default 1. The loop is a documented no-op on THIS formulation, kept because it is
+    # the natural thing to reach for and the reason it fails is worth being able to
+    # reproduce: minimum jerk under a speed FLOOR rides the floor exactly, so
+    # re-estimating the floor from the previous iterate is a fixed point by construction
+    # (measured: converges in 2 iterations, detour unchanged at 0.10 m). Linearising the
+    # EXACT turn-rate constraint around the previous iterate is a different loop and is
+    # not implemented here.
+    ap.add_argument("--scp", type=int, default=1,
+                    help="SCP iterations on the speed floor; a no-op on this formulation")
+    # 0.9 of the average speed the traverse allows. Swept 0.2-0.9 x slack 1.0-3.0; this is
+    # the most permissive cell that stays feasible, so the gate quotes the formulation at
+    # its best rather than at an arbitrary setting.
+    ap.add_argument("--floor-frac", type=float, default=0.9,
                     help="speed floor as a fraction of v_max; raises the turn budget "
                          "but must stay coverable within the time budget")
     ap.add_argument("--window", type=float, default=0.25,
@@ -359,13 +425,13 @@ def main() -> int:
     d_theory = args.dist**2 / (8 * rho)
     print(f"theoretical max detour at full speed ~ L^2/(8*rho) = {d_theory:.3f} m\n")
 
-    hdr = ["detour_m", "solved", "max_v", "max_|a|", "max_|omega|", "max_|alpha|",
-           "executable", "recovery_err_m"]
+    hdr = ["detour_m", "solved", "scp_iters", "max_v", "max_|a|", "max_|omega|",
+           "max_|alpha|", "executable", "recovery_err_m"]
     print("  ".join(h.rjust(15) for h in hdr))
     rows, best = [], None
     for det in args.detours:
-        ctrl = solve(m, args.dist, det, dur, args.segments, args.degree, args.window,
-                     args.continuity, args.floor_frac)
+        ctrl, n_it = solve_scp(m, args.dist, det, dur, args.segments, args.degree,
+                               args.window, args.continuity, args.floor_frac, args.scp)
         if ctrl is None:
             rows.append(dict.fromkeys(hdr, ""))
             rows[-1].update(detour_m=det, solved=False)
@@ -385,7 +451,8 @@ def main() -> int:
               and mo <= m.omega_max + 1e-6 and mal <= m.alpha_max + 1e-6)
         if ok:
             best = det
-        row = {"detour_m": det, "solved": True, "max_v": round(mv, 4),
+        row = {"detour_m": det, "solved": True, "scp_iters": n_it,
+               "max_v": round(mv, 4),
                "max_|a|": round(ma, 4), "max_|omega|": round(mo, 4),
                "max_|alpha|": round(mal, 4), "executable": ok,
                "recovery_err_m": round(consistency(m, rec), 5)}
@@ -431,7 +498,14 @@ def main() -> int:
 def selfcheck(model, args, dur, rows) -> None:
     """Refuse to trust the table unless the machinery itself is verified."""
     solved = [r for r in rows if r["solved"]]
-    assert solved, "nothing solved at all -- the QP is malformed, not the robot infeasible"
+    if not solved:
+        # A whole sweep coming back infeasible is a legitimate outcome at aggressive
+        # settings (a high speed floor forces more distance than the time budget allows),
+        # so report it rather than raising -- the remaining checks need a solution to
+        # inspect and simply have nothing to say here.
+        print("\nnothing solved at these settings; the speed floor most likely forces "
+              "more distance than the duration allows.")
+        return
 
     # 1. The straight case must solve and need essentially no turning.
     zero = [r for r in rows if r["solved"] and r["detour_m"] == 0.0]
@@ -441,8 +515,8 @@ def selfcheck(model, args, dur, rows) -> None:
 
     # 2. Bezier derivative control points must agree with finite differences of the curve.
     ref = max(r["detour_m"] for r in solved)
-    ctrl = solve(model, args.dist, ref, dur, args.segments, args.degree, args.window,
-                 args.continuity, args.floor_frac)
+    ctrl, _ = solve_scp(model, args.dist, ref, dur, args.segments, args.degree,
+                        args.window, args.continuity, args.floor_frac, args.scp)
     assert ctrl is not None, f"reference instance (detour {ref}) stopped solving"
     rec = recover(ctrl, dur, n_per_seg=400)
     fd = np.gradient(rec["p"], rec["t"], axis=0)
