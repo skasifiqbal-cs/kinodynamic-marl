@@ -44,11 +44,13 @@ access to. Check it with `echo $WANDB_ENTITY` before you start a long run.
 ## Running
 
 ```bash
-python train.py train.algorithm=mappo env=gap_2agent wandb.enabled=true
+python train.py
 ```
 
-`wandb.enabled=true` is not optional. It stays off by default so the repo still works for people
-without the extra installed, which means it is on you to add it every time.
+`conf/config.yaml` carries the experiment: edit its `env:` and `shaping:` lines to choose one.
+`wandb.enabled` is now `true` there, so runs stream by default and there is no flag to forget --
+which was the failure this section used to warn about. Turn it off in that file if you are
+running without the extra installed.
 
 Curves stream live. At the end, `config.yaml` and `best_agent.pt` are published as an artifact
 (`src/approach/rl/train.py:upload_run_artifact`) — that is what lets me re-run your policy

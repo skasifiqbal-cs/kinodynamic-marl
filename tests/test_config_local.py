@@ -34,7 +34,8 @@ def test_local_experiment_overrides_defaults(tmp_path):
     with initialize_config_dir(config_dir=str(conf), version_base="1.3"):
         cfg = compose("config")
 
-    # Committed defaults are gap_2agent (world 6.0) / dijkstra / episodes 1.
+    # LOCAL sets world 5.0 / braking / episodes 7; whatever conf/config.yaml currently
+    # selects must lose to all three, since local.yaml is listed after _self_.
     assert cfg.env.world_size == 5.0, "local.yaml did not override the env group"
     assert cfg.shaping.type == "braking", "local.yaml did not override the shaping group"
     assert cfg.eval.episodes == 7, "local.yaml lost to _self_ -- it must be listed last"
@@ -48,5 +49,9 @@ def test_composes_without_local_experiment(tmp_path):
 
     with initialize_config_dir(config_dir=str(conf), version_base="1.3"):
         cfg = compose("config")
-    assert cfg.env.world_size == 6.0
-    assert cfg.shaping.type == "dijkstra"
+    # Assert the mechanism, not the committed experiment: conf/config.yaml's env/shaping
+    # lines ARE the experiment selection now, so pinning their values here would fail the
+    # suite every time someone switches scenario.
+    assert cfg.env.agents and cfg.env.world_size > 0
+    assert cfg.shaping.type
+    assert cfg.network.type and cfg.train.timesteps   # approach still supplies both

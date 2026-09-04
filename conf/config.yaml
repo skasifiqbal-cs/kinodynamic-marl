@@ -2,23 +2,32 @@ defaults:
   # `approach` also pulls in the groups that are specific to it: the RL approach
   # owns network/ and train/, so a planning run has neither.
   - approach: reinforcement_learning  # conf/approach/*.yaml — reinforcement_learning | planning
-  - env: gap_2agent       # conf/env/*.yaml — full scenario (world + obstacles + agents)
-  - shaping: dijkstra    # conf/shaping/*.yaml — none | euclidean | dubins | dijkstra
+  - env: open_cross_4_unicycle2      # conf/env/*.yaml — full scenario (world + obstacles + agents)
+  - shaping: euclidean    # conf/shaping/*.yaml — none | euclidean | dubins | dijkstra
   - obs: full_state      # conf/obs/*.yaml — full_state | lidar
   - init: fixed          # conf/init/*.yaml — fixed | random_heading | random
   - _self_
-  # YOUR experiment goes in conf/experiment/local.yaml, which is gitignored — see
-  # conf/experiment/local.yaml.example. `optional` means Hydra silently skips it when
-  # the file is absent, so a fresh clone runs the defaults above unchanged. Listed
-  # last so it overrides everything, and untracked so two people changing experiments
-  # never collide in this file. Do NOT edit the defaults above to switch experiments.
+  # Experiments are selected by editing the `env:` and `shaping:` lines ABOVE. That makes
+  # this file conflict whenever two people run different things; when it does, take the
+  # INCOMING side of the `defaults:` block whole — it carries structure, not experiment
+  # choice — then re-apply your own env/shaping. Keeping both sides is what produces
+  # "network appears more than once in the final defaults list": commit fedd59f moved
+  # `- network:` and `- train:` out of here into conf/approach/reinforcement_learning.yaml,
+  # so a resolution that keeps the old lines next to `- approach:` lists both groups twice.
+  #
+  # conf/experiment/local.yaml stays available as an opt-out for anyone who does not want
+  # that: `optional` means Hydra skips it silently when the file is absent, and it is
+  # gitignored and listed last, so it overrides everything above without being committed.
   - optional experiment: local
 
 # Robot yamls live in conf/robot/ and are loaded at runtime by name (no listing needed here).
 # To add a robot: create conf/robot/my_robot.yaml and reference it in an env yaml.
 
 wandb:
-  enabled: false
+  # On by default: docs/dhrubo_wandb.md's top failure mode is forgetting the flag and
+  # losing a run to a local-only log. Needs the extra -- pip install -e ".[dev,wandb]" --
+  # so set this to false if you are running without it.
+  enabled: true
   project: kinodynamic-rl
   # Which W&B account/team the runs land in. Defaults to $WANDB_ENTITY so a collaborator
   # sets it once in their shell; left unset, runs go to whoever is logged in locally,
