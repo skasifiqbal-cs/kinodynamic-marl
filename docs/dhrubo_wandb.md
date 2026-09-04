@@ -12,9 +12,20 @@ Ask me for the invite to the `kinodynamic-rl` project and accept it — sign up 
 university address, the academic tier is free. Then:
 
 ```bash
+python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev,wandb]"
 wandb login                       # paste the key from wandb.ai/authorize
 ```
+
+The venv line is not optional, and this doc used to omit it. Installing into a conda `base`
+environment puts torch, numpy and protobuf on top of whatever else lives there, which breaks
+the other packages and can break `wandb login` outright: a stale `protobuf-*.egg` left in an
+Anaconda `site-packages` gets prepended to `sys.path` by `easy-install.pth`, shadowing the
+protobuf pip just installed, and its `google/__init__.py` calls `pkg_resources.declare_namespace`,
+which newer setuptools removed. The traceback names the `.egg` path. A venv has none of that,
+so make one rather than trying to repair the conda env.
+
+Activate it in every new shell (`source .venv/bin/activate`) before running anything here.
 
 `wandb login` writes the key to `~/.netrc`. It does not belong in the repo, in a config file, or
 in a shell script you commit — if it ever lands in a commit, tell me and rotate it, don't just
