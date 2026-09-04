@@ -55,6 +55,7 @@ ignore = [
 # src/ imports it enables, which is the order isort wants to undo. Not imported by src/.
 "scripts/ics_diag.py" = ["E701", "E702", "E731", "I001"]
 "scripts/probe_progress.py" = ["E701", "E702", "I001"]
+"scripts/gen_open_cross.py" = ["I001"]
 "scripts/shaping_gap.py" = ["E702"]
 "scripts/convex_gate.py" = ["E702"]
 

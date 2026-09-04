@@ -114,6 +114,7 @@ goal. `unicycle_db` is a **box**, which is why `swap1`/`swap2` render as rectang
 | `gap_2agent` | 2 | `unicycle_v2` | head-on through one shared narrow gap |
 | `swap1_unicycle2` | 1 | `unicycle_db` | db-CBS port; single robot, empty world — for testing a *potential* |
 | `swap2_unicycle2` | 2 | `unicycle_db` | db-CBS port; symmetric head-on swap — a *coordination* problem |
+| `open_cross_{4,8,16,32}` | 4–32 | `unicycle_db` | K-ARC Open Cross port; N/2 symmetric head-on rows, empty world. Generated — run `python scripts/gen_open_cross.py`, don't hand-edit |
 
 ## Shaping potentials (`shaping=…`)
 
