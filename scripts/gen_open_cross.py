@@ -25,6 +25,11 @@ SIZES = (2, 4, 8, 16, 32)
 S_Y = 1.0        # row spacing = unicycle_db turning radius v_max/omega_max = 0.5/0.5
 MARGIN = 1.0     # clear space between the outermost row and the wall
 TRAVERSE = 3.0   # start-to-goal distance, held constant across N (see header below)
+# Uniform across N, and forced rather than chosen: N=32 needs 15*S_Y + 2*MARGIN. Sizing
+# each N to its own row block instead would make free area per robot NON-MONOTONIC
+# (6.25, 3.13, 5.06, 9.03 m^2 at N = 4, 8, 16, 32 -- the largest instance the roomiest),
+# so a curve against N would not be measuring congestion. One world gives 289/N exactly.
+WORLD = 17.0
 PI = 3.14159
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,10 +48,16 @@ def geometry(n: int):
     if n < 2 or n % 2:
         raise ValueError(f"N must be even and >= 2, got {n}")
     rows = n // 2
-    world = max(5.0, (rows - 1) * S_Y + 2 * MARGIN)
-    cx = world / 2
+    needed = (rows - 1) * S_Y + 2 * MARGIN
+    if needed > WORLD:
+        raise ValueError(
+            f"N={n} needs {num(needed)} m of world at row spacing {num(S_Y)}, WORLD is "
+            f"{num(WORLD)}. Raise WORLD -- do NOT shrink S_Y, it is already close to the "
+            f"unicycle_db body diagonal."
+        )
+    cx = WORLD / 2
     ys = [cx + (k - (rows - 1) / 2) * S_Y for k in range(rows)]
-    return world, cx - TRAVERSE / 2, cx + TRAVERSE / 2, ys
+    return WORLD, cx - TRAVERSE / 2, cx + TRAVERSE / 2, ys
 
 
 def render(n: int) -> str:
@@ -54,6 +65,7 @@ def render(n: int) -> str:
     rows = len(ys)
     obs_dim = FullStateObsBuilder(n, 0, world, n_dyn=2).obs_dim()
     max_steps = 300 if n <= 8 else 600
+    area = world ** 2 / n
 
     agents = []
     for k, y in enumerate(ys):
@@ -88,7 +100,7 @@ def render(n: int) -> str:
 #                src/obs/full_state.py:96-99 uses it for both axes, so the wide short box
 #                of their Fig. 2(a) is not expressible here.
 #   traverse   - held at {num(TRAVERSE)} m for every N on purpose, so runtime against N
-#                measures congestion and not distance. Only the world grows.
+#                measures congestion, not distance.
 #   robot      - conf/robot/unicycle_db.yaml (dynobench unicycle2_v0); its own deviations
 #                from db-CBS are listed in that file.
 #   reward     - ours. K-ARC is a planner and carries no reward.
@@ -99,6 +111,13 @@ def render(n: int) -> str:
 # records as unsolved. A shared-weights policy sees mirrored observations and produces
 # mirrored actions, so expect pairs to drive into each other. That is a result to log
 # (per-row collision rate), not a bug to fix by offsetting the lanes.
+#
+# The world is the SAME {num(world)} x {num(world)} at every N and only the robot count changes,
+# so free area per robot is {num(WORLD ** 2)}/N = {area:.2f} m^2 here, and falls monotonically
+# across the sweep. Sizing each N to its own row block instead would make it
+# NON-monotonic — 6.25, 3.13, 5.06, 9.03 m^2 at N = 4, 8, 16, 32, the largest instance the
+# roomiest — and would also rescale the wall-distance observations, which full_state.py
+# divides by world_size. Either one confounds a curve plotted against N.
 #
 # Observation is 11 + 2*(N-1) = {obs_dim} wide, so a policy trained here will not load at a
 # different N. Every N is its own run.
@@ -136,30 +155,36 @@ agents:
 
 
 def check() -> None:
-    """N=2 must reproduce swap2_unicycle2.yaml, which was ported by hand from db-CBS.
+    """N=2 must be swap2_unicycle2.yaml, re-centred in the uniform world.
 
-    If the formula is right at N=2 it is right at every N, because only `rows` changes.
-    Compared field by field against the real file so the two cannot drift apart.
+    swap2 was ported by hand from db-CBS into its own 5.0 m world; ours is WORLD for every
+    N, so the one licensed difference is a rigid translation of (WORLD - 5.0)/2 on both
+    axes. Everything else — every reward field, every flag, both headings, the 3.0 m
+    traverse — has to match the real file, so the two cannot drift apart.
     """
     ref = yaml.safe_load(REFERENCE.read_text())
     got = yaml.safe_load(render(2))
+    shift = (WORLD - ref["world_size"]) / 2
 
-    for key in ("world_size", "dt", "max_steps", "goal_radius", "stop_speed",
-                "omega_max_override", "terminate_on_collision", "require_stop_at_goal",
-                "obstacles", "reward"):
+    assert got["world_size"] == WORLD, got["world_size"]
+    for key in ("dt", "max_steps", "goal_radius", "stop_speed", "omega_max_override",
+                "terminate_on_collision", "require_stop_at_goal", "obstacles", "reward"):
         assert got[key] == ref[key], f"N=2 {key}: {got[key]!r} != swap2's {ref[key]!r}"
 
     assert len(got["agents"]) == 2, got["agents"]
     for g, r in zip(got["agents"], ref["agents"]):
         assert g["id"] == r["id"] and g["robot"] == r["robot"], (g, r)
         for field in ("start", "goal"):
-            # theta only to 2dp: swap2 writes db-CBS's literal 3.14, we write 3.14159.
-            assert all(abs(a - b) < 2e-3 for a, b in zip(g[field], r[field])), \
-                f"N=2 {g['id']} {field}: {g[field]} != swap2's {r[field]}"
+            # Translate x and y, leave theta and the two zero velocities alone. theta only
+            # to 2dp: swap2 writes db-CBS's literal 3.14, we write 3.14159.
+            want = [r[field][0] + shift, r[field][1] + shift, *r[field][2:]]
+            assert all(abs(a - b) < 2e-3 for a, b in zip(g[field], want)), \
+                f"N=2 {g['id']} {field}: {g[field]} != swap2's {r[field]} shifted by {shift}"
 
-    # N=2 exercises neither S_Y nor MARGIN — one row zeroes the spacing term and the 5.0
-    # floor swallows the margin — so matching swap2 does NOT on its own make the formula
-    # right at every N. These are the invariants only the multi-row sizes can violate.
+    # N=2 exercises neither S_Y nor MARGIN — one row zeroes the spacing term, and with a
+    # uniform world the margin is slack at every N below 32 — so matching swap2 does NOT
+    # on its own make the formula right at every N. These are what only multi-row sizes
+    # can violate, plus the density claim the uniform world is there to support.
     shape = yaml.safe_load(ROBOT.read_text())["shape"]
     body = math.hypot(shape["width"], shape["length"])  # rotation-invariant body diameter
     assert S_Y > body, f"row spacing {S_Y} <= unicycle_db body diameter {body:.4f}"
@@ -172,6 +197,11 @@ def check() -> None:
         assert all(abs((b - a) - S_Y) < 1e-9 for a, b in zip(ys, ys[1:])), f"N={n} spacing"
         assert ys[0] >= MARGIN - 1e-9 and ys[-1] <= world - MARGIN + 1e-9, f"N={n} y margin"
         assert x_left >= MARGIN - 1e-9 and x_right <= world - MARGIN + 1e-9, f"N={n} x margin"
+        assert world == WORLD, f"N={n} world {world} != uniform {WORLD}"
+    # Free area per robot must fall monotonically with N, or "runtime vs N" is not a
+    # congestion curve. This is the whole reason the world does not shrink with N.
+    area = [WORLD**2 / n for n in SIZES]
+    assert area == sorted(area, reverse=True), dict(zip(SIZES, area))
 
 
 def main() -> None:

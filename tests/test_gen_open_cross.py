@@ -32,11 +32,27 @@ def test_every_size_renders_valid_yaml_with_n_agents():
                 assert all(0.3 < c < world - 0.3 for c in a[field][:2]), (n, a["id"], field)
 
 
-def test_world_grows_but_traverse_does_not():
-    """Runtime against N has to measure congestion, not distance."""
-    worlds = [geometry(n)[0] for n in SIZES]
-    assert worlds == sorted(worlds) and worlds[-1] > worlds[0]
+def test_only_the_robot_count_varies_with_n():
+    """Runtime against N has to measure congestion, so nothing else may move with N.
+
+    World and traverse are both fixed, which makes free area per robot fall as 1/N. A
+    per-N world would make it non-monotonic (6.25, 3.13, 5.06, 9.03 m^2 at N = 4, 8, 16,
+    32) and would also rescale full_state.py's wall features, which divide by world_size.
+    """
+    assert len({geometry(n)[0] for n in SIZES}) == 1
     assert {round(geometry(n)[2] - geometry(n)[1], 9) for n in SIZES} == {3.0}
+    area = [geometry(n)[0] ** 2 / n for n in SIZES]
+    assert area == sorted(area, reverse=True), dict(zip(SIZES, area))
+
+
+def test_n_that_does_not_fit_the_world_is_rejected():
+    """Rows must not be packed below the body diagonal to fit — raise instead."""
+    try:
+        geometry(64)
+    except ValueError as e:
+        assert "needs" in str(e) and "WORLD" in str(e), e
+    else:
+        raise AssertionError("geometry(64) does not fit in a 17 m world; it must raise")
 
 
 def test_odd_or_undersized_n_is_rejected():

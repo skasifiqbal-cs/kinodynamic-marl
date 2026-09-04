@@ -15,7 +15,7 @@
 #                src/obs/full_state.py:96-99 uses it for both axes, so the wide short box
 #                of their Fig. 2(a) is not expressible here.
 #   traverse   - held at 3.0 m for every N on purpose, so runtime against N
-#                measures congestion and not distance. Only the world grows.
+#                measures congestion, not distance.
 #   robot      - conf/robot/unicycle_db.yaml (dynobench unicycle2_v0); its own deviations
 #                from db-CBS are listed in that file.
 #   reward     - ours. K-ARC is a planner and carries no reward.
@@ -26,6 +26,13 @@
 # records as unsolved. A shared-weights policy sees mirrored observations and produces
 # mirrored actions, so expect pairs to drive into each other. That is a result to log
 # (per-row collision rate), not a bug to fix by offsetting the lanes.
+#
+# The world is the SAME 17.0 x 17.0 at every N and only the robot count changes,
+# so free area per robot is 289.0/N = 9.03 m^2 here, and falls monotonically
+# across the sweep. Sizing each N to its own row block instead would make it
+# NON-monotonic — 6.25, 3.13, 5.06, 9.03 m^2 at N = 4, 8, 16, 32, the largest instance the
+# roomiest — and would also rescale the wall-distance observations, which full_state.py
+# divides by world_size. Either one confounds a curve plotted against N.
 #
 # Observation is 11 + 2*(N-1) = 73 wide, so a policy trained here will not load at a
 # different N. Every N is its own run.
