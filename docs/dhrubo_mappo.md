@@ -63,7 +63,7 @@ comparison means nothing. Separate PR. And don't remove the IPPO path; it is the
 
 ## Reporting runs
 
-Set up W&B before your first real run — `docs/dhrubo_wandb.md`, one page, do it once. Short
+How results get sent — `docs/results.md`, one page, read it once. Short
 version: results reach me through W&B, not the repo, and `wandb.enabled=true` goes on every
 training command.
 

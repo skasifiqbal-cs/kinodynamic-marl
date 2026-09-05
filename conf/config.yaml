@@ -24,14 +24,13 @@ defaults:
 # To add a robot: create conf/robot/my_robot.yaml and reference it in an env yaml.
 
 wandb:
-  # On by default: docs/dhrubo_wandb.md's top failure mode is forgetting the flag and
-  # losing a run to a local-only log. Needs the extra -- pip install -e ".[dev,wandb]" --
-  # so set this to false if you are running without it.
-  enabled: true
+  # Off: results move by scp, not upload -- see docs/results.md. Turn on for a run you
+  # want to watch live from another machine, or when scp cannot reach the trainer.
+  enabled: false
   project: kinodynamic-rl
   # Which W&B account/team the runs land in. Defaults to $WANDB_ENTITY so a collaborator
   # sets it once in their shell; left unset, runs go to whoever is logged in locally,
-  # where the rest of us cannot see them. See docs/dhrubo_wandb.md.
+  # where the rest of us cannot see them. See docs/results.md.
   entity: ${oc.env:WANDB_ENTITY,null}
 
 eval:
