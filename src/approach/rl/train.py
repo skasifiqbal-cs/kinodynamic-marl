@@ -5,6 +5,7 @@ the planning approach builds the same env from the same config.
 """
 from __future__ import annotations
 
+import os
 import pathlib
 from datetime import datetime
 
@@ -23,6 +24,17 @@ from src.networks import build_policy, build_value
 
 def run_training(cfg: DictConfig) -> None:
     torch.manual_seed(cfg.train.seed)
+    # A 128x128 MLP on a 17-dim observation does not fill a thread pool. Torch defaults to
+    # one thread per core and then spends more on synchronising them than on the matmul --
+    # measured 16% faster wall-clock at one thread on a 32-core box. It also stops several
+    # concurrent runs from fighting over the same cores, which is the actual way to use a
+    # many-core machine here: rollout is ~92% env stepping, which is single-threaded Python.
+    # An explicit OMP_NUM_THREADS wins, so a larger network can opt out.
+    if "OMP_NUM_THREADS" not in os.environ:
+        torch.set_num_threads(1)
+    # GPU is used automatically when present. It is not the lever: the networks are ~7% of
+    # per-step cost here, so a GPU cannot touch the rest and its per-step launch latency can
+    # make the rollout slower. Worth re-checking only if the networks grow a lot.
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     num_envs = int(cfg.train.get("num_envs", 1))
