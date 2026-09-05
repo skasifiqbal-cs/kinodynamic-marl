@@ -8,7 +8,15 @@ generated configs from the file they claim to extend.
 """
 import yaml
 
-from scripts.gen_open_cross import SIZES, check, geometry, render
+from scripts.gen_open_cross import (
+    SIZES,
+    USABLE,
+    body_diameter,
+    check,
+    geometry,
+    render,
+    row_spacing,
+)
 
 
 def test_generator_self_check():
@@ -35,14 +43,25 @@ def test_every_size_renders_valid_yaml_with_n_agents():
 def test_only_the_robot_count_varies_with_n():
     """Runtime against N has to measure congestion, so nothing else may move with N.
 
-    World and traverse are both fixed, which makes free area per robot fall as 1/N. A
-    per-N world would make it non-monotonic (6.25, 3.13, 5.06, 9.03 m^2 at N = 4, 8, 16,
-    32) and would also rescale full_state.py's wall features, which divide by world_size.
+    World and traverse are both fixed; N buys crowding by packing the rows closer into
+    the same height. A per-N world would instead rescale full_state.py's wall features,
+    which divide by world_size, confounding any curve plotted against N.
     """
     assert len({geometry(n)[0] for n in SIZES}) == 1
-    assert {round(geometry(n)[2] - geometry(n)[1], 9) for n in SIZES} == {3.0}
+    assert {round(geometry(n)[2] - geometry(n)[1], 9) for n in SIZES} == {USABLE}
     area = [geometry(n)[0] ** 2 / n for n in SIZES]
     assert area == sorted(area, reverse=True), dict(zip(SIZES, area))
+
+
+def test_rows_pack_closer_as_n_grows_but_never_overlap():
+    """The congestion mechanism. Spacing must fall with N and stay above the body size."""
+    gaps = [row_spacing(n // 2) for n in SIZES if n > 2]
+    assert gaps == sorted(gaps, reverse=True), gaps
+    assert min(gaps) > body_diameter()
+    # Every robot's body clears the walls at the extreme rows too.
+    for n in SIZES:
+        world, _, _, ys = geometry(n)
+        assert ys[0] > body_diameter() / 2 and ys[-1] < world - body_diameter() / 2
 
 
 def test_n_that_does_not_fit_the_world_is_rejected():
@@ -50,9 +69,9 @@ def test_n_that_does_not_fit_the_world_is_rejected():
     try:
         geometry(64)
     except ValueError as e:
-        assert "needs" in str(e) and "WORLD" in str(e), e
+        assert "body diagonal" in str(e) and "overlap" in str(e), e
     else:
-        raise AssertionError("geometry(64) does not fit in a 17 m world; it must raise")
+        raise AssertionError("geometry(64) packs rows below the body diagonal; must raise")
 
 
 def test_odd_or_undersized_n_is_rejected():

@@ -5,7 +5,9 @@
 # Their description of the benchmark, in full: "robots on the same row need to swap
 # positions in an empty environment". So 2 rows, each holding one head-on pair that
 # swaps across the workspace, mirrored about the vertical centreline x=8.5.
-# Row spacing 1.0 m = the unicycle_db turning radius v_max/omega_max = 0.5/0.5.
+# Robots start at the walls and cross the whole world: x 1.0 <-> 16.0, a
+# 15.0 m traverse. Rows are spread over the same 15.0 m of height, so the
+# spacing here is 15.000 m.
 #
 # KNOWN DEVIATIONS. This is a SCENARIO PORT, not a benchmark reproduction. K-ARC
 # publishes no workspace dimensions, no d_min, no segment count, no timestep and no
@@ -14,8 +16,8 @@
 #   world      - square, 17.0 x 17.0. `world_size` is a single scalar and
 #                src/obs/full_state.py:96-99 uses it for both axes, so the wide short box
 #                of their Fig. 2(a) is not expressible here.
-#   traverse   - held at 3.0 m for every N on purpose, so runtime against N
-#                measures congestion, not distance.
+#   traverse   - the full 15.0 m width at every N, so the distance term in any
+#                runtime measurement is identical and only crowding varies.
 #   robot      - conf/robot/unicycle_db.yaml (dynobench unicycle2_v0); its own deviations
 #                from db-CBS are listed in that file.
 #   reward     - ours. K-ARC is a planner and carries no reward.
@@ -27,12 +29,13 @@
 # mirrored actions, so expect pairs to drive into each other. That is a result to log
 # (per-row collision rate), not a bug to fix by offsetting the lanes.
 #
-# The world is the SAME 17.0 x 17.0 at every N and only the robot count changes,
-# so free area per robot is 289.0/N = 72.25 m^2 here, and falls monotonically
-# across the sweep. Sizing each N to its own row block instead would make it
-# NON-monotonic — 6.25, 3.13, 5.06, 9.03 m^2 at N = 4, 8, 16, 32, the largest instance the
-# roomiest — and would also rescale the wall-distance observations, which full_state.py
-# divides by world_size. Either one confounds a curve plotted against N.
+# N is the congestion knob, and it is the ONLY thing that varies. The world stays
+# 17.0 x 17.0 and the traverse stays 15.0 m; what changes is how tightly the
+# rows pack into the same height. Row spacing is 15.0/(N/2 - 1): 15.000 m at N=4,
+# 5.000 at N=8, 2.143 at N=16, 1.000 at N=32 — down to the unicycle_db turning radius, and
+# still clear of its 0.559 m body diagonal. Free area per robot falls as 289.0/N
+# = 72.25 m^2 here. A per-N world would instead rescale the wall-distance observations,
+# which full_state.py divides by world_size, confounding any curve plotted against N.
 #
 # Observation is 11 + 2*(N-1) = 17 wide, so a policy trained here will not load at a
 # different N. Every N is its own run.
@@ -41,7 +44,7 @@
 # Collision checking is O(N^2) — time one episode before queueing a long run at N=32.
 world_size: 17.0
 dt: 0.1              # dynobench unicycle2_v0 dt
-max_steps: 300       # 30.0 s; the 3.0 m traverse at v_max=0.5 needs >= 6 s plus braking
+max_steps: 650       # 65.0 s = 2x the 32.0 s bang-bang solo crossing of 15.0 m
 goal_radius: 0.2
 
 reward:
@@ -66,18 +69,18 @@ obstacles: []
 
 agents:
   - id: agent_0
-    start: [7.0, 8.0, 0.0, 0.0, 0.0]
-    goal:  [10.0, 8.0, 0.0, 0.0, 0.0]
+    start: [1.0, 1.0, 0.0, 0.0, 0.0]
+    goal:  [16.0, 1.0, 0.0, 0.0, 0.0]
     robot: unicycle_db
   - id: agent_1
-    start: [10.0, 8.0, 3.14159, 0.0, 0.0]
-    goal:  [7.0, 8.0, 3.14159, 0.0, 0.0]
+    start: [16.0, 1.0, 3.14159, 0.0, 0.0]
+    goal:  [1.0, 1.0, 3.14159, 0.0, 0.0]
     robot: unicycle_db
   - id: agent_2
-    start: [7.0, 9.0, 0.0, 0.0, 0.0]
-    goal:  [10.0, 9.0, 0.0, 0.0, 0.0]
+    start: [1.0, 16.0, 0.0, 0.0, 0.0]
+    goal:  [16.0, 16.0, 0.0, 0.0, 0.0]
     robot: unicycle_db
   - id: agent_3
-    start: [10.0, 9.0, 3.14159, 0.0, 0.0]
-    goal:  [7.0, 9.0, 3.14159, 0.0, 0.0]
+    start: [16.0, 16.0, 3.14159, 0.0, 0.0]
+    goal:  [1.0, 16.0, 3.14159, 0.0, 0.0]
     robot: unicycle_db
