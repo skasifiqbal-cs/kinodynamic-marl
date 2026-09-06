@@ -2,6 +2,17 @@
 timesteps: 1_000_000
 num_envs: 16          # parallel actors. Each PPO update sees rollouts x num_envs transitions
                      # -> lower-variance gradient, denser reach signal. 1 = old single-env path.
+                     # COST: the vec env is a serial Python loop, so a timestep costs
+                     # O(num_envs x N x N). Measured at N=32: 12.3 it/s at 16, 33.4 at 4.
+                     # With share_policy the shared net still sees N x num_envs x rollouts
+                     # per update cycle, so at large N drop this: 16 (N<=8), 8 (N=16), 4 (N=32).
+share_policy: false   # one policy+value shared by every agent, instead of one pair each.
+                      # Valid only for a homogeneous team (identical obs/action spaces --
+                      # asserted at build time). Separate nets at N=32 mean 64 networks each
+                      # trained on 1/32 of the experience; sharing pools it. Costs nothing in
+                      # wall-clock (skrl still loops per agent) -- the win is sample efficiency,
+                      # which is what lets num_envs come down. Keep false to reproduce runs
+                      # before 2026-09-06.
 rollouts: 256
 learning_rate: 5.0e-5      # gentler — damps the reach-then-diverge oscillation
 discount: 0.99

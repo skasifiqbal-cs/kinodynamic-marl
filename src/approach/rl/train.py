@@ -22,6 +22,47 @@ from src.env.factory import build_env
 from src.networks import build_policy, build_value
 
 
+def build_models(env, cfg, device) -> dict[str, dict]:
+    """One policy+value pair per agent, or ONE pair shared by all of them.
+
+    Parameter sharing (``train.share_policy``) exists because the teams here are homogeneous:
+    with separate nets, open_cross at N=32 trains 64 networks on 1/32 of the experience each.
+    Sharing pools it into one network, which is what pays for running fewer parallel envs.
+    skrl keeps one optimizer per agent, so shared weights get N sequential updates per cycle
+    and still see N x num_envs x rollouts transitions.
+    """
+    share = bool(cfg.train.get("share_policy", False))
+    first = env.possible_agents[0]
+    models: dict[str, dict] = {}
+    shared: dict | None = None
+
+    for agent_id in env.possible_agents:
+        obs_sp = env.observation_space(agent_id)
+        act_sp = env.action_space(agent_id)
+        if share and agent_id != first:
+            # A mixed team does not even fit the same input layer. Torch would report that as
+            # a shape mismatch deep in a forward pass, which does not name the cause.
+            ref_obs, ref_act = env.observation_space(first), env.action_space(first)
+            if obs_sp.shape != ref_obs.shape or act_sp.shape != ref_act.shape:
+                raise ValueError(
+                    f"train.share_policy=true needs a homogeneous team, but {agent_id} has "
+                    f"obs{obs_sp.shape}/act{act_sp.shape} against {first}'s "
+                    f"obs{ref_obs.shape}/act{ref_act.shape}. "
+                    "Set train.share_policy=false for a mixed-robot scenario."
+                )
+        if share:
+            if shared is None:
+                shared = {"policy": build_policy(obs_sp, act_sp, device, cfg.network).to(device),
+                          "value":  build_value(obs_sp, act_sp, device, cfg.network).to(device)}
+            models[agent_id] = shared
+        else:
+            models[agent_id] = {
+                "policy": build_policy(obs_sp, act_sp, device, cfg.network).to(device),
+                "value":  build_value(obs_sp, act_sp, device, cfg.network).to(device),
+            }
+    return models
+
+
 def run_training(cfg: DictConfig) -> None:
     torch.manual_seed(cfg.train.seed)
     # A 128x128 MLP on a 17-dim observation does not fill a thread pool. Torch defaults to
@@ -50,17 +91,9 @@ def run_training(cfg: DictConfig) -> None:
 
     rollouts = cfg.train.rollouts
 
-    models: dict[str, dict] = {}
-    memories: dict[str, object] = {}
-
-    for agent_id in env.possible_agents:
-        obs_sp = env.observation_space(agent_id)
-        act_sp = env.action_space(agent_id)
-        models[agent_id] = {
-            "policy": build_policy(obs_sp, act_sp, device, cfg.network).to(device),
-            "value":  build_value(obs_sp, act_sp, device, cfg.network).to(device),
-        }
-        memories[agent_id] = RandomMemory(memory_size=rollouts, num_envs=num_envs, device=device)
+    models = build_models(env, cfg, device)
+    memories = {a: RandomMemory(memory_size=rollouts, num_envs=num_envs, device=device)
+                for a in env.possible_agents}
 
     wandb_cfg = cfg.get("wandb", {})
     use_wandb = bool(wandb_cfg.get("enabled", False))
