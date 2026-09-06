@@ -13,6 +13,10 @@
 # Deviations from the benchmark are the same as swap2_unicycle2.yaml: goal test is
 # position-radius + speed gate rather than one weighted state-space distance; the
 # `reward:` block and max_steps are ours (the benchmark is a planning problem).
+# Identifies the scenario in run directory names and W&B tags. Must match the
+# filename: `python train.py env=swap1_unicycle2` selects this file by it.
+_name_: swap1_unicycle2
+
 world_size: 5.0
 dt: 0.1
 max_steps: 300       # 30 s; the 3 m traverse at v_max=0.5 needs >= 6 s plus braking

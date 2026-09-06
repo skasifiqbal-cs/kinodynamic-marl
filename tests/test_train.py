@@ -99,3 +99,34 @@ def test_envs_x_agents_below_the_agent_count_is_rejected():
                                            "shaping=euclidean", "train.envs_x_agents=16"])
     with pytest.raises(ValueError, match="envs_x_agents"):
         resolve_num_envs(cfg)
+
+
+def test_run_dir_name_separates_scenarios():
+    """Four scenarios launched in one minute used to share a directory and overwrite each
+    other's checkpoints, silently. The env must be part of the name."""
+    from src.approach.rl.train import run_dir_name
+
+    names = set()
+    for n in (4, 8, 16, 32):
+        GlobalHydra.instance().clear()
+        with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
+            cfg = compose("config", overrides=[f"env=open_cross_{n}_unicycle2",
+                                               "shaping=euclidean"])
+        # Outside @hydra.main the group choice is unavailable, so this exercises the fallback;
+        # under a real run the name is the config-group name instead. Either way the four
+        # scenarios must not collapse onto one string.
+        names.add(run_dir_name(cfg))
+    assert len(names) == 4, f"scenarios share a run directory: {names}"
+
+
+def test_every_env_config_names_itself_after_its_file():
+    """`_name_` is what keeps two scenarios out of one run directory, so a new env config
+    that forgets it, or drifts from its filename, must fail here rather than at 2 a.m. when
+    a sweep overwrites its own checkpoints."""
+    import pathlib
+
+    import yaml
+
+    for path in sorted(pathlib.Path(ROOT, "conf", "env").glob("*.yaml")):
+        loaded = yaml.safe_load(path.read_text())
+        assert loaded.get("_name_") == path.stem, f"{path.name}: _name_={loaded.get('_name_')!r}"

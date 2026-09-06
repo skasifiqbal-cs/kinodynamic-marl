@@ -3,6 +3,10 @@
 # narrow gap in a wall. A small lane offset (y=2.7 vs 3.3, gap centred at 3.0) lets them
 # pass side-by-side on opposite sides of the gap — a collision-free optimum exists, but
 # the corridor is tight so the policy must hold its lane while braking/threading.
+# Identifies the scenario in run directory names and W&B tags. Must match the
+# filename: `python train.py env=gap_2agent` selects this file by it.
+_name_: gap_2agent
+
 world_size: 6.0
 dt: 0.05
 max_steps: 500

@@ -151,6 +151,10 @@ def render(n: int) -> str:
 # Prefer shaping=braking or shaping=euclidean, not dijkstra: the world is empty, so the
 # grid buys nothing and costs one solve per agent per env.
 # Collision checking is O(N^2) — time one episode before queueing a long run at N=32.
+# Identifies the scenario in run directory names and W&B tags. Must match the
+# filename: `python train.py env=open_cross_{n}_unicycle2` selects this file by it.
+_name_: open_cross_{n}_unicycle2
+
 world_size: {num(world)}
 dt: 0.1              # dynobench unicycle2_v0 dt
 max_steps: {max_steps}       # {num(max_steps * dt)} s = 2x the {solo:.1f} s bang-bang solo crossing of {num(USABLE)} m

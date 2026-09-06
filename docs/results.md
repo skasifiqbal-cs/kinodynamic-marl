@@ -3,7 +3,7 @@
 Training writes exactly one thing, on whichever machine trains:
 
 ```
-runs/<shaping>_<network>_<obs>/<timestamp>/
+runs/<env>_<shaping>_<network>_<obs>/<timestamp>/
     config.yaml               what it was trained with
     checkpoints/best_agent.pt the policy
     events.out.tfevents...    the curves
@@ -17,7 +17,7 @@ committed, and a full run writes ~18 MB of them.
 ## Sending it (default: scp)
 
 ```bash
-scp -r runs/<shaping>_<network>_<obs>/<timestamp> aditya@<ip>:~/inbox/
+scp -r runs/<env>_<shaping>_<network>_<obs>/<timestamp> aditya@<ip>:~/inbox/
 ```
 
 That is the whole protocol. No account, no upload, nothing to forget. Keep `config.yaml`
@@ -54,7 +54,7 @@ At the end, `config.yaml` + `best_agent.pt` are published as an artifact
 (`src/approach/rl/train.py:upload_run_artifact`), which the receiver pulls with:
 
 ```bash
-wandb artifact get $WANDB_ENTITY/kinodynamic-rl/<shaping>_<network>_<obs>_<timestamp>:latest --root /tmp/check
+wandb artifact get $WANDB_ENTITY/kinodynamic-rl/<env>_<shaping>_<network>_<obs>_<timestamp>:latest --root /tmp/check
 python evaluate.py eval.checkpoint=/tmp/check/checkpoints/best_agent.pt
 ```
 

@@ -88,6 +88,27 @@ def resolve_num_envs(cfg) -> int:
     return int(target) // n_agents
 
 
+def run_dir_name(cfg) -> str:
+    """Directory for this run, under ``runs/``.
+
+    The env goes FIRST and is not optional: the name used to be
+    ``<shaping>_<network>_<obs>``, which is identical for every scenario, so launching
+    open_cross at N=4/8/16/32 in the same minute put four jobs in one directory, where they
+    overwrote each other's config.yaml and checkpoints. Nothing failed -- the runs simply
+    produced one corrupt result instead of four.
+
+    Hydra's chosen config-group name is the scenario's real identity (``open_cross_8_unicycle2``).
+    It is only available under @hydra.main, so callers outside it (tests, notebooks) fall back
+    to the env's own ``_name_``.
+    """
+    try:
+        from hydra.core.hydra_config import HydraConfig
+        env_name = HydraConfig.get().runtime.choices["env"]
+    except Exception:
+        env_name = cfg.env.get("_name_", "custom")
+    return f"{env_name}_{cfg.shaping.type}_{cfg.network.type}_{cfg.obs.type}"
+
+
 def run_training(cfg: DictConfig) -> None:
     torch.manual_seed(cfg.train.seed)
     # A 128x128 MLP on a 17-dim observation does not fill a thread pool. Torch defaults to
@@ -152,8 +173,10 @@ def run_training(cfg: DictConfig) -> None:
         ippo_cfg["value_preprocessor_kwargs"] = {"size": 1, "device": device}
     else:
         ippo_cfg["value_preprocessor"]       = None
-    run_dir = f"{cfg.shaping.type}_{cfg.network.type}_{cfg.obs.type}"
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    run_dir = run_dir_name(cfg)
+    # Seconds, not minutes: two runs of the SAME scenario started together would otherwise
+    # still collide, which is what a sweep launched from one loop does.
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     # Save the config NEXT TO the checkpoints. Hydra already writes it, but into its own
     # outputs/<date>/<time>/ tree with no link back here, and the two timestamps do not
     # even agree — so given a checkpoint there was no way to tell which env trained it.
