@@ -14,7 +14,9 @@ value_preprocessor: false  # random-init returns are bimodal (0..+100 / -500); t
 entropy_loss_scale: 0.01   # steadier exploration for goal-conditioned random-init nav
 kl_threshold: 0.01         # tighter trust region — smaller, more stable updates
 min_lr: 1.0e-5             # KL-adaptive LR floor
-max_lr: 1.0e-4             # KL-adaptive LR ceiling — lower (e.g. 6e-5) to curb post-convergence divergence
+max_lr: 6.0e-5             # KL-adaptive LR ceiling. Was 1.0e-4, which oscillated: open_cross_4
+                           # solved at 400k, lost it until 800k, recovered by 900k. Raise only if
+                           # a run is clearly learning too slowly rather than diverging.
 seed: 42
 
 # Steps between checkpoint writes. Lower it for a quick run you intend to render:
