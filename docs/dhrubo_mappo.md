@@ -68,7 +68,7 @@ version: results reach me through W&B, not the repo, and `wandb.enabled=true` go
 training command.
 
 ```bash
-python train.py train.algorithm=mappo env=gap_2agent wandb.enabled=true
+python train.py train.algorithm=mappo env=gap2_unicycle2 wandb.enabled=true
 ```
 
 For the IPPO-vs-MAPPO comparison the two runs must differ in one thing only. Same env, same

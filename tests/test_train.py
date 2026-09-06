@@ -1,5 +1,6 @@
-"""Model construction: parameter sharing across a homogeneous team."""
+"""Model construction, run naming, and the single shared success metric."""
 import os
+import pathlib
 
 import pytest
 import torch
@@ -130,3 +131,23 @@ def test_every_env_config_names_itself_after_its_file():
     for path in sorted(pathlib.Path(ROOT, "conf", "env").glob("*.yaml")):
         loaded = yaml.safe_load(path.read_text())
         assert loaded.get("_name_") == path.stem, f"{path.name}: _name_={loaded.get('_name_')!r}"
+
+
+def test_one_success_definition_shared_by_both_evaluators():
+    """`success` must be the env's own definition -- all reached AND not crashed -- and it
+    must be the ONLY reached-ness key on the stats dict. A second key (this used to be
+    `both_reached`, all(_reached) with no crash term) lets evaluate.py and fasteval.py
+    report different success rates from the same episode."""
+    import inspect
+
+    from src.approach import rollout
+
+    src = inspect.getsource(rollout.run_episode)
+    # The quoted form is the dict key; the prose in the comment above it is not.
+    assert '"both_reached"' not in src, "second reached-ness key is back"
+    assert '"success"' in src
+
+    # summarize() is the shared aggregator; both evaluators must go through it.
+    for path in ("evaluate.py", "scripts/fasteval.py"):
+        text = pathlib.Path(ROOT, path).read_text()
+        assert "summarize(" in text, f"{path} computes its own success rate"

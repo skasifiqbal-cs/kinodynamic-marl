@@ -32,7 +32,7 @@ def _render_frame(env, trails, step, rewards):
 def run_episode(env, controller: Controller, render: bool = False, frame_skip: int = 2):
     """Run one episode; return ``(stats, frames)``.
 
-    ``stats`` keys: ``steps``, ``success``, ``both_reached``, ``crashed``,
+    ``stats`` keys: ``steps``, ``success``, ``crashed``,
     ``collisions``, ``total_reward``. ``frames`` is empty unless ``render``.
     """
     obs_dict, _ = env.reset()
@@ -63,8 +63,13 @@ def run_episode(env, controller: Controller, render: bool = False, frame_skip: i
     ep = last_info.get(env.possible_agents[0], {}).get("episode", {})
     stats = {
         "steps": step,
+        # The env's own definition: every robot reached AND none crashed
+        # (multiagent_nav.py:305). There used to be a second key, `both_reached`, holding
+        # all(_reached) with no crash term; evaluate.py scored from that one and fasteval
+        # from this one. The two agree whenever terminate_on_collision is false, since the
+        # crash term is then always false -- so the divergence was latent, not active, but
+        # two keys for one quantity is how the evaluators would have drifted apart.
         "success": bool(ep.get("success", float(all(env._reached)))),
-        "both_reached": all(env._reached),
         "crashed": bool(ep.get("crashed", 0.0)),
         "collisions": float(ep.get("collisions", getattr(env, "_collision_count", 0.0))),
         "total_reward": {a: total_rewards[a] for a in env.possible_agents},

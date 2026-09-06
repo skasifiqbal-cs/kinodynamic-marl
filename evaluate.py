@@ -4,7 +4,7 @@
     python evaluate.py eval.checkpoint=runs/exp/2026-08-24_19-36/checkpoints/agent_400000.pt
 
     # Anything you type still wins over what the run recorded.
-    python evaluate.py eval.checkpoint=... env=gap_2agent eval.episodes=5
+    python evaluate.py eval.checkpoint=... env=gap2_unicycle2 eval.episodes=5
 
     # Planning: no checkpoint — the planner computes controls online
     python evaluate.py approach=planning approach.method=rrt
@@ -29,17 +29,16 @@ import pathlib
 import sys
 
 import hydra
-import numpy as np
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 
 from src.approach import build_approach
-from src.approach.rollout import run_episode, save_gif  # re-exported (back-compat)
+from src.approach.rollout import run_episode, save_gif, summarize
 from src.env.factory import build_env
 
 __all__ = ["main", "run_episode", "save_gif"]
 
-# Config groups: `env=gap_2agent` names a FILE to compose, so it cannot be applied as a
+# Config groups: `env=gap2_unicycle2` names a FILE to compose, so it cannot be applied as a
 # plain key=value the way `eval.episodes=5` can. Hydra has already composed these into
 # cfg, so for a group the user typed we take cfg's version wholesale.
 _GROUPS = frozenset({"env", "shaping", "obs", "init", "network", "train", "approach"})
@@ -48,7 +47,7 @@ _GROUPS = frozenset({"env", "shaping", "obs", "init", "network", "train", "appro
 def merge_saved(cfg: DictConfig, saved: DictConfig, typed: list[str]) -> DictConfig:
     """Saved run config as the base; anything typed on the command line wins.
 
-    ``typed`` is Hydra's raw override list (``["env=gap_2agent", "eval.episodes=5"]``).
+    ``typed`` is Hydra's raw override list (``["env=gap2_unicycle2", "eval.episodes=5"]``).
     Without it there is no way to tell an override the user asked for from a default
     Hydra filled in, and the defaults would silently overwrite the run's own settings —
     which is the whole thing this exists to prevent.
@@ -103,11 +102,15 @@ def main(cfg: DictConfig) -> None:
         all_frames.extend(frames)
         if frames and ep < n_episodes - 1:
             all_frames.extend([frames[-1]] * 10)  # brief hold between episodes
-        print(f"steps={stats['steps']}  reached={stats['both_reached']}  "
-              f"rewards={stats['total_reward']}")
+        print(f"steps={stats['steps']}  success={stats['success']}  "
+              f"collisions={stats['collisions']:.0f}  rewards={stats['total_reward']}")
 
-    success_rate = float(np.mean([s["both_reached"] for s in all_stats]))
-    print(f"\nSuccess rate: {success_rate:.0%}")
+    # summarize() is what fasteval reports; sharing it is what stops the two evaluators
+    # from drifting into different definitions of success again.
+    metrics = summarize(all_stats)
+    success_rate = metrics["success_rate"]
+    print(f"\nSuccess rate: {success_rate:.0%}   crash_rate: {metrics['crash_rate']:.0%}   "
+          f"avg_collisions: {metrics['avg_collisions']:.1f}")
 
     if all_frames:
         save_gif(all_frames, gif_path, fps)

@@ -10,7 +10,7 @@ def _cfgs():
     """`saved` is what the run trained with; `cfg` is what Hydra composed from defaults
     this time round. They disagree on every group, which is the situation that matters."""
     saved = OmegaConf.create({
-        "env": {"name": "gap_2agent", "world_size": 5.0},
+        "env": {"name": "gap2_unicycle2", "world_size": 5.0},
         "shaping": {"type": "euclidean"},
         "network": {"type": "mlp"},
         "eval": {"episodes": 3, "checkpoint": None, "gif_path": "episode.gif"},
@@ -30,7 +30,7 @@ def test_untyped_groups_come_from_the_run_not_from_hydra_defaults():
     what the run was trained on."""
     cfg, saved = _cfgs()
     out = merge_saved(cfg, saved, ["eval.checkpoint=runs/x/checkpoints/agent_1.pt"])
-    assert out.env.name == "gap_2agent"       # from the run
+    assert out.env.name == "gap2_unicycle2"       # from the run
     assert out.shaping.type == "euclidean"
     assert out.network.type == "mlp"
     assert out.eval.checkpoint == "runs/x/checkpoints/agent_1.pt"   # typed, wins

@@ -28,7 +28,7 @@ def fake_wandb(monkeypatch):
 def _run_dir(tmp_path, with_ckpt=True):
     d = tmp_path / "braking_mlp_full_state" / "2026-09-03_10-00"
     (d / "checkpoints").mkdir(parents=True)
-    (d / "config.yaml").write_text("env: {name: gap_2agent}\n")
+    (d / "config.yaml").write_text("env: {name: gap2_unicycle2}\n")
     if with_ckpt:
         (d / "checkpoints" / "best_agent.pt").write_bytes(b"weights")
     return d

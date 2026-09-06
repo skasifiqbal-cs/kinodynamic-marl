@@ -14,11 +14,6 @@ defaults:
   # "network appears more than once in the final defaults list": commit fedd59f moved
   # `- network:` and `- train:` out of here into conf/approach/reinforcement_learning.yaml,
   # so a resolution that keeps the old lines next to `- approach:` lists both groups twice.
-  #
-  # conf/experiment/local.yaml stays available as an opt-out for anyone who does not want
-  # that: `optional` means Hydra skips it silently when the file is absent, and it is
-  # gitignored and listed last, so it overrides everything above without being committed.
-  - optional experiment: local
 
 # Robot yamls live in conf/robot/ and are loaded at runtime by name (no listing needed here).
 # To add a robot: create conf/robot/my_robot.yaml and reference it in an env yaml.

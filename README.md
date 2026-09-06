@@ -76,13 +76,13 @@ examples below use so they stay copy-pasteable.
 python evaluate.py approach=planning approach.method=karc env=swap2_unicycle2
 
 # ── RL: train, then render ──────────────────────────────────────────────────
-python train.py env=gap_2agent shaping=dijkstra train.timesteps=400000
+python train.py env=gap2_unicycle2 shaping=dijkstra train.timesteps=400000
 
 # a checkpoint is enough — env/shaping/obs/init/network come from the run
 python evaluate.py eval.checkpoint=runs/dijkstra_mlp_full_state/<ts>/checkpoints/agent_400000.pt
 
 # anything typed still wins over what the run recorded
-python evaluate.py eval.checkpoint=<...>.pt env=gap_2agent eval.episodes=5
+python evaluate.py eval.checkpoint=<...>.pt env=gap2_unicycle2 eval.episodes=5
 
 # bulk metrics (emits a RESULT,<mode>,... line for scripts)
 python scripts/fasteval.py eval.checkpoint=<...>.pt eval.episodes=50
@@ -110,7 +110,7 @@ goal. `unicycle_db` is a **box**, which is why `swap1`/`swap2` render as rectang
 
 | Env | Agents | Robot | Description |
 |---|---|---|---|
-| `gap_2agent` | 2 | `unicycle_v2` | head-on through one shared narrow gap |
+| `gap2_unicycle2` | 2 | `unicycle_v2` | head-on through one shared narrow gap |
 | `swap1_unicycle2` | 1 | `unicycle_db` | db-CBS port; single robot, empty world — for testing a *potential* |
 | `swap2_unicycle2` | 2 | `unicycle_db` | db-CBS port; symmetric head-on swap — a *coordination* problem |
 | `open_cross_{4,8,16,32}` | 4–32 | `unicycle_db` | K-ARC Open Cross port; N/2 symmetric head-on rows, empty world. Generated — run `python scripts/gen_open_cross.py`, don't hand-edit |

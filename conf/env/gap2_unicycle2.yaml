@@ -4,8 +4,8 @@
 # pass side-by-side on opposite sides of the gap — a collision-free optimum exists, but
 # the corridor is tight so the policy must hold its lane while braking/threading.
 # Identifies the scenario in run directory names and W&B tags. Must match the
-# filename: `python train.py env=gap_2agent` selects this file by it.
-_name_: gap_2agent
+# filename: `python train.py env=gap2_unicycle2` selects this file by it.
+_name_: gap2_unicycle2
 
 world_size: 6.0
 dt: 0.05

@@ -13,7 +13,7 @@
 #   max_steps  - ours; the benchmark has no horizon.
 #
 # NOTE: both robots sit on the SAME line y=2.5 head-on. There is no lane offset,
-# unlike our hand-made gap_2agent. This is the symmetric conflict
+# unlike our hand-made gap2_unicycle2. This is the symmetric conflict
 # that notes/paper2.md lists as unsolved.
 # Identifies the scenario in run directory names and W&B tags. Must match the
 # filename: `python train.py env=swap2_unicycle2` selects this file by it.

@@ -9,7 +9,7 @@ from hydra.core.global_hydra import GlobalHydra
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def build(env="gap_2agent", shaping="dijkstra"):
+def build(env="gap2_unicycle2", shaping="dijkstra"):
     from src.env.factory import build_env
     GlobalHydra.instance().clear()
     with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
@@ -67,7 +67,7 @@ def test_omega_penalty_charges_constant_rate_spin():
     env = build()
     env.reset(seed=0)
     coef = env.omega_penalty
-    assert coef < 0, "gap_2agent must set reward.omega_penalty, and it is negative"
+    assert coef < 0, "gap2_unicycle2 must set reward.omega_penalty, and it is negative"
 
     a0 = env.possible_agents[0]
     env._states[0][3] = 0.0          # not translating
@@ -95,7 +95,7 @@ def test_checkpoint_obs_dim_mismatch_names_the_cause():
     check_obs_dim(trained_on_swap1, 11, "agent_0", "ckpt.pt")          # matching env: silent
 
     with pytest.raises(ValueError) as e:
-        check_obs_dim(trained_on_swap1, 25, "agent_0", "ckpt.pt")      # gap_2agent
+        check_obs_dim(trained_on_swap1, 25, "agent_0", "ckpt.pt")      # gap2_unicycle2
     msg = str(e.value)
     assert "11" in msg and "25" in msg and "ckpt.pt" in msg
 
@@ -166,7 +166,7 @@ def test_wrong_signed_reward_coefficient_is_rejected():
 def test_circle_obstacle_is_built_encoded_and_collided():
     """crossing_2agent was the only config with `shape: {type: circle}` as an OBSTACLE.
 
-    Robot shapes still cover CircleShape, and gap_2agent's boxes cover the circle-box
+    Robot shapes still cover CircleShape, and gap2_unicycle2's boxes cover the circle-box
     collision branch, but nothing left in conf/ sends a circle through build_obstacle,
     Obstacle.obs_repr or the obstacle half of the observation. Deleting that scenario
     would have dropped the path silently, so it is exercised here directly.
@@ -178,7 +178,7 @@ def test_circle_obstacle_is_built_encoded_and_collided():
 
     GlobalHydra.instance().clear()
     with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
-        cfg = compose("config", overrides=["env=gap_2agent", "shaping=euclidean", "init=fixed"])
+        cfg = compose("config", overrides=["env=gap2_unicycle2", "shaping=euclidean", "init=fixed"])
     cfg.env.obstacles = OmegaConf.create(
         [{"x": 3.0, "y": 2.5, "shape": {"type": "circle", "radius": 0.45}}]
     )
