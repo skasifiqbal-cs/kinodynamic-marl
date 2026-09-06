@@ -53,21 +53,17 @@ python scripts/fasteval.py           # same scoring, headless and in bulk, no re
 
 ## Choosing an experiment
 
-Copy the template once, then edit that file instead of `conf/config.yaml`:
+Edit the `env:` and `shaping:` lines in `conf/config.yaml`. That is the whole mechanism —
+there is no per-person override file.
 
-```bash
-cp conf/experiment/local.yaml.example conf/experiment/local.yaml
-```
+It does mean `conf/config.yaml` conflicts whenever two people run different things. When
+it does, take the **incoming** `defaults:` block whole (it carries structure, not
+experiment choice) and re-apply your own `env:`/`shaping:` on top. Keeping both sides is
+what produces `network appears more than once in the final defaults list`.
 
-`conf/experiment/local.yaml` is **gitignored**, and `conf/config.yaml` loads it last
-(`- optional experiment: local`), so it overrides everything and `python main.py` needs
-no arguments. Because it is untracked, two people can run different experiments without
-ever colliding — editing `conf/config.yaml` to switch experiments produces a merge
-conflict on a shared file, which is why it is off-limits for that. Delete the file to
-fall back to the committed defaults.
-
-Command-line overrides still work and still win over `local.yaml`, which is what the
-examples below use so they stay copy-pasteable.
+Command-line overrides win over the file and are the right tool for a **sweep**, where
+several scenarios run at once and the file can only name one. That is what the examples
+below use, so they stay copy-pasteable.
 
 ## Running
 
@@ -79,7 +75,7 @@ python evaluate.py approach=planning approach.method=karc env=swap2_unicycle2
 python train.py env=gap2_unicycle2 shaping=dijkstra train.timesteps=400000
 
 # a checkpoint is enough — env/shaping/obs/init/network come from the run
-python evaluate.py eval.checkpoint=runs/dijkstra_mlp_full_state/<ts>/checkpoints/agent_400000.pt
+python evaluate.py eval.checkpoint=runs/gap2_unicycle2_dijkstra_mlp_full_state/<ts>/checkpoints/agent_400000.pt
 
 # anything typed still wins over what the run recorded
 python evaluate.py eval.checkpoint=<...>.pt env=gap2_unicycle2 eval.episodes=5
@@ -89,9 +85,55 @@ python scripts/fasteval.py eval.checkpoint=<...>.pt eval.episodes=50
 ```
 
 `train.py` writes checkpoints, TensorBoard logs and `config.yaml` to
-`runs/{shaping}_{network}_{obs}/<timestamp>/`. That saved config is what makes the
+`runs/{env}_{shaping}_{network}_{obs}/<timestamp>/`. That saved config is what makes the
 one-argument `evaluate.py` above work; runs from before it was added still need
 `env=`/`shaping=` by hand.
+
+### Sweeping over N
+
+The teams are homogeneous, so `share_policy` puts every robot on one network and
+`envs_x_agents` then sets `num_envs = envs_x_agents / N`. That keeps the transitions per
+PPO update identical at every N — with a fixed `num_envs` the shared net would get eight
+times more data at N=32 than at N=4, and N would stop being the only variable. It also
+cancels one factor of N from the `O(num_envs · N²)` timestep cost.
+
+```bash
+for n in 4 8 16 32; do
+  python train.py env=open_cross_${n}_unicycle2 \
+    train.share_policy=true train.envs_x_agents=32
+done
+```
+
+### K-ARC and its resolution ladder
+
+`ladder` is a list, so dropping rungs from it *is* the ablation — no code change:
+
+```bash
+# full ladder (the default)
+python main.py approach=planning approach.method=karc env=open_cross_4_unicycle2
+
+# prioritized rung only. Quote it: bash eats the brackets.
+python main.py approach=planning approach.method=karc \
+  env=open_cross_4_unicycle2 'approach.karc.ladder=[prioritized]'
+
+# ... and render it
+python main.py approach=planning approach.method=karc \
+  env=open_cross_4_unicycle2 'approach.karc.ladder=[prioritized]' \
+  eval.gif_path=experiments/open_cross_karc.gif
+```
+
+Every planning run prints a `STATS,<method>,...` line beside `RESULT`: conflicts,
+subproblems, rounds, `rungs` (which ones actually fired), `solver_calls`, `joint_solves`,
+`wall_time`. Read the ablation off `rungs` — success rate alone cannot tell you whether
+the rung you removed was ever reached. On `open_cross_4` both commands above give 100%
+success, 0 collisions, 578 steps and `rungs={'prioritized': 1}`, i.e. the lower rungs
+never fire at N=4.
+
+> **Faithfulness gap.** K-ARC §III-C specifies the ladder as prioritized trajectory
+> optimization → **Decoupled Kinodynamic RRT** → **Composite Kinodynamic RRT**. Ours is
+> `[prioritized, relaxed_goal, joint]` — all three optimization-based. Rung 1 is faithful;
+> rungs 2–3 are not, and are ours. It does not affect any result where `rungs` shows only
+> `prioritized`.
 
 ## Robots
 
@@ -113,7 +155,7 @@ goal. `unicycle_db` is a **box**, which is why `swap1`/`swap2` render as rectang
 | `gap2_unicycle2` | 2 | `unicycle_v2` | head-on through one shared narrow gap |
 | `swap1_unicycle2` | 1 | `unicycle_db` | db-CBS port; single robot, empty world — for testing a *potential* |
 | `swap2_unicycle2` | 2 | `unicycle_db` | db-CBS port; symmetric head-on swap — a *coordination* problem |
-| `open_cross_{4,8,16,32}` | 4–32 | `unicycle_db` | K-ARC Open Cross port; N/2 symmetric head-on rows, empty world. Generated — run `python scripts/gen_open_cross.py`, don't hand-edit |
+| `open_cross_{4,8,16,32}_unicycle2` | 4–32 | `unicycle_db` | K-ARC Open Cross port; N/2 symmetric head-on rows, empty world. Generated — run `python scripts/gen_open_cross.py`, don't hand-edit |
 
 ## Shaping potentials (`shaping=…`)
 

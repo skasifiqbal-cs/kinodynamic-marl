@@ -8,10 +8,10 @@ python main.py                                          # approach=reinforcement
 python main.py approach=planning approach.method=rrt    # approach=planning (plan + evaluate)
 ```
 
-Switch experiments by editing `conf/experiment/local.yaml` (copy it from
-`conf/experiment/local.yaml.example`), not `conf/config.yaml`. That file is gitignored,
-so your experiment settings never reach a commit and never conflict with anyone else's.
-See the "Choosing an experiment" section of the README.
+Switch experiments by editing the `env:` and `shaping:` lines in `conf/config.yaml`.
+That file is tracked, so it will conflict when two of us run different things: take the
+**incoming** `defaults:` block whole and re-apply your own `env:`/`shaping:` on top. See
+the "Choosing an experiment" section of the README.
 
 Both share the **same robots, agents, and environment**. Reinforcement learning
 trains a neural policy; planning computes controls online with a classical or
