@@ -48,5 +48,14 @@ class PlanningApproach(BaseApproach):
         print(f"RESULT,{method},{m['success_rate']:.4f},{m['crash_rate']:.4f},"
               f"{m['avg_collisions']:.2f},{m['avg_steps_on_success']:.1f}")
 
+        # The coordination counters -- conflicts found, which ladder rungs fired, how many
+        # solver calls it took. These are what an ablation is read off; success alone cannot
+        # tell you whether a rung you removed was ever used. Recorded by every planner that
+        # keeps a `stats` dict, absent on the ones that do not.
+        stats = getattr(planner, "stats", None)
+        if stats:
+            print("  " + "  ".join(f"{k}={v}" for k, v in sorted(stats.items())))
+            print(f"STATS,{method}," + ",".join(f"{k}={v}" for k, v in sorted(stats.items())))
+
         if render and frames and gif_path:
             save_gif(frames, gif_path, int(eval_cfg.get("fps", 15)))

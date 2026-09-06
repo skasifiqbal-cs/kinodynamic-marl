@@ -158,3 +158,20 @@ def test_karc_solves_symmetric_head_on_swap():
 
     assert stats["success"], "symmetric head-on swap not solved"
     assert stats["collisions"] == 0.0
+
+
+def test_planning_run_reports_the_coordination_counters(capsys, tmp_path):
+    """success alone cannot tell you whether a ladder rung you removed was ever used --
+    an ablation is read off `rungs` and `solver_calls`, so run() must print them."""
+    from src.approach import build_approach
+
+    GlobalHydra.instance().clear()
+    with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
+        cfg = compose("config", overrides=["approach=planning", "approach.method=karc",
+                                           "env=swap2_unicycle2", "eval.episodes=1",
+                                           "eval.gif_path=null"])
+    build_approach(cfg).run(cfg)
+    out = capsys.readouterr().out
+    assert "STATS,karc," in out
+    for key in ("rungs=", "solver_calls=", "conflicts="):
+        assert key in out, f"{key} missing from the planning report"
