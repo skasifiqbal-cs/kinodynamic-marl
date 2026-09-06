@@ -63,6 +63,31 @@ def build_models(env, cfg, device) -> dict[str, dict]:
     return models
 
 
+def resolve_num_envs(cfg) -> int:
+    """Parallel worlds to run: ``train.num_envs`` verbatim, or derived from
+    ``train.envs_x_agents`` so that a sweep over N is a controlled comparison.
+
+    With ``share_policy`` every agent writes into one network, so a PPO update sees
+    ``num_agents x num_envs x rollouts`` transitions. Holding num_envs fixed across a sweep
+    therefore does NOT hold the training signal fixed -- open_cross at N=32 would get 8x the
+    transitions per update that N=4 does, and any difference in the results could be read
+    either as the scenario being harder or as N=4 being starved. Fixing the product is what
+    makes N the only variable, and it is also what makes large N affordable: cost per timestep
+    is O(num_envs x N^2), so the derived value cancels one factor of N.
+    """
+    target = cfg.train.get("envs_x_agents", None)
+    if target is None:
+        return int(cfg.train.get("num_envs", 1))
+    n_agents = len(cfg.env.agents)
+    if int(target) < n_agents:
+        raise ValueError(
+            f"train.envs_x_agents={target} is below this scenario's {n_agents} agents, so the "
+            "derived num_envs would round to 0. Raise it to a multiple of the largest N in "
+            "the sweep, or set it to null and give train.num_envs directly."
+        )
+    return int(target) // n_agents
+
+
 def run_training(cfg: DictConfig) -> None:
     torch.manual_seed(cfg.train.seed)
     # A 128x128 MLP on a 17-dim observation does not fill a thread pool. Torch defaults to
@@ -78,7 +103,7 @@ def run_training(cfg: DictConfig) -> None:
     # make the rollout slower. Worth re-checking only if the networks grow a lot.
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    num_envs = int(cfg.train.get("num_envs", 1))
+    num_envs = resolve_num_envs(cfg)
     if num_envs > 1:
         # Parallel actors: B independent worlds -> each PPO update sees rollouts x B
         # transitions (lower-variance gradient, denser reach signal). Literature standard.

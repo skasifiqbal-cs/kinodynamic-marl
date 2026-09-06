@@ -61,3 +61,41 @@ def test_sharing_a_mixed_team_is_rejected_by_name():
     env = StubEnv([17, 19])
     with pytest.raises(ValueError, match="share_policy"):
         build_models(env, _cfg(True), torch.device("cpu"))
+
+
+@pytest.mark.parametrize("n,expected", [(4, 8), (8, 4), (16, 2), (32, 1)])
+def test_envs_x_agents_holds_the_update_batch_constant_across_n(n, expected):
+    """A sweep over N must vary only N. With share_policy an update sees
+    num_agents x num_envs x rollouts, so a FIXED num_envs would give N=32 eight times the
+    transitions N=4 gets; fixing the product is what makes the comparison controlled."""
+    from src.approach.rl.train import resolve_num_envs
+
+    GlobalHydra.instance().clear()
+    with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
+        cfg = compose("config", overrides=[f"env=open_cross_{n}_unicycle2",
+                                           "shaping=euclidean", "train.envs_x_agents=32"])
+    num_envs = resolve_num_envs(cfg)
+    assert num_envs == expected
+    assert len(cfg.env.agents) * num_envs == 32       # the invariant the sweep rests on
+
+
+def test_num_envs_is_used_verbatim_when_envs_x_agents_is_unset():
+    from src.approach.rl.train import resolve_num_envs
+
+    GlobalHydra.instance().clear()
+    with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
+        cfg = compose("config", overrides=["env=open_cross_32_unicycle2", "shaping=euclidean"])
+    assert cfg.train.envs_x_agents is None
+    assert resolve_num_envs(cfg) == cfg.train.num_envs
+
+
+def test_envs_x_agents_below_the_agent_count_is_rejected():
+    """Integer division would silently give num_envs=0 and an empty rollout."""
+    from src.approach.rl.train import resolve_num_envs
+
+    GlobalHydra.instance().clear()
+    with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
+        cfg = compose("config", overrides=["env=open_cross_32_unicycle2",
+                                           "shaping=euclidean", "train.envs_x_agents=16"])
+    with pytest.raises(ValueError, match="envs_x_agents"):
+        resolve_num_envs(cfg)
