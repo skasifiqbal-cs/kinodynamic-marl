@@ -156,6 +156,23 @@ robot brakes to rest, `timed_out=1` is reported, and the remaining segments coun
 unsolved: a timeout is a failure, not a slow success. `null` disables it, which is only
 useful for debugging — never for a number that goes in a table.
 
+**Baseline** (`experiments/karc_ladder_baseline.txt`, default ladder, 600 s budget, n=1):
+
+| scenario | success | collisions | steps | rungs fired | wall |
+|---|---|---|---|---|---|
+| `open_cross_4` | 100% | 0 | 571 | `prioritized` ×2 | 12 s |
+| `open_cross_8` | 100% | 0 | 571 | `prioritized` ×4 | 26 s |
+| `open_cross_16` | 100% | 0 | 572 | `prioritized` ×8 | 60 s |
+| `open_cross_32` | **0%** | 0 | — | all three, 12/12/11 | timeout (635 s) |
+| `open_cross_32_wide` | 100% | 0 | 573 | `prioritized` ×16 | 163 s |
+
+`open_cross_32` is the only failure, and it is a *congestion* failure, not a robot-count
+one: `open_cross_32_wide` is the same 32 robots over the same 15 m traverse with rows at
+`open_cross_16`'s 2.14 m spacing instead of 1.0 m, and it solves with the first rung alone.
+Our fixed 17×17 world at every N is a design choice of this repo (`docs/dhrubo_open_cross.md`)
+— K-ARC never states its world or robot size, and calls open cross *"an easy scenario"* —
+so the paper-comparable 32-robot row is the wide one.
+
 Every planning run prints a `STATS,<method>,...` line beside `RESULT`: conflicts,
 subproblems, rounds, `rungs` (which ones actually fired), `solver_calls`, `joint_solves`,
 `wall_time`. Read the ablation off `rungs` — success rate alone cannot tell you whether

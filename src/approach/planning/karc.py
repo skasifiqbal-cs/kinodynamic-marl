@@ -454,6 +454,19 @@ class KARCPlanner(BasePlanner):
             pts.append(p)
         return pts
 
+    # The env's goal test is a STRICT inequality (multiagent_nav.py: dist < goal_radius),
+    # and the objective is minimum time, so the solver parks the terminal state exactly on
+    # whatever tolerance it is given -- a plan that "reaches" the goal at exactly
+    # goal_radius scores as a failure. Keeping the terminal tolerance strictly inside the
+    # test is the difference between reporting the plan we made and reporting float noise.
+    GOAL_INSET = 0.9
+
+    def _terminal_tol(self, env, t_cfg, goal_scale, terminal_stop) -> float:
+        tol = float(t_cfg.get("goal_tol", env.goal_radius)) * goal_scale
+        # Intermediate milestones are never tested by the env, so only the final one needs
+        # the inset -- and relaxing it there would mean a robot that stops short "succeeds".
+        return min(tol, self.GOAL_INSET * env.goal_radius) if terminal_stop else tol
+
     def _solve(self, env, i, start, goal, seg_h, t_cfg, avoid, goal_scale=1.0,
                terminal_stop=True):
         avoid_trajs = tuple(a[0] for a in avoid)
@@ -465,7 +478,7 @@ class KARCPlanner(BasePlanner):
             effort_weight=float(t_cfg.get("effort_weight", 0.01)),
             dt_fixed=env.dt,
             avoid=avoid_trajs, avoid_radii=avoid_radii,
-            goal_tol=float(t_cfg.get("goal_tol", env.goal_radius)) * goal_scale,
+            goal_tol=self._terminal_tol(env, t_cfg, goal_scale, terminal_stop),
             clearance=float(t_cfg.get("clearance", 0.05)),
             terminal_stop=terminal_stop,
             max_iter=int(t_cfg.get("max_iters", 500)),
@@ -689,7 +702,7 @@ class KARCPlanner(BasePlanner):
             int(self.params.get("rrt_seed", 0)) + 1000 * self.stats["rounds"]
             + len(self.stats["subproblem_sizes"]))
         kw = dict(
-            goal_tol=float(t_cfg.get("goal_tol", env.goal_radius)),
+            goal_tol=self._terminal_tol(env, t_cfg, 1.0, last),
             terminal_stop=last,
             max_iters=int(self.params.get("rrt_iters", 3000)),
             n_controls=int(self.params.get("rrt_controls", 10)),
@@ -752,7 +765,7 @@ class KARCPlanner(BasePlanner):
             effort_weight=float(t_cfg.get("effort_weight", 0.01)),
             dt_fixed=env.dt,
             avoid=tuple(a[0] for a in avoid), avoid_radii=tuple(a[1] for a in avoid),
-            goal_tol=float(t_cfg.get("goal_tol", env.goal_radius)),
+            goal_tol=self._terminal_tol(env, t_cfg, 1.0, last),
             clearance=float(t_cfg.get("clearance", 0.05)),
             terminal_stop=last,
             max_iter=int(t_cfg.get("max_iters", 500)),

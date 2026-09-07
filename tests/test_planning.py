@@ -447,3 +447,26 @@ def test_timeout_fails_safely_instead_of_planning_forever():
     assert stats["collisions"] == 0.0, "timed out into a crash instead of braking to rest"
     for i, a in enumerate(env.possible_agents):
         assert abs(float(env._states[i][3])) < 1e-6, f"{a} still moving after the timeout"
+
+
+def test_terminal_tolerance_stays_strictly_inside_the_env_goal_test():
+    """The env tests `dist < goal_radius` (multiagent_nav.py) and the objective is minimum
+    time, so a solver handed goal_tol == goal_radius parks the terminal state exactly on the
+    boundary and the plan scores as a failure it did not commit. Caught on
+    open_cross_32_wide: 32/32 segments solved, every robot at rest, two of them at exactly
+    0.200 m from a 0.2 m goal -> success=False.
+    """
+    from src.approach.planning import build_planner
+    from src.env.factory import build_env
+
+    cfg = _cfg("open_cross_4_unicycle2", **{"approach.method": "karc"})
+    env = build_env(cfg)
+    env.reset()
+    planner = build_planner(cfg.approach)
+    t_cfg = planner.approach_cfg.get("trajopt", {})
+
+    assert float(t_cfg.get("goal_tol")) == env.goal_radius, \
+        "premise of this test: the configured tolerance equals the env's radius"
+    assert planner._terminal_tol(env, t_cfg, 1.0, True) < env.goal_radius
+    # Intermediate milestones are not tested by the env and keep the configured value.
+    assert planner._terminal_tol(env, t_cfg, 1.0, False) == float(t_cfg.get("goal_tol"))
