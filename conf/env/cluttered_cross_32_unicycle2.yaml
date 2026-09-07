@@ -48,7 +48,7 @@ _name_: cluttered_cross_32_unicycle2
 
 world_size: 17.0
 dt: 0.1              # dynobench unicycle2_v0 dt
-max_steps: 650       # 65.0 s = 2x the 32.0 s bang-bang solo crossing of 15.0 m
+max_steps: 1300       # 130.0 s = 4x the 32.0 s bang-bang solo crossing of 15.0 m
 goal_radius: 0.2
 
 reward:

@@ -423,6 +423,7 @@ class KARCPlanner(BasePlanner):
                     max_iters=int(self.params.get("initial_rrt_iters", 5000)),
                     step=float(self.params.get("initial_rrt_step", 0.6)),
                     goal_bias=float(self.params.get("initial_rrt_goal_bias", 0.1)),
+                    shortcut=bool(self.params.get("initial_rrt_shortcut", False)),
                     rng=rng,
                 )
                 if path is None:

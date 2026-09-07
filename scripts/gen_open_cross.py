@@ -128,7 +128,11 @@ def render(n: int, cluttered: bool = False) -> str:
     # rest to rest, doubled so congestion has room to cost something. A hardcoded value
     # silently starves the large-N runs, where robots have to yield to each other.
     solo = bangbang_time(USABLE, 0.0, rb["v_max"], rb["a_max"])
-    max_steps = int(round(2.0 * solo / dt / 50.0) * 50)
+    # 4x the solo crossing, not 2x. The planner's guides come from a sampling planner and are
+    # returned raw, so a guide runs ~30% longer than the straight line -- and with dt fixed
+    # the segment horizon IS the duration, so that length is spent, not optimised away. At 2x
+    # the plan was longer than the episode and a perfectly good plan scored as a failure.
+    max_steps = int(round(4.0 * solo / dt / 50.0) * 50)
     s_y = row_spacing(rows)
     body = body_diameter()
     area = world ** 2 / n
@@ -213,7 +217,7 @@ _name_: {stem}
 
 world_size: {num(world)}
 dt: 0.1              # dynobench unicycle2_v0 dt
-max_steps: {max_steps}       # {num(max_steps * dt)} s = 2x the {solo:.1f} s bang-bang solo crossing of {num(USABLE)} m
+max_steps: {max_steps}       # {num(max_steps * dt)} s = 4x the {solo:.1f} s bang-bang solo crossing of {num(USABLE)} m
 goal_radius: 0.2
 
 reward:

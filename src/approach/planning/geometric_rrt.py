@@ -7,14 +7,17 @@ kinodynamic solutions." So this plans in (x, y) with NO dynamics: no heading, no
 no control limits. Feasibility is the trajectory optimizer's job, and giving it a
 dynamically-feasible seed here would just do that job twice, worse.
 
-Shortcut-smoothed before it is returned, which is not cosmetic here. K-ARC's optimizer makes
-dt a decision variable (§IV-B), so it can absorb a jagged guide by simply going faster; ours
-runs on the env's fixed dt, where the horizon IS the duration and is sized from the guide's
-length. A raw RRT path in an empty world is ~30% longer than the straight line, and that
-inflation goes straight into the schedule: measured on open_cross_4, the unsmoothed guide
-turned a 231 s plan into a 309 s one that no longer fit the episode. Shortcutting removes
-sampling jitter while keeping the homotopy class the RRT chose, which is the only part of the
-guide the optimizer actually needs.
+Returned RAW by default -- the sampling planner's own path, jagged as it comes out. That
+jaggedness is part of what K-ARC's optimizer is there to fix, and smoothing it here would
+hand the optimizer an easier problem than the paper's.
+
+It is not free. K-ARC makes dt a decision variable (§IV-B), so its optimizer absorbs a jagged
+guide by going faster; ours runs on the env's fixed dt, where the horizon IS the duration and
+is measured along the guide. A raw path is ~30% longer than the straight line in an empty
+world and that inflation lands directly in the schedule -- open_cross_4 plans 309 s of motion
+against 231 s from a shortest path. The env horizons are sized for it (see
+scripts/gen_open_cross.py). `shortcut=True` trades that back for a shorter schedule, keeping
+a subsequence of the RRT's own vertices so it cannot leave the homotopy class the search found.
 
 This is separate from `krrt.py`, which is the kinodynamic RRT used by the ladder's two
 sampling rungs. Same acronym, different jobs: that one propagates controls on a fixed time
@@ -62,7 +65,7 @@ def _shortcut(path, probe, obstacles, world_size, res, rng, rounds=200):
 
 
 def plan_path(start, goal, obstacles, world_size, radius, max_iters=5000, step=0.6,
-              goal_bias=0.1, rng=None) -> np.ndarray | None:
+              goal_bias=0.1, shortcut=False, rng=None) -> np.ndarray | None:
     """A collision-free polyline from `start` to `goal`, or None if none was found.
 
     `radius` inflates the robot to a disc for the whole search -- the path is a guide, and a
@@ -102,5 +105,7 @@ def plan_path(start, goal, obstacles, world_size, radius, max_iters=5000, step=0
             while k != -1:
                 path.append(nodes[k])
                 k = parent[k]
-            return _shortcut(path[::-1], probe, obstacles, world_size, res, rng)
+            out = np.asarray(path[::-1], dtype=float)
+            return (_shortcut(out, probe, obstacles, world_size, res, rng)
+                    if shortcut else out)
     return None
