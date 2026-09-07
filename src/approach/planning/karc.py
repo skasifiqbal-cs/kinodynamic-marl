@@ -151,18 +151,22 @@ class KARCPlanner(BasePlanner):
             # which can violate every constraint, and executing it produces exactly
             # the collisions the planner is supposed to prevent. Brake to rest
             # instead and report the failure through `_solved`.
+            executed = []
             for i, a in enumerate(agents):
                 if oks[i]:
                     self._controls[a].extend(np.atleast_2d(ctrls[i]))
                     state[i] = np.asarray(segs[i][-1], dtype=np.float64)
+                    executed.append(np.asarray(segs[i], dtype=np.float64))
                 else:
                     self._solved[a] = False
                     self.stats["braked_segments"] += 1
-                    us, state[i] = self._brake(env, i, state[i], len(np.atleast_2d(ctrls[i])))
+                    us, state[i], braked = self._brake(
+                        env, i, state[i], len(np.atleast_2d(ctrls[i])))
                     self._controls[a].extend(us)
+                    executed.append(braked)
             if self.trace is not None:
                 self._committed = [
-                    np.vstack([self._committed[i], np.asarray(segs[i], float)[:, :3]])
+                    np.vstack([self._committed[i], executed[i][:, :3]])
                     for i in range(env._n)
                 ]
 
@@ -232,17 +236,24 @@ class KARCPlanner(BasePlanner):
 
     @staticmethod
     def _brake(env, i, state, n_steps):
-        """Decelerate to rest and hold — the safe fallback for an unsolved segment."""
+        """Decelerate to rest and hold — the safe fallback for an unsolved segment.
+
+        Returns the controls, the final state, and the states passed through. The last is
+        for the trace: an unsolved segment is NOT executed, so committing its trajectory
+        would animate a plan the robot never follows -- and the unsolved segments are
+        exactly the ones worth watching.
+        """
         r = env.robots[i]
         st = np.asarray(state, dtype=np.float64).copy()
-        us = []
+        us, path = [], [st.copy()]
         for _ in range(max(0, int(n_steps))):
             a = float(np.clip(-st[3] / env.dt, r.a_min, r.a_max))
             al = float(np.clip(-st[4] / env.dt, r.alpha_min, r.alpha_max))
             u = np.array([a, al], dtype=np.float64)
             us.append(u)
             st = r.step(st, u, env.dt)
-        return us, st
+            path.append(st.copy())
+        return us, st, np.asarray(path, dtype=np.float64)
 
     # ── pieces ────────────────────────────────────────────────────────────────
 

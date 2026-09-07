@@ -248,3 +248,31 @@ def test_karc_trace_is_off_by_default_and_records_every_stage_when_on():
         for i in range(env._n) for j in range(i + 1, env._n)
     )
     assert hit, "uncoordinated reference paths must actually collide, or stage 1 shows nothing"
+
+
+def test_trace_commits_the_braking_rollout_for_an_unsolved_segment():
+    """An unsolved segment is never executed -- the planner brakes to rest instead. The
+    trace must record what the robot actually does, or the final-plan animation shows a
+    trajectory that was rejected, which is precisely the case worth watching.
+    """
+    import numpy as np
+
+    from src.approach.planning.karc import KARCPlanner
+    from src.env.factory import build_env
+
+    GlobalHydra.instance().clear()
+    with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
+        cfg = compose("config", overrides=["approach=planning", "approach.method=karc",
+                                           "env=open_cross_4_unicycle2", "init=fixed"])
+    env = build_env(cfg)
+    env.reset(seed=0)
+
+    st = env._states[0].copy()
+    st[3], st[4] = 0.5, 0.5                       # moving, so braking is not a no-op
+    us, final, path = KARCPlanner._brake(env, 0, st, 30)
+
+    assert len(us) == 30 and len(path) == 31, "one state per step, plus the start"
+    assert path.shape[1] == env._states[0].shape[0]
+    assert np.allclose(path[0], st)
+    assert np.allclose(path[-1], final), "reported final state must end the path"
+    assert abs(float(final[3])) < abs(float(st[3])), "braking must shed speed"
