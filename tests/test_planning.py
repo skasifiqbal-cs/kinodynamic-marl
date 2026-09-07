@@ -341,11 +341,16 @@ def test_adapt_subproblem_reopens_the_previous_segment_and_rescues_it():
     One adaptation resolves it. Without this, max_rounds re-solves a near-identical problem,
     since nothing about the window changes between rounds.
     """
-    # The `off` arm needs on_unsolved=brake to have a path cost at all: under K-ARC's own
-    # `return ∅` semantics an unresolved segment discards the whole plan, so the comparison
-    # below would be against nothing.
-    _, off = _karc_stats("swap2_unicycle2", adapt_max=0, on_unsolved="brake")
-    _, on = _karc_stats("swap2_unicycle2", adapt_max=1)
+    # Two settings are pinned so this stays a test of adaptation and not of anything else:
+    #   initial_paths=dijkstra - the failure needs the SYMMETRIC case, where both robots
+    #     descend the same reference and their k-th milestones coincide. Sampling-based
+    #     initial paths give the pair different routes and dissolve the symmetry, so under
+    #     the default this scenario solves outright and there is nothing to adapt.
+    #   on_unsolved=brake (off arm) - under K-ARC's `return ∅` an unresolved segment
+    #     discards the whole plan, so the path-cost comparison below would be against nothing.
+    _, off = _karc_stats("swap2_unicycle2", adapt_max=0, on_unsolved="brake",
+                         initial_paths="dijkstra")
+    _, on = _karc_stats("swap2_unicycle2", adapt_max=1, initial_paths="dijkstra")
 
     assert off.stats["adaptations"] == 0
     assert off.stats["unsolved_segments"] >= 1, "swap2 must still be the hard case here"

@@ -45,6 +45,23 @@ approach:
 
   # ── K-ARC (arXiv:2501.01559) ────────────────────────────────────────────────
   karc:
+    # Where the INITIAL kinematic paths come from (Alg. 1 line 3). K-ARC uses "any kinematic
+    # sampling-based method" (§IV-A) and Fig. 1(a) shows a per-robot roadmap; these paths are
+    # guidance only -- "not used as the final solutions but rather as guidance for the
+    # kinodynamic solutions".
+    #   rrt      - geometric RRT in (x, y), no dynamics (src/approach/planning/geometric_rrt.py).
+    #              Sampling-based, so a run is only reproducible per rrt_seed -- which is also
+    #              where the paper's trial-to-trial variance comes from.
+    #   dijkstra - greedy descent on the clearance-inflated Dijkstra grid used by the shaping
+    #              potentials. Deterministic and near-shortest, so the optimizer is handed an
+    #              easier path than a sampling planner would give it. NOT K-ARC; kept for the
+    #              ablation and as a deterministic regression baseline. Also the only option
+    #              that works if a scenario defeats the RRT (fallbacks are counted in
+    #              `initial_path_fallbacks`, never silent).
+    initial_paths: rrt
+    initial_rrt_iters: 5000
+    initial_rrt_step: 0.6
+    initial_rrt_goal_bias: 0.1
     # Number of equal segments the reference path is split into (K-ARC's `m`).
     # Segmentation synchronises milestones so robots share a time grid, which is
     # what makes the inter-robot constraints meaningful. The paper does not publish

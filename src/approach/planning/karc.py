@@ -39,7 +39,7 @@ import time
 
 import numpy as np
 
-from src.approach.planning import krrt
+from src.approach.planning import geometric_rrt, krrt
 from src.approach.planning.base import BasePlanner
 from src.approach.planning.trajopt import solve_group, solve_trajectory
 from src.shaping.dijkstra_potential import DijkstraPotential
@@ -70,14 +70,6 @@ class KARCPlanner(BasePlanner):
         # can spend minutes on one subproblem.
         self._deadline = None if not budget else t0 + float(budget)
 
-        _total_h_pending = True   # sized from the reference paths, once they exist
-
-        radii = [float(r.shape.bounding_radius) for r in env.robots]
-        agents = list(env.possible_agents)
-        milestones, ref_paths = self._milestones(env, m, clearance)
-        assert _total_h_pending
-        total_h = self._total_horizon(env, t_cfg, ref_paths)
-
         self.stats = {
             "conflicts": 0, "rounds": 0, "subproblems": 0,
             "solver_calls": 0, "unsolved_segments": 0, "braked_segments": 0,
@@ -88,9 +80,18 @@ class KARCPlanner(BasePlanner):
             "adaptations": 0,
             "timed_out": 0,
             "plan_failed": 0,
+            "initial_path_fallbacks": 0,
             "subproblem_sizes": [],
             "rungs": {},
         }
+
+        radii = [float(r.shape.bounding_radius) for r in env.robots]
+        agents = list(env.possible_agents)
+        # Alg. 1 lines 2-5, then the horizon: both sized from the reference paths, since with
+        # obstacles the journey and the chord are different lengths.
+        milestones, ref_paths = self._milestones(env, m, clearance)
+        total_h = self._total_horizon(env, t_cfg, ref_paths)
+
         self._controls = {a: [] for a in agents}
         self._solved = {a: True for a in agents}
         state = [env._states[i].copy() for i in range(env._n)]
@@ -408,11 +409,28 @@ class KARCPlanner(BasePlanner):
             clearance=clearance + max(r.shape.bounding_radius for r in env.robots),
         )
         self._grid = grid
+        source = str(self.params.get("initial_paths", "rrt"))
+        rng = np.random.default_rng(int(self.params.get("rrt_seed", 0)))
         out, refs = [], []
         for i in range(env._n):
             s0 = np.asarray(env._states[i], dtype=np.float64)
             g = np.asarray(env._goals[i], dtype=np.float64)
-            path = KARCPlanner._descend(grid, s0[:2], g[:2])
+            path = None
+            if source == "rrt":
+                path = geometric_rrt.plan_path(
+                    s0[:2], g[:2], env._obstacles, env._world_size,
+                    radius=env.robots[i].shape.bounding_radius + clearance,
+                    max_iters=int(self.params.get("initial_rrt_iters", 5000)),
+                    step=float(self.params.get("initial_rrt_step", 0.6)),
+                    goal_bias=float(self.params.get("initial_rrt_goal_bias", 0.1)),
+                    rng=rng,
+                )
+                if path is None:
+                    # A guide is required, and a straight line through a pillar is worse
+                    # than a grid path. Falling back is reported, never silent.
+                    self.stats["initial_path_fallbacks"] += 1
+            if path is None:
+                path = KARCPlanner._descend(grid, s0[:2], g[:2])
             refs.append(np.asarray(path, dtype=np.float64))
             out.append(KARCPlanner._resample(path, g, m))
         radii = [float(r.shape.bounding_radius) for r in env.robots]
@@ -505,9 +523,21 @@ class KARCPlanner(BasePlanner):
         total = float(cum[-1])
         if total < 1e-9:
             return np.asarray([start[:2], pts[-1]], dtype=float)
-        keep = pts[(cum >= total * lo) & (cum <= total * hi)]
-        out = np.vstack([np.asarray(start, dtype=float)[None, :2], keep])
-        return out if len(out) >= 2 else np.vstack([out, pts[-1][None]])
+        a, b = total * lo, total * hi
+        # Interpolate AT the fractions rather than keeping whichever vertices fall between
+        # them. A shortcut-smoothed path can be two vertices long, and vertex-membership
+        # slicing then returns a degenerate guide -- which silently sizes the segment horizon
+        # to nothing, since the horizon is measured along the guide.
+        ends = [np.array([np.interp(t, cum, pts[:, 0]), np.interp(t, cum, pts[:, 1])])
+                for t in (a, b)]
+        mid = [q for q, c in zip(pts, cum) if a < c < b]
+        out = [np.asarray(start, dtype=float)[:2], ends[0], *mid, ends[1]]
+        # Drop points that repeat: a zero-length step contributes no arclength and no heading.
+        keep = [out[0]]
+        for q in out[1:]:
+            if float(np.linalg.norm(q - keep[-1])) > 1e-9:
+                keep.append(q)
+        return np.asarray(keep if len(keep) >= 2 else [out[0], pts[-1]], dtype=float)
 
     @staticmethod
     def _resample(path: np.ndarray, goal: np.ndarray, m: int) -> list[np.ndarray]:
