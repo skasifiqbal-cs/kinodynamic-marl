@@ -57,6 +57,7 @@ class KARCPlanner(BasePlanner):
         m = max(1, int(k_cfg.get("m_segments", 4)))
         ladder = list(k_cfg.get("ladder", ["prioritized"]))
         max_rounds = int(k_cfg.get("max_rounds", 3))
+        adapt_max = int(k_cfg.get("adapt_max", 1))
         d_min = k_cfg.get("d_min", None)
         clearance = float(t_cfg.get("clearance", 0.05))
 
@@ -71,6 +72,7 @@ class KARCPlanner(BasePlanner):
             "solver_calls": 0, "unsolved_segments": 0, "braked_segments": 0,
             "joint_solves": 0,
             "merges": 0,
+            "adaptations": 0,
             "subproblem_sizes": [],
             "rungs": {},
         }
@@ -96,47 +98,42 @@ class KARCPlanner(BasePlanner):
                    [], anim=[self._walk(r) for r in ref_paths],
                    static=[np.zeros((0, 2)) for _ in agents])
 
+        # Checkpoints, one per committed window, so AdaptSubProblem can re-open the
+        # previous one. A window is normally a segment; after an adaptation it spans
+        # several, and the checkpoints it consumed are popped with it.
+        prev_starts: list[dict] = []
+
         for j in range(m):
             goals = [milestones[i][j] for i in range(env._n)]
             last = (j == m - 1)   # only the final milestone requires a full stop
-            # Per-segment time budget, sized from THIS segment's own geometry rather
-            # than as total_h/m. dt is fixed here (robots must share a time grid), so
-            # the segment lasts exactly seg_h*dt -- the horizon is a deadline, not a
-            # cap, and a robot that cannot reach its milestone in it fails outright.
-            # Segments are not equally hard: `_separate` lengthens exactly the ones
-            # where robots have to go around each other, and a uniform split hands
-            # those the same budget as a straight run.
-            seg_h = self._segment_horizon(env, t_cfg, state, goals, total_h, m)
+            start_ck = self._checkpoint(agents, state)
 
-            # Alg. 1 lines 17-18: every robot solves its own segment, uncoordinated.
-            segs, ctrls, oks = [], [], []
-            for i in range(env._n):
-                X, U, ok = self._solve(env, i, state[i], goals[i], seg_h, t_cfg, (),
-                                       terminal_stop=last)
-                segs.append(X)
-                ctrls.append(U)
-                oks.append(ok)
-
-            conflicts = self._find_conflicts(segs, radii, d_min, clearance)
-            self._snap(f"segment {j + 1}/{m}: uncoordinated solve "
-                       f"({len(conflicts)} conflict{'' if len(conflicts) == 1 else 's'})",
-                       segs, conflicts)
-            # The ladder handles two failure kinds, not one. A segment can be in
-            # conflict, but it can also just be INFEASIBLE on its own: segmentation
-            # constrains intermediate milestones by position only, so the previous
-            # segment is free to arrive pointing the wrong way, and the next one then
-            # cannot turn around and reach its milestone in the time it has. Gating the
-            # loop on conflicts alone sends those straight to the braking fallback
-            # without ever trying a rung.
-            rounds = 0
-            while (conflicts or not all(oks)) and rounds < max_rounds:
-                self.stats["conflicts"] += len(conflicts)
-                segs, ctrls, oks, conflicts = self._resolve_segment(
-                    conflicts, segs, ctrls, oks, env, state, goals, seg_h, t_cfg,
-                    radii, last, ladder, d_min, clearance, j, m,
+            # Alg. 2's outer `while P' == ∅`: run the whole solver hierarchy, and only if
+            # ALL of it fails widen the subproblem and run it again. K-ARC §III-C states the
+            # widening exactly: "we adapt the subproblem by setting the start query to the
+            # robot's previous segment start and the goal query to its next segment goal ...
+            # as opposed to in ARC where the queries are obtained by small incremental
+            # expansions". Re-opening committed motion is the point -- a segment can be
+            # unsolvable purely because the one before it arrived badly placed, and no
+            # amount of re-solving inside its own window can fix that.
+            adapt = 0
+            while True:
+                # Sized from the window's own geometry, so rolling the start back widens
+                # the budget by itself -- the leg is longer, the bang-bang time is longer.
+                seg_h = self._segment_horizon(env, t_cfg, state, goals, total_h, m)
+                segs, ctrls, oks, conflicts, rounds = self._plan_segment(
+                    env, state, goals, seg_h, last, t_cfg, radii, d_min, clearance,
+                    ladder, max_rounds, j, m, adapt,
                 )
-                rounds += 1
-            self.stats["rounds"] += rounds
+                self.stats["rounds"] += rounds
+                if (not conflicts and all(oks)) or adapt >= adapt_max or not prev_starts:
+                    break
+                adapt += 1
+                self.stats["adaptations"] += 1
+                start_ck = prev_starts.pop()
+                state = self._restore(agents, start_ck)
+
+            prev_starts.append(start_ck)
             if conflicts or not all(oks):
                 self.stats["unsolved_segments"] += 1
 
@@ -451,8 +448,63 @@ class KARCPlanner(BasePlanner):
                         break
         return out
 
+    def _plan_segment(self, env, state, goals, seg_h, last, t_cfg, radii, d_min,
+                      clearance, ladder, max_rounds, j, m, adapt):
+        """Solve one window: uncoordinated first (Alg. 1 lines 17-18), then the hierarchy."""
+        span = f"segment {j + 1}/{m}" + (f" (+{adapt} back)" if adapt else "")
+        segs, ctrls, oks = [], [], []
+        for i in range(env._n):
+            X, U, ok = self._solve(env, i, state[i], goals[i], seg_h, t_cfg, (),
+                                   terminal_stop=last)
+            segs.append(X)
+            ctrls.append(U)
+            oks.append(ok)
+
+        conflicts = self._find_conflicts(segs, radii, d_min, clearance)
+        self._snap(f"{span}: uncoordinated solve "
+                   f"({len(conflicts)} conflict{'' if len(conflicts) == 1 else 's'})",
+                   segs, conflicts)
+
+        # The hierarchy handles two failure kinds, not one. A segment can be in conflict,
+        # but it can also just be INFEASIBLE on its own: segmentation constrains
+        # intermediate milestones by position only, so the previous segment is free to
+        # arrive pointing the wrong way, and the next one then cannot turn around and reach
+        # its milestone in the time it has. Gating on conflicts alone sends those straight
+        # to the braking fallback without ever trying a rung.
+        rounds = 0
+        while (conflicts or not all(oks)) and rounds < max_rounds:
+            self.stats["conflicts"] += len(conflicts)
+            segs, ctrls, oks, conflicts = self._resolve_segment(
+                conflicts, segs, ctrls, oks, env, state, goals, seg_h, t_cfg,
+                radii, last, ladder, d_min, clearance, span,
+            )
+            rounds += 1
+        return segs, ctrls, oks, conflicts, rounds
+
+    def _checkpoint(self, agents, state) -> dict:
+        """Everything AdaptSubProblem has to be able to undo."""
+        return {
+            "state": [np.asarray(s, float).copy() for s in state],
+            "ctrl_len": {a: len(self._controls[a]) for a in agents},
+            "solved": dict(self._solved),
+            "committed_len": ([len(c) for c in self._committed]
+                              if self.trace is not None else None),
+        }
+
+    def _restore(self, agents, ck: dict) -> list:
+        """Undo committed motion back to a checkpoint. Effort counters are NOT rolled
+        back: those solver calls happened and cost wall time, and reporting otherwise would
+        understate what adaptation costs. Outcome counters are, since the segments they
+        described are being re-planned."""
+        for a in agents:
+            del self._controls[a][ck["ctrl_len"][a]:]
+        self._solved = dict(ck["solved"])
+        if self.trace is not None and ck["committed_len"] is not None:
+            self._committed = [c[:n] for c, n in zip(self._committed, ck["committed_len"])]
+        return [np.asarray(s, float).copy() for s in ck["state"]]
+
     def _resolve_segment(self, conflicts, segs, ctrls, oks, env, state, goals, seg_h,
-                         t_cfg, radii, last, ladder, d_min, clearance, j, m):
+                         t_cfg, radii, last, ladder, d_min, clearance, span):
         """One pass of Alg. 2 over a segment: a SUBPROBLEM PER CONFLICTING PAIR.
 
         ARC (arXiv:2312.08554 SS IV-B) is explicit that a subproblem is built around one
@@ -494,7 +546,7 @@ class KARCPlanner(BasePlanner):
                     )
                     self.stats["rungs"][rung] = self.stats["rungs"].get(rung, 0) + 1
                     conflicts = self._find_conflicts(segs, radii, d_min, clearance)
-                    self._snap(f"segment {j + 1}/{m}: R'={sorted(group)} {rung} -> "
+                    self._snap(f"{span}: R'={sorted(group)} {rung} -> "
                                f"{len(conflicts)} conflicts remaining", segs, conflicts)
                     if self._clear(group, conflicts, oks):
                         break

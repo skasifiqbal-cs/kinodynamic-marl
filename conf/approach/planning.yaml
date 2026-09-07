@@ -70,6 +70,21 @@ approach:
     #                  program so both can yield. The only rung that solves a symmetric
     #                  head-on swap, and the most expensive; keep it last.
     ladder: [prioritized, relaxed_goal, joint]
+    # AdaptSubProblem (Alg. 2 line 10). When the WHOLE solver hierarchy fails on a window,
+    # widen it and run the hierarchy again. K-ARC §III-C: "we adapt the subproblem by
+    # setting the start query to the robot's previous segment start and the goal query to
+    # its next segment goal ... as opposed to in ARC where the queries are obtained by small
+    # incremental expansions". This is how many segments BACK the start query may move; 1 is
+    # K-ARC's "previous segment". 0 disables adaptation, which is what this implementation
+    # did before 2026-09-07 -- and without it max_rounds re-solves a near-identical problem,
+    # since nothing about the window has changed between rounds.
+    #
+    # DEVIATION: only the backward half. Moving the goal query to the NEXT segment's
+    # milestone would have this window overtake segments that are unplanned for every other
+    # robot, so there would be nothing to avoid there and the outer loop would have to skip
+    # them per-robot. The mechanism's purpose -- room to manoeuvre that the window did not
+    # previously contain -- is served by re-opening committed motion.
+    adapt_max: 1
     # Cap on resolution rounds per segment before the segment is committed as-is.
     max_rounds: 3
     # Priority order within a subproblem: index (agent order) or distance

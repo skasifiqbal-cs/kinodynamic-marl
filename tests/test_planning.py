@@ -330,3 +330,92 @@ def test_a_singleton_subproblem_exists_for_an_infeasible_segment():
     assert KARCPlanner._clear({1}, [], oks) is False
     assert KARCPlanner._clear({1}, [(0, 1, 5)], [True, True, True]) is False
     assert KARCPlanner._clear({2}, [(0, 1, 5)], [True, True, True]) is True
+
+
+def test_adapt_subproblem_reopens_the_previous_segment_and_rescues_it():
+    """Alg. 2 line 10. A segment can be unsolvable purely because the one before it
+    arrived badly placed, and no amount of re-solving inside its own window fixes that;
+    K-ARC's answer is to move the start query back to the previous segment's start.
+
+    swap2 is the case: its head-on pair leaves segment 3 unsolved, and the planner brakes.
+    One adaptation resolves it. Without this, max_rounds re-solves a near-identical problem,
+    since nothing about the window changes between rounds.
+    """
+    _, off = _karc_stats("swap2_unicycle2", adapt_max=0)
+    _, on = _karc_stats("swap2_unicycle2", adapt_max=1)
+
+    assert off.stats["adaptations"] == 0
+    assert off.stats["unsolved_segments"] >= 1, "swap2 must still be the hard case here"
+
+    assert on.stats["adaptations"] >= 1, "the hierarchy failed; adaptation must have run"
+    assert on.stats["unsolved_segments"] == 0
+    assert on.stats["braked_segments"] == 0
+    # Re-opening committed motion buys a better plan, not just a feasible one.
+    assert on.stats["path_cost"] < off.stats["path_cost"]
+    # And it is not free: the rescued window is solved twice.
+    assert on.stats["solver_calls"] > off.stats["solver_calls"]
+
+
+def test_adaptation_cannot_reach_past_the_first_segment():
+    """There is no segment before the first, so a failure there has nothing to re-open.
+    The guard is `not prev_starts`; without it the checkpoint list would be popped empty."""
+    _, p = _karc_stats("swap2_unicycle2", adapt_max=99, m_segments=1)
+    assert p.stats["adaptations"] == 0
+
+
+def test_adapt_subproblem_undoes_committed_motion_back_to_a_checkpoint():
+    """AdaptSubProblem (Alg. 2 line 10) widens a window by moving the start query back to
+    the previous segment's start. That means UNDOING committed motion, which is the only
+    part with state to get wrong: controls already appended, the solved flags, and the
+    trace's committed poses all have to roll back together, or the re-planned window is
+    appended to motion it was supposed to replace.
+
+    Effort counters deliberately do NOT roll back -- those solver calls happened and cost
+    wall time, and reporting otherwise would understate what adaptation costs.
+    """
+    import numpy as np
+
+    from src.approach.planning import build_planner
+    from src.env.factory import build_env
+
+    GlobalHydra.instance().clear()
+    with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
+        cfg = compose("config", overrides=["approach=planning", "approach.method=karc",
+                                           "env=open_cross_4_unicycle2", "init=fixed"])
+    env = build_env(cfg)
+    env.reset(seed=0)
+    p = build_planner(cfg.approach)
+
+    agents = list(env.possible_agents)
+    p.trace = None
+    p._controls = {a: [np.zeros(2)] * 5 for a in agents}
+    p._solved = {a: True for a in agents}
+    state = [s.copy() for s in env._states]
+
+    ck = p._checkpoint(agents, state)
+
+    # ... a segment is planned and committed, and one robot fails ...
+    for a in agents:
+        p._controls[a].extend([np.ones(2)] * 7)
+    p._solved[agents[1]] = False
+    state[1] = state[1] + 3.0
+
+    restored = p._restore(agents, ck)
+
+    assert all(len(p._controls[a]) == 5 for a in agents), "committed controls must truncate"
+    assert p._solved[agents[1]] is True, "a rolled-back failure is no longer a failure"
+    assert np.allclose(restored[1], ck["state"][1]), "start query returns to the checkpoint"
+    # The checkpoint is a copy, not a view: mutating live state must not rewrite history.
+    assert not np.allclose(restored[1], state[1])
+
+
+def test_adaptation_is_configurable_and_off_by_zero():
+    """adapt_max=0 reproduces the pre-2026-09-07 behaviour, so the mechanism's cost and
+    benefit are measurable rather than asserted."""
+    from omegaconf import OmegaConf
+
+    GlobalHydra.instance().clear()
+    with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
+        cfg = compose("config", overrides=["approach=planning", "approach.method=karc"])
+    assert cfg.approach.karc.adapt_max == 1, "K-ARC's 'previous segment' is one step back"
+    assert "adapt_max" in OmegaConf.to_container(cfg.approach.karc)
