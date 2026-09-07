@@ -64,7 +64,7 @@ class KARCPlanner(BasePlanner):
 
         radii = [float(r.shape.bounding_radius) for r in env.robots]
         agents = list(env.possible_agents)
-        milestones = self._milestones(env, m, clearance)
+        milestones, ref_paths = self._milestones(env, m, clearance)
 
         self.stats = {
             "conflicts": 0, "rounds": 0, "subproblems": 0,
@@ -83,11 +83,16 @@ class KARCPlanner(BasePlanner):
         self.trace = [] if k_cfg.get("trace", False) else None
         self._committed = [np.asarray(state[i][:3], float).reshape(1, 3)
                            for i in range(env._n)]
-        # The reference is a PATH, not a trajectory -- no dynamics, nothing to drive along
-        # it -- so it is the one stage that stays a still frame.
-        self._snap("kinematic reference paths (Alg. 1 line 3)", [],
-                   static=[np.vstack([state[i][:2], np.asarray(milestones[i], float)[:, :2]])
-                           for i in range(env._n)])
+        # Dotted circles at every segment boundary, on every stage.
+        self._waypoints = [np.asarray(ms, float)[:2]
+                           for chain in milestones for ms in chain]
+        # The reference is a PATH, not a trajectory: it has no dynamics and no timing. But
+        # walking the robots along it at a common arclength fraction is exactly the
+        # uncoordinated motion K-ARC starts from, and the collisions it produces are the
+        # reason the rest of the algorithm exists -- so it is driven, not drawn.
+        self._snap("kinematic reference paths (Alg. 1 line 3) -- uncoordinated",
+                   [], anim=[self._walk(r) for r in ref_paths],
+                   static=[np.zeros((0, 2)) for _ in agents])
 
         for j in range(m):
             goals = [milestones[i][j] for i in range(env._n)]
@@ -176,6 +181,30 @@ class KARCPlanner(BasePlanner):
             out[agent] = seq.pop(0) if seq else np.zeros(env.robots[i].action_dim)
         return out
 
+    @staticmethod
+    def _walk(path: np.ndarray, steps: int = 160) -> np.ndarray:
+        """A geometric path -> (steps, 3) poses, sampled at equal fractions of arclength.
+
+        Every robot gets the same number of samples, so index k is the same fraction of
+        the way along for all of them. That is the synchronisation K-ARC's segmentation
+        imposes, applied to the reference itself, and it is what makes the resulting
+        overlaps meaningful rather than an artefact of unequal path lengths. Heading comes
+        from the path tangent -- the reference is kinematic, so there is no other source.
+        """
+        pts = np.asarray(path, dtype=float)[:, :2]
+        if len(pts) < 2:
+            return np.zeros((0, 3))
+        seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+        arc = np.concatenate([[0.0], np.cumsum(seg)])
+        if arc[-1] <= 0:
+            return np.zeros((0, 3))
+        want = np.linspace(0.0, arc[-1], steps)
+        xy = np.column_stack([np.interp(want, arc, pts[:, 0]),
+                              np.interp(want, arc, pts[:, 1])])
+        d = np.gradient(xy, axis=0)
+        theta = np.arctan2(d[:, 1], d[:, 0])
+        return np.column_stack([xy, theta])
+
     def _snap(self, label, segs, conflicts=(), static=None, anim=None) -> None:
         """Keep one stage of the plan for rendering. No-op unless karc.trace is set.
 
@@ -198,6 +227,7 @@ class KARCPlanner(BasePlanner):
             "anim": [np.asarray(p, float)[:, :3] for p in
                      (anim if anim is not None else segs)],
             "markers": [0.5 * (segs[i][k][:2] + segs[j][k][:2]) for i, j, k in conflicts],
+            "waypoints": list(self._waypoints),
         })
 
     @staticmethod
@@ -252,7 +282,7 @@ class KARCPlanner(BasePlanner):
         return min(env.max_steps, max(10, int(np.ceil(slack * worst / env.dt))))
 
     @staticmethod
-    def _milestones(env, m: int, clearance: float) -> list[list[np.ndarray]]:
+    def _milestones(env, m: int, clearance: float):
         """Milestones spaced evenly along an obstacle-aware reference path.
 
         K-ARC seeds its optimiser from a *kinematic planner*, and that matters more
@@ -271,14 +301,15 @@ class KARCPlanner(BasePlanner):
             env.cfg.env.obstacles, env._world_size, v_max=1.0,
             clearance=clearance + max(r.shape.bounding_radius for r in env.robots),
         )
-        out = []
+        out, refs = [], []
         for i in range(env._n):
             s0 = np.asarray(env._states[i], dtype=np.float64)
             g = np.asarray(env._goals[i], dtype=np.float64)
             path = KARCPlanner._descend(grid, s0[:2], g[:2])
+            refs.append(np.asarray(path, dtype=np.float64))
             out.append(KARCPlanner._resample(path, g, m))
         radii = [float(r.shape.bounding_radius) for r in env.robots]
-        return KARCPlanner._separate(out, radii, clearance, env._world_size)
+        return KARCPlanner._separate(out, radii, clearance, env._world_size), refs
 
     @staticmethod
     def _separate(ms, radii, clearance, world_size):

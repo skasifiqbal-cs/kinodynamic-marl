@@ -188,7 +188,7 @@ def test_karc_trace_is_off_by_default_and_records_every_stage_when_on():
         GlobalHydra.instance().clear()
         with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
             cfg = compose("config", overrides=["approach=planning", "approach.method=karc",
-                                               "env=swap2_unicycle2", "init=fixed",
+                                               "env=open_cross_4_unicycle2", "init=fixed",
                                                f"approach.karc.trace={str(trace).lower()}"])
         env = build_env(cfg)
         env.reset(seed=0)
@@ -204,7 +204,7 @@ def test_karc_trace_is_off_by_default_and_records_every_stage_when_on():
     assert labels[0].startswith("kinematic reference paths")
     assert labels[-1] == "final plan"
     assert any("uncoordinated solve" in ln for ln in labels)
-    assert any("prioritized" in ln for ln in labels), "swap2 conflicts; a rung must run"
+    assert any("prioritized" in ln for ln in labels), "segment 2 conflicts; a rung must run"
 
     for st in on.trace:
         assert len(st["static"]) == env._n
@@ -223,6 +223,28 @@ def test_karc_trace_is_off_by_default_and_records_every_stage_when_on():
     assert on.trace[-1]["label"] == "final plan"
     longest_segment = max(len(a) for st in on.trace[:-1] for a in st["anim"] if len(a))
     assert max(len(a) for a in on.trace[-1]["anim"]) > longest_segment
-    # The conflict markers are what the red crosses are drawn at, so at least one stage
-    # must carry them -- swap2's head-on pair is the reason this scenario is used here.
+    # The conflict markers are what the red crosses are drawn at; open_cross_4's segment 2
+    # is the one that conflicts.
     assert any(st["markers"] for st in on.trace)
+    # Segment boundaries, drawn as dotted circles: m_segments milestones per robot, on
+    # every stage (they are the frame the whole plan is built in, not per-stage decoration).
+    counts = {len(st["waypoints"]) for st in on.trace}
+    assert len(counts) == 1, f"waypoints must not vary by stage: {counts}"
+    n_wp = counts.pop()
+    assert n_wp > 0 and n_wp % env._n == 0, n_wp
+
+    # The reference stage is DRIVEN, not stilled: robots walk it uncoordinated and collide,
+    # which is the motivation for every stage after it. Poses carry a heading from the path
+    # tangent, so a straight leg must not read as theta=0 for a robot heading -x.
+    ref = on.trace[0]["anim"]
+    assert len(ref) == env._n and all(len(a) > 2 for a in ref)
+    assert any(abs(float(a[len(a) // 2][2])) > 1e-6 for a in ref), "headings all zero"
+
+    from src.collision.shapes import collides
+    shapes = [r.shape for r in env.robots]
+    hit = any(
+        collides(shapes[i], tuple(ref[i][t][:3]), shapes[j], tuple(ref[j][t][:3]))
+        for t in range(min(len(a) for a in ref))
+        for i in range(env._n) for j in range(i + 1, env._n)
+    )
+    assert hit, "uncoordinated reference paths must actually collide, or stage 1 shows nothing"

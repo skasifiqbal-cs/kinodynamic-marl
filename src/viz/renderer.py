@@ -110,6 +110,8 @@ def render_frame_with_shapes(
     goal_radius: float = 0.2,
     title: Optional[str] = None,
     markers: Optional[List[np.ndarray]] = None,
+    waypoints: Optional[List[np.ndarray]] = None,
+    highlight: Optional[List[bool]] = None,
 ) -> np.ndarray:
     """Render one frame with correct robot shapes (circle or OBB).
 
@@ -150,6 +152,13 @@ def render_frame_with_shapes(
         ax.text(lx, ly, f"g{i}", fontsize=fs, color=GOAL_COLOR, fontweight="bold",
                 ha="center", va="center", zorder=4)
 
+    for w in (waypoints or []):
+        # Segment boundaries: K-ARC constrains robots to meet these at matching time
+        # indices, which is what makes the inter-robot constraints comparable.
+        ax.add_patch(mpatches.Circle((float(w[0]), float(w[1])), goal_radius,
+                                     facecolor="none", edgecolor=EDGE_COLOR,
+                                     linestyle=":", linewidth=1.0, alpha=0.75, zorder=3))
+
     for trail in trails:
         if len(trail) > 1:
             t = np.array(trail)
@@ -159,8 +168,9 @@ def render_frame_with_shapes(
         x, y, theta = float(state[0]), float(state[1]), float(state[2])
         alpha = 0.45 if reached[i] else 1.0
         shape = robot_shapes[i]
-        _draw_shape(ax, x, y, theta, shape, BODY_COLOR, alpha=alpha, zorder=5,
-                    edge=EDGE_COLOR, lw=1.4)
+        hit = bool(highlight[i]) if highlight is not None else False
+        _draw_shape(ax, x, y, theta, shape, "#c0392b" if hit else BODY_COLOR,
+                    alpha=alpha, zorder=5, edge=EDGE_COLOR, lw=2.2 if hit else 1.4)
         # Heading inside the body: the label is outside now, so nothing collides here.
         reach = _forward_reach(shape)
         ax.plot([x, x + reach * np.cos(theta)], [y, y + reach * np.sin(theta)],
