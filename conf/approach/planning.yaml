@@ -47,6 +47,15 @@ approach:
     # since been deleted as a near-duplicate of gap, so re-sweep before quoting this. No m produced a collision, so the cost of a bad m is a robot
     # that stops short, not one that crashes. Sweep it before reporting anything.
     m_segments: 4
+    # How a subproblem's robot set R' is chosen when a segment has several conflicts.
+    #   pair    - one subproblem per conflicting PAIR, which is what ARC specifies
+    #             (arXiv:2312.08554 SS IV-B, "R' = R_i u R_j merges the involved robots").
+    #             R' then grows only reactively, when resolving one conflict invalidates a
+    #             resolution already made this round.
+    #   merged  - every conflicting robot in the segment in ONE subproblem. What this
+    #             implementation did before 2026-09-07; kept for the ablation, since it is
+    #             the difference between 16 independent pair solves and one 32-robot solve.
+    subproblem: pair
     # Conflict predicate: robots closer than d_min at the same index conflict.
     # null -> sum of the two bounding radii + trajopt.clearance. This is a purely
     # GEOMETRIC test with no velocity term, faithful to K-ARC Eq. 6.

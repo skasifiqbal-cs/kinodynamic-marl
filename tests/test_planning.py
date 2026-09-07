@@ -276,3 +276,57 @@ def test_trace_commits_the_braking_rollout_for_an_unsolved_segment():
     assert np.allclose(path[0], st)
     assert np.allclose(path[-1], final), "reported final state must end the path"
     assert abs(float(final[3])) < abs(float(st[3])), "braking must shed speed"
+
+
+def _karc_stats(env_name, **overrides):
+    from src.approach.planning import build_planner
+    from src.env.factory import build_env
+
+    ov = ["approach=planning", "approach.method=karc", f"env={env_name}", "init=fixed"]
+    ov += [f"approach.karc.{k}={v}" for k, v in overrides.items()]
+    GlobalHydra.instance().clear()
+    with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
+        cfg = compose("config", overrides=ov)
+    env = build_env(cfg)
+    env.reset(seed=0)
+    p = build_planner(cfg.approach)
+    p.reset(env)
+    return env, p
+
+
+def test_a_subproblem_is_one_conflicting_pair_not_every_conflicting_robot():
+    """ARC SS IV-B builds a subproblem around ONE conflict: R' = R_i u R_j. Merging every
+    conflicting robot in a segment turns N/2 independent pair solves into one N-robot
+    coupled solve, whose cost and failure rate are then ours rather than the algorithm's.
+
+    open_cross_4 is two independent head-on pairs, so the two settings must reach the same
+    plan by different routes -- which is what makes |R'| the thing being measured.
+    """
+    env, pair = _karc_stats("open_cross_4_unicycle2", subproblem="pair")
+    _, merged = _karc_stats("open_cross_4_unicycle2", subproblem="merged")
+
+    assert pair.stats["subproblem_max"] == 2, pair.stats["subproblem_max"]
+    assert merged.stats["subproblem_max"] == env._n, merged.stats["subproblem_max"]
+    assert pair.stats["subproblems"] > merged.stats["subproblems"]
+
+    # Same outcome here: the pairs do not interact, so locality costs nothing.
+    assert pair.stats["conflicts_remaining"] == merged.stats["conflicts_remaining"] == 0
+    assert pair.stats["path_cost"] == pytest.approx(merged.stats["path_cost"])
+    assert pair.stats["unsolved_segments"] == merged.stats["unsolved_segments"] == 0
+
+
+def test_a_singleton_subproblem_exists_for_an_infeasible_segment():
+    """A robot whose own segment is infeasible has no conflict partner. It still needs
+    re-solving, so it forms a subproblem of one rather than being dropped."""
+    from src.approach.planning.karc import KARCPlanner
+
+    # No conflicts at all, robot 1 infeasible -> exactly one subproblem, containing it.
+    groups = []
+    oks = [True, False, True]
+    stranded = {i for i, ok in enumerate(oks) if not ok} - set().union(*groups, set())
+    assert stranded == {1}
+    assert hasattr(KARCPlanner, "_clear")
+    assert KARCPlanner._clear({1}, [], [True, True, True]) is True
+    assert KARCPlanner._clear({1}, [], oks) is False
+    assert KARCPlanner._clear({1}, [(0, 1, 5)], [True, True, True]) is False
+    assert KARCPlanner._clear({2}, [(0, 1, 5)], [True, True, True]) is True

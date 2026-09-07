@@ -70,6 +70,8 @@ class KARCPlanner(BasePlanner):
             "conflicts": 0, "rounds": 0, "subproblems": 0,
             "solver_calls": 0, "unsolved_segments": 0, "braked_segments": 0,
             "joint_solves": 0,
+            "merges": 0,
+            "subproblem_sizes": [],
             "rungs": {},
         }
         self._controls = {a: [] for a in agents}
@@ -129,18 +131,10 @@ class KARCPlanner(BasePlanner):
             rounds = 0
             while (conflicts or not all(oks)) and rounds < max_rounds:
                 self.stats["conflicts"] += len(conflicts)
-                self.stats["subproblems"] += 1
-                for rung in ladder:
-                    segs, ctrls, oks = self._resolve(
-                        rung, conflicts, segs, ctrls, oks, env, state, goals, seg_h,
-                        t_cfg, radii, last
-                    )
-                    self.stats["rungs"][rung] = self.stats["rungs"].get(rung, 0) + 1
-                    conflicts = self._find_conflicts(segs, radii, d_min, clearance)
-                    self._snap(f"segment {j + 1}/{m}: {rung} -> "
-                               f"{len(conflicts)} conflicts remaining", segs, conflicts)
-                    if not conflicts and all(oks):
-                        break
+                segs, ctrls, oks, conflicts = self._resolve_segment(
+                    conflicts, segs, ctrls, oks, env, state, goals, seg_h, t_cfg,
+                    radii, last, ladder, d_min, clearance, j, m,
+                )
                 rounds += 1
             self.stats["rounds"] += rounds
             if conflicts or not all(oks):
@@ -173,6 +167,11 @@ class KARCPlanner(BasePlanner):
         # Drive the whole committed plan end to end: the payoff shot.
         self._snap("final plan", [], static=[np.zeros((0, 2)) for _ in agents],
                    anim=self._committed if self.trace is not None else [])
+        sizes = self.stats.pop("subproblem_sizes")
+        # |R'| is the whole point of the pair-vs-merged question: a "local" subproblem that
+        # contains every robot is a coupled solve. Max and mean say which one ran.
+        self.stats["subproblem_max"] = max(sizes) if sizes else 0
+        self.stats["subproblem_mean"] = round(sum(sizes) / len(sizes), 2) if sizes else 0.0
         self.stats["conflicts_remaining"] = len(conflicts)
         self.stats["wall_time"] = time.perf_counter() - t0
         self.stats["path_cost"] = sum(len(v) for v in self._controls.values()) * env.dt
@@ -452,16 +451,85 @@ class KARCPlanner(BasePlanner):
                         break
         return out
 
-    def _resolve(self, rung, conflicts, segs, ctrls, oks, env, state, goals, seg_h,
+    def _resolve_segment(self, conflicts, segs, ctrls, oks, env, state, goals, seg_h,
+                         t_cfg, radii, last, ladder, d_min, clearance, j, m):
+        """One pass of Alg. 2 over a segment: a SUBPROBLEM PER CONFLICTING PAIR.
+
+        ARC (arXiv:2312.08554 SS IV-B) is explicit that a subproblem is built around one
+        conflict -- ``R' = R_i u R_j merges the involved robots`` -- and that R' grows only
+        reactively: *"there are instances where resolving one conflict invalidates a prior
+        conflict resolution. ARC can identify such occurrences and adapt R' to account for
+        all the involved robots."* K-ARC inherits this; it says nothing about changing it.
+
+        The point is locality. Merging every conflicting robot in the segment into one
+        problem, as this used to do, makes a 32-robot "local" subproblem out of 16
+        independent head-on pairs, and then asks the last robot to thread 31 frozen
+        trajectories. That is a coupled solve wearing a subproblem's name, and its cost and
+        failure rate are ours, not the algorithm's. ``karc.subproblem=merged`` restores it
+        for the ablation.
+
+        A robot whose own segment came back infeasible has no partner to pair with, so it
+        forms a singleton subproblem. ARC does not discuss this case -- its subproblems
+        exist only for conflicts -- but segmentation here constrains milestones by position
+        only, so a segment can be individually infeasible with no conflict at all, and that
+        is a failure the hierarchy can repair.
+        """
+        pairs = sorted({frozenset(c[:2]) for c in conflicts}, key=sorted)
+        groups = [set(pr) for pr in pairs]
+        if self.params.get("subproblem", "pair") == "merged":
+            groups = [set().union(*groups)] if groups else []
+        stranded = {i for i, ok in enumerate(oks) if not ok} - set().union(*groups, set())
+        groups += [{i} for i in sorted(stranded)]
+
+        settled: list[set] = []
+        for group in groups:
+            group = set(group)
+            while True:
+                self.stats["subproblems"] += 1
+                self.stats["subproblem_sizes"].append(len(group))
+                for rung in ladder:
+                    segs, ctrls, oks = self._resolve(
+                        rung, group, segs, ctrls, oks, env, state, goals, seg_h,
+                        t_cfg, radii, last,
+                    )
+                    self.stats["rungs"][rung] = self.stats["rungs"].get(rung, 0) + 1
+                    conflicts = self._find_conflicts(segs, radii, d_min, clearance)
+                    self._snap(f"segment {j + 1}/{m}: R'={sorted(group)} {rung} -> "
+                               f"{len(conflicts)} conflicts remaining", segs, conflicts)
+                    if self._clear(group, conflicts, oks):
+                        break
+
+                # Did resolving this subproblem invalidate an earlier one? A conflict that
+                # straddles the boundary, with a robot on the settled side, means it did.
+                conflicts = self._find_conflicts(segs, radii, d_min, clearance)
+                spoiled = {r for a, b, _ in conflicts for r in (a, b)
+                           if (a in group) != (b in group)
+                           and any(r in prev for prev in settled)}
+                merged = set(group).union(*[prev for prev in settled if prev & spoiled],
+                                          set())
+                if merged == group:
+                    break
+                self.stats["merges"] += 1
+                group = merged
+            settled = [prev for prev in settled if not (prev & group)] + [group]
+
+        return segs, ctrls, oks, self._find_conflicts(segs, radii, d_min, clearance)
+
+    @staticmethod
+    def _clear(group, conflicts, oks) -> bool:
+        """This subproblem is done: none of its robots is in a conflict or infeasible."""
+        return (all(oks[i] for i in group)
+                and not any(a in group or b in group for a, b, _ in conflicts))
+
+    def _resolve(self, rung, involved, segs, ctrls, oks, env, state, goals, seg_h,
                  t_cfg, radii, last=True):
-        """One rung of Alg. 2. Robots in the subproblem are re-solved in priority
-        order, each avoiding everything already committed this round."""
-        # A robot joins the subproblem if it is in a conflict OR its own segment came
-        # back infeasible -- both are failures the ladder exists to repair.
-        involved = sorted(
-            {i for c in conflicts for i in c[:2]}
-            | {i for i, ok in enumerate(oks) if not ok}
-        )
+        """One rung of the solver hierarchy S, applied to ONE subproblem.
+
+        `involved` is the subproblem's robot set R', chosen by the caller. Its members are
+        re-solved in priority order, each avoiding every trajectory outside the subproblem
+        plus those already fixed within it.
+        """
+        involved = sorted(involved)
         if self.params.get("priority", "index") == "distance":
             involved.sort(key=lambda i: float(np.linalg.norm(goals[i][:2] - state[i][:2])))
 
