@@ -42,6 +42,7 @@ import numpy as np
 from src.approach.planning import geometric_rrt, krrt
 from src.approach.planning.base import BasePlanner
 from src.approach.planning.trajopt import solve_group, solve_trajectory
+from src.conflict.margin import provable_ics
 from src.shaping.dijkstra_potential import DijkstraPotential
 
 
@@ -81,6 +82,8 @@ class KARCPlanner(BasePlanner):
             "timed_out": 0,
             "plan_failed": 0,
             "initial_path_fallbacks": 0,
+            "rungs_skipped": 0,
+            "escalated": 0,
             "subproblem_sizes": [],
             "rungs": {},
         }
@@ -706,7 +709,9 @@ class KARCPlanner(BasePlanner):
             while True:
                 self.stats["subproblems"] += 1
                 self.stats["subproblem_sizes"].append(len(group))
-                for rung in ladder:
+                start = self._start_rung(ladder, env, group, conflicts, segs,
+                                         radii, d_min, clearance)
+                for rung in ladder[start:]:
                     if self._over_budget():
                         return segs, ctrls, oks, self._find_conflicts(
                             segs, radii, d_min, clearance)
@@ -742,6 +747,73 @@ class KARCPlanner(BasePlanner):
         """This subproblem is done: none of its robots is in a conflict or infeasible."""
         return (all(oks[i] for i in group)
                 and not any(a in group or b in group for a, b, _ in conflicts))
+
+    def _waiting_resolves(self, env, a, b, segs, radii, d_min, clearance) -> bool:
+        """Could the prioritized rung fix this pair AT ALL?
+
+        The rung's only concession is order: one robot goes first, the other works around a
+        trajectory that is already fixed. For a second-order robot with a fixed goal that
+        means exactly one thing -- WAIT. So the question that predicts the rung is not "how
+        close are they" but "does waiting separate them", and it is answerable without a
+        solve: hold one robot's proposed trajectory, replace the other's with a
+        brake-to-rest-and-hold rollout, and check the pair at every shared index. Try it both
+        ways, since either robot may be the one to yield.
+
+        This replaced a severity test on the braking margin at the conflict index, which
+        could not work: a conflict is DETECTED when the geometric gap is already below
+        r_i + r_j + clearance, so the margin there is negative for every conflict by
+        construction and graded them all severe. Measured on open_cross_4, that escalated
+        6 of 6 subproblems and cost 251 s against the fixed ladder's 167 s.
+        """
+        thresh = (float(d_min) if d_min is not None
+                  else radii[a] + radii[b] + clearance)
+        for waiter, mover in ((a, b), (b, a)):
+            traj = np.atleast_2d(segs[mover])
+            _, _, braked = self._brake(env, waiter, np.asarray(segs[waiter][0], float),
+                                       len(traj) - 1)
+            n = min(len(traj), len(braked))
+            gap = np.linalg.norm(np.asarray(traj)[:n, :2] - braked[:n, :2], axis=1)
+            if float(gap.min()) >= thresh:
+                return True
+        return False
+
+    def _start_rung(self, ladder, env, group, conflicts, segs, radii, d_min,
+                    clearance) -> int:
+        """Index of the rung to START at. The rest of the ladder stays as fallback.
+
+        NOVELTY (not K-ARC). K-ARC tries the hierarchy in a fixed order and learns a conflict
+        was severe only by paying for every cheaper rung first. The cost gap is large -- on
+        open_cross_4 the prioritized rung resolves in seconds where composite RRT takes
+        minutes -- so predicting the rung is worth real time IF the prediction is about what
+        the rung can express.
+
+          waiting resolves every pair - ordering is enough: rung 0.
+          it does not               - someone has to leave the path, which is a homotopy
+                                      change a prioritized re-solve cannot make. Start at the
+                                      first sampling rung.
+          provable_ics              - contact is unavoidable for the pair as posed, so no
+                                      sequential assignment helps. Go to the strongest rung,
+                                      the only one that moves both robots at once.
+
+        The rungs AFTER the chosen one remain as fallback. That asymmetry is the safety
+        argument: severity may skip work it predicts is wasted, never the fallbacks below the
+        rung it picks, so a wrong prediction costs one solve and can never lose a resolution
+        the fixed ladder would have found.
+        """
+        if str(self.params.get("rung_select", "sequential")) != "margin":
+            return 0
+        pairs = [(a, b) for a, b, _ in conflicts if a in group and b in group]
+        idx = 0
+        for a, b in pairs:
+            if provable_ics(np.asarray(segs[a][0], float), env.robots[a],
+                            np.asarray(segs[b][0], float), env.robots[b])[0]:
+                idx = len(ladder) - 1
+                break
+            if not self._waiting_resolves(env, a, b, segs, radii, d_min, clearance):
+                idx = max(idx, min(1, len(ladder) - 1))
+        self.stats["rungs_skipped"] += idx
+        self.stats["escalated"] += int(idx > 0)
+        return idx
 
     def _group_paths(self, env, involved, state, goals):
         """Kinematic paths for R' from a GROUP planner -- §IV-C's first step, before any

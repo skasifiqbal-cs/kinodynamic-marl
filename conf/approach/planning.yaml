@@ -147,6 +147,19 @@ approach:
     #                  Not K-ARC; useful for rendering WHERE a run fails, which `return_empty`
     #                  by construction cannot show.
     on_unsolved: return_empty
+    # Which rung of the ladder a subproblem STARTS at. NOVELTY -- not in K-ARC.
+    #   sequential - K-ARC's own behaviour: always start at rung 0 and pay for every cheaper
+    #                rung before discovering a conflict was severe.
+    #   margin     - predict the rung from what the prioritized rung can EXPRESS. Its only
+    #                concession is waiting, so simulate it: brake one robot to rest and check
+    #                whether that separates the pair. If not, someone has to leave the path
+    #                and only a sampling rung can do that. provable_ics goes straight to the
+    #                strongest rung. The rungs AFTER the chosen one remain as fallback, so
+    #                this can skip work it predicts is wasted but can never lose a resolution
+    #                the sequential ladder would have found.
+    # Worth something only because the rungs differ in cost by orders of magnitude: on
+    # open_cross_4 the prioritized rung resolves in seconds where composite RRT takes minutes.
+    rung_select: sequential
     # Cap on resolution rounds per segment before the segment is committed as-is.
     max_rounds: 3
     # Priority order within a subproblem: index (agent order) or distance

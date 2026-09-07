@@ -479,3 +479,60 @@ def test_terminal_tolerance_stays_strictly_inside_the_env_goal_test():
     assert planner._terminal_tol(env, t_cfg, 1.0, True) < env.goal_radius
     # Intermediate milestones are not tested by the env and keep the configured value.
     assert planner._terminal_tol(env, t_cfg, 1.0, False) == float(t_cfg.get("goal_tol"))
+
+
+def test_margin_rung_select_keeps_the_ladder_below_the_rung_it_picks():
+    """The safety argument for grading the response by severity.
+
+    `rung_select: margin` may SKIP rungs it predicts will fail, but the rungs after the one
+    it picks must remain as fallback -- otherwise a wrong prediction turns a solvable
+    subproblem into an unsolved one, and the mechanism trades success for speed. Checked on
+    the selector directly rather than inferred from a run.
+
+    Also pins the predicate itself: the question is whether WAITING separates the pair, which
+    is the only concession the prioritized rung can make. An earlier version graded severity
+    by the braking margin at the conflict index -- that is negative for every conflict by
+    construction, since a conflict is detected when the geometric gap is already below
+    r_i + r_j, so it escalated everything and lost to the fixed ladder.
+    """
+    import numpy as np
+
+    from src.approach.planning import build_planner
+    from src.env.factory import build_env
+
+    cfg = _cfg("open_cross_4_unicycle2",
+               **{"approach.method": "karc", "approach.karc.rung_select": "margin"})
+    env = build_env(cfg)
+    env.reset(seed=0)
+    p = build_planner(cfg.approach)
+    p.stats = {"rungs_skipped": 0, "escalated": 0}
+    ladder = ["prioritized", "decoupled_rrt", "composite_rrt"]
+    radii = [float(r.shape.bounding_radius) for r in env.robots]
+    n = 40
+
+    def _traj(x, y, th, v):
+        """A straight constant-speed trajectory on the env's dt grid."""
+        out = []
+        s0 = np.array([x, y, th, v, 0.0])
+        for k in range(n + 1):
+            out.append(s0 + np.array([np.cos(th), np.sin(th), 0, 0, 0]) * v * env.dt * k)
+        return np.asarray(out)
+
+    # One robot crossing well clear of a stopped one: waiting trivially separates them.
+    clear = [_traj(1.0, 1.0, 0.0, 0.4), _traj(1.0, 9.0, 0.0, 0.4)]
+    assert p._start_rung(ladder, env, {0, 1}, [(0, 1, 5)], clear, radii, None, 0.05) == 0
+
+    # Head-on in the same lane: whichever robot stops, the other drives into it, so no
+    # ordering resolves this and the prioritized rung cannot express the fix.
+    # 2 m apart closing at 0.8 m/s meet inside the 4 s window; a waiter at 0.4 m/s with
+    # a_max 0.25 stops in 0.32 m, so stopping does not get it out of the way.
+    head_on = [_traj(4.0, 1.0, 0.0, 0.4), _traj(6.0, 1.0, np.pi, 0.4)]
+    picked = p._start_rung(ladder, env, {0, 1}, [(0, 1, 20)], head_on, radii, None, 0.05)
+    assert picked >= 1, "a head-on pair that waiting cannot separate must skip rung 0"
+    assert picked < len(ladder), "something must remain below the chosen rung"
+    assert p.stats["rungs_skipped"] == picked
+
+    # Faithful default is untouched: always rung 0.
+    p.params = dict(p.params)
+    p.params["rung_select"] = "sequential"
+    assert p._start_rung(ladder, env, {0, 1}, [(0, 1, 20)], head_on, radii, None, 0.05) == 0
