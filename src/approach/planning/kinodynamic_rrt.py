@@ -17,6 +17,10 @@ TODO (see BasePlanner docstring + docs/INTERN.md):
     - pop the next control from the stored sequence -> {agent: control}
       (hold last / zero control once the sequence is exhausted; clip to bounds)
 Params: n_control_samples, propagation_dt, propagation_steps, max_iters.
+
+`src/approach/planning/krrt.py` is a working control-space RRT (written for K-ARC's
+sampling ladder rungs) -- read it for the extension loop, but it is time-gridded on env.dt
+and multi-robot, which is not what this single-agent exercise asks for.
 """
 from __future__ import annotations
 

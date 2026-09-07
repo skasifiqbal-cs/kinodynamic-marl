@@ -39,6 +39,7 @@ import time
 
 import numpy as np
 
+from src.approach.planning import krrt
 from src.approach.planning.base import BasePlanner
 from src.approach.planning.trajopt import solve_group, solve_trajectory
 from src.shaping.dijkstra_potential import DijkstraPotential
@@ -71,6 +72,8 @@ class KARCPlanner(BasePlanner):
             "conflicts": 0, "rounds": 0, "subproblems": 0,
             "solver_calls": 0, "unsolved_segments": 0, "braked_segments": 0,
             "joint_solves": 0,
+            "decoupled_rrt_solves": 0,
+            "composite_rrt_solves": 0,
             "merges": 0,
             "adaptations": 0,
             "subproblem_sizes": [],
@@ -597,6 +600,11 @@ class KARCPlanner(BasePlanner):
                 involved, segs, ctrls, oks, env, state, goals, seg_h, t_cfg,
                 tuple(avoid), last,
             )
+        if rung in ("decoupled_rrt", "composite_rrt"):
+            return self._solve_rrt(
+                rung, involved, segs, ctrls, oks, env, state, goals, seg_h, t_cfg,
+                last,
+            )
 
         for level, i in enumerate(involved):
             scale = 1.0 if rung == "prioritized" else relax ** level
@@ -608,9 +616,73 @@ class KARCPlanner(BasePlanner):
             avoid.append((X, radii[i]))
         return segs, ctrls, oks
 
+    def _solve_rrt(self, rung, involved, segs, ctrls, oks, env, state, goals, seg_h,
+                   t_cfg, last):
+        """K-ARC's sampling rungs: Decoupled and Composite Kinodynamic RRT.
+
+        Why the ladder has them at all (ARC arXiv:2312.08554 SS IV-C): the prioritised
+        rungs re-solve one robot at a time inside the SAME homotopy the reference path
+        picked, so the only concession a lower-priority robot can make is to slow down or
+        stop. When the resolution requires leaving the path -- backing into free space,
+        going around the far side of an obstacle -- trajopt cannot find it, because a
+        nonlinear program started from an infeasible seed does not change homotopy class.
+        Sampling does: it "adds additional configurations that robots can use to move out
+        of the way".
+
+        decoupled_rrt  - one tree per robot, in priority order, each avoiding the
+                         trajectories already fixed (inside and outside R'). Cheap;
+                         inherits the incompleteness of prioritised planning.
+        composite_rrt  - ONE tree over the joint state of R'. Complete for the subproblem
+                         given enough samples, exponential in |R'|, hence last.
+
+        Both use the same time-gridded planner (`src.approach.planning.krrt`), so their
+        output is index-comparable with a trajopt segment and can be committed the same way.
+        """
+        rng = np.random.default_rng(
+            int(self.params.get("rrt_seed", 0)) + 1000 * self.stats["rounds"]
+            + len(self.stats["subproblem_sizes"]))
+        kw = dict(
+            goal_tol=float(t_cfg.get("goal_tol", env.goal_radius)),
+            terminal_stop=last,
+            max_iters=int(self.params.get("rrt_iters", 3000)),
+            n_controls=int(self.params.get("rrt_controls", 10)),
+            steps=int(self.params.get("rrt_steps", 5)),
+            goal_bias=float(self.params.get("rrt_goal_bias", 0.15)),
+            rng=rng,
+        )
+        segs, ctrls, oks = list(segs), list(ctrls), list(oks)
+        outside = [(segs[i], env.robots[i].shape)
+                   for i in range(env._n) if i not in involved]
+
+        if rung == "composite_rrt":
+            self.stats["composite_rrt_solves"] += 1
+            X, U, ok = krrt.plan(
+                [env.robots[i] for i in involved], [state[i] for i in involved],
+                [goals[i] for i in involved], env._obstacles, env._world_size,
+                env.dt, seg_h, others=tuple(outside), **kw)
+            # One tree, one verdict -- as with the joint program.
+            for slot, i in enumerate(involved):
+                segs[i], ctrls[i], oks[i] = X[:, slot], U[:, slot], ok
+            return segs, ctrls, oks
+
+        self.stats["decoupled_rrt_solves"] += 1
+        avoid = list(outside)
+        for i in involved:
+            X, U, ok = krrt.plan(
+                [env.robots[i]], [state[i]], [goals[i]], env._obstacles,
+                env._world_size, env.dt, seg_h, others=tuple(avoid), **kw)
+            segs[i], ctrls[i], oks[i] = X[:, 0], U[:, 0], ok
+            avoid.append((segs[i], env.robots[i].shape))
+        return segs, ctrls, oks
+
     def _solve_joint(self, involved, segs, ctrls, oks, env, state, goals, seg_h, t_cfg,
                      avoid, last):
-        """K-ARC's AdaptSubProblem: re-solve the conflicting robots TOGETHER.
+        """Re-solve the conflicting robots TOGETHER in one nonlinear program.
+
+        NOT a K-ARC rung -- its hierarchy goes prioritized -> decoupled RRT -> composite RRT
+        (`_solve_rrt`), and AdaptSubProblem is the window-widening loop in `reset`, not this.
+        This is the optimisation-side analogue of composite_rrt, kept because it is cheaper
+        than sampling when the resolution stays in one homotopy class.
 
         The prioritised rungs fix one robot's trajectory and ask the next to work around
         it. That cannot solve a symmetric head-on swap in a corridor — whichever robot is

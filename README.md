@@ -106,6 +106,19 @@ done
 
 ### K-ARC and its resolution ladder
 
+The default ladder is K-ARC's own (§III-C): **prioritized trajectory optimization →
+Decoupled Kinodynamic RRT → Composite Kinodynamic RRT**. The two sampling rungs exist
+because a prioritized re-solve cannot change homotopy class — it can only make a robot slow
+down or stop, never route it the other way round an obstacle — so a ladder of trajopt-only
+rungs is not K-ARC's ladder. They share one time-gridded planner,
+`src/approach/planning/krrt.py`: extensions advance a whole number of `env.dt` steps and a
+result is padded to exactly the segment horizon, so an RRT trajectory is index-comparable
+with a trajopt one and fixed trajectories are avoided as *moving* obstacles.
+
+Two extra rungs are ours, not K-ARC's, and are available by naming them: `relaxed_goal`
+(lower-priority robots get a looser terminal tolerance) and `joint` (the conflicting robots
+in one nonlinear program — the optimization-side counterpart of `composite_rrt`).
+
 `ladder` is a list, so dropping rungs from it *is* the ablation — no code change:
 
 ```bash
@@ -115,6 +128,10 @@ python main.py approach=planning approach.method=karc env=open_cross_4_unicycle2
 # prioritized rung only. Quote it: bash eats the brackets.
 python main.py approach=planning approach.method=karc \
   env=open_cross_4_unicycle2 'approach.karc.ladder=[prioritized]'
+
+# sampling rungs only — the way to exercise them on a scenario the first rung can solve
+python main.py approach=planning approach.method=karc \
+  env=open_cross_4_unicycle2 'approach.karc.ladder=[decoupled_rrt,composite_rrt]'
 
 # ... and render it
 python main.py approach=planning approach.method=karc \
@@ -136,14 +153,13 @@ Every planning run prints a `STATS,<method>,...` line beside `RESULT`: conflicts
 subproblems, rounds, `rungs` (which ones actually fired), `solver_calls`, `joint_solves`,
 `wall_time`. Read the ablation off `rungs` — success rate alone cannot tell you whether
 the rung you removed was ever reached. On `open_cross_4` both commands above give 100%
-success, 0 collisions, 578 steps and `rungs={'prioritized': 1}`, i.e. the lower rungs
-never fire at N=4.
+success, 0 collisions, 578 steps and `rungs={'prioritized': 2}`, i.e. the lower rungs
+never fire at N=4. Forcing the sampling rungs (third command) also succeeds, in 544 steps
+and ~8x the wall time — the price of the completeness they buy.
 
-> **Faithfulness gap.** K-ARC §III-C specifies the ladder as prioritized trajectory
-> optimization → **Decoupled Kinodynamic RRT** → **Composite Kinodynamic RRT**. Ours is
-> `[prioritized, relaxed_goal, joint]` — all three optimization-based. Rung 1 is faithful;
-> rungs 2–3 are not, and are ours. It does not affect any result where `rungs` shows only
-> `prioritized`.
+> **Reproducibility.** The sampling rungs are randomised, so a run is only reproducible
+> for a given `approach.karc.rrt_seed`. Runs whose `rungs` shows only `prioritized` are
+> unaffected and stay deterministic — which is every open-cross result at N ≤ 16.
 
 ## Robots
 
@@ -176,7 +192,8 @@ cannot express).
 
 ## Planning methods (`approach=planning approach.method=…`)
 
-`rrt` · `kinodynamic_rrt` · `optimization` (prioritised minimum-time NLP) ·
+`rrt` · `kinodynamic_rrt` (both stubs — intern exercises, see `docs/INTERN.md`) ·
+`optimization` (prioritised minimum-time NLP) ·
 `karc` (K-ARC, arXiv:2501.01559 — segmented plans, geometric conflict detection, and a
 configurable resolution ladder). Everything is set from `conf/approach/planning.yaml`;
 `approach=planning` also drops the `network`/`train` groups, so `--cfg job` shows only

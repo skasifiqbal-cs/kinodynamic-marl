@@ -62,14 +62,32 @@ approach:
     d_min: null
     # Resolution ladder. Each rung is tried in order on a failed subproblem; drop one
     # to ablate its contribution.
-    #   prioritized  - re-solve the conflicting robots one at a time, each avoiding the
-    #                  trajectories already fixed this round. Cheapest.
-    #   relaxed_goal - same, but lower-priority robots get a looser terminal tolerance
-    #                  (see relax_per_level), so they may stop short rather than fail.
-    #   joint        - K-ARC's AdaptSubProblem: put the conflicting robots in ONE
-    #                  program so both can yield. The only rung that solves a symmetric
-    #                  head-on swap, and the most expensive; keep it last.
-    ladder: [prioritized, relaxed_goal, joint]
+    # The default is K-ARC's own hierarchy (SS III-C): prioritized trajectory optimisation,
+    # then Decoupled Kinodynamic RRT, then Composite Kinodynamic RRT. The last two exist
+    # because the first cannot change homotopy class -- a prioritised re-solve can only make
+    # a robot slow down or stop, never route it the other way round an obstacle -- so a
+    # ladder of trajopt-only rungs is not K-ARC's ladder, whatever else it can do.
+    #   prioritized    - re-solve the conflicting robots one at a time, each avoiding the
+    #                    trajectories already fixed this round. Cheapest.
+    #   decoupled_rrt  - same ordering, but each robot gets a kinodynamic RRT (time-gridded,
+    #                    see src/approach/planning/krrt.py) instead of a nonlinear program.
+    #   composite_rrt  - ONE tree over the joint state of R'. Complete for the subproblem in
+    #                    the limit, exponential in |R'|; last for that reason.
+    # NOT K-ARC, kept for ablation and available by naming them here:
+    #   relaxed_goal   - prioritized, but lower-priority robots get a looser terminal
+    #                    tolerance (relax_per_level), so they stop short rather than fail.
+    #   joint          - the conflicting robots in ONE nonlinear program so both can yield.
+    #                    Solves a symmetric head-on swap that no ordering can; the
+    #                    optimisation-side counterpart of composite_rrt.
+    ladder: [prioritized, decoupled_rrt, composite_rrt]
+    # Sampling-rung knobs, shared by both RRT rungs.
+    rrt_seed: 0          # tree growth is randomised, so a run is only reproducible per-seed.
+    rrt_iters: 3000      # extension attempts before giving up and failing the rung.
+    rrt_controls: 10     # controls sampled per extension; the best is kept (best-input RRT).
+    rrt_steps: 5         # env.dt steps one control is held for. MUST divide the segment
+                         # horizon's grid -- node depth is the timestep index, which is what
+                         # keeps an RRT trajectory comparable with a trajopt one.
+    rrt_goal_bias: 0.15  # probability of expanding the goal-closest node instead of a random one.
     # AdaptSubProblem (Alg. 2 line 10). When the WHOLE solver hierarchy fails on a window,
     # widen it and run the hierarchy again. K-ARC §III-C: "we adapt the subproblem by
     # setting the start query to the robot's previous segment start and the goal query to
