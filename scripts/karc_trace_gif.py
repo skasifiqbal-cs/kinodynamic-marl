@@ -1,6 +1,7 @@
 """Render the K-ARC planning PROCESS as a GIF, one frame per algorithm stage.
 
-The episode GIFs show the plan being executed. This shows how it was arrived at:
+The episode GIFs show the finished plan being executed. This shows how it was arrived
+at, with the robots DRIVEN along each candidate trajectory as it is proposed:
 
     1. kinematic reference paths          (Alg. 1 line 3, Dijkstra descent)
     2. per-segment uncoordinated solve    (Alg. 1 lines 17-18) + the conflicts it produced
@@ -11,6 +12,8 @@ Nothing is recomputed: the planner already builds every one of these and overwri
 so `approach.karc.trace=true` keeps them and this walks the list.
 
     python scripts/karc_trace_gif.py approach=planning env=open_cross_4_unicycle2
+    # every 2nd planned step instead of every 3rd (slower, smoother)
+    python scripts/karc_trace_gif.py approach=planning env=swap2_unicycle2 +frame_skip=2
     python scripts/karc_trace_gif.py approach=planning env=swap2_unicycle2 \
         eval.gif_path=experiments/swap2_trace.gif
 """
@@ -39,7 +42,6 @@ def main(cfg: DictConfig) -> None:
 
     out = cfg.eval.get("gif_path", None) or "karc_trace.gif"
     fps = int(cfg.eval.get("fps", 15))
-    hold = fps                            # one second per stage
 
     env = build_env(cfg)
     env.reset(seed=0)
@@ -49,27 +51,46 @@ def main(cfg: DictConfig) -> None:
     if not planner.trace:
         raise RuntimeError("planner recorded no stages — is approach.method=karc?")
 
-    states = [s.copy() for s in env._states]      # robots stay at their starts
-    frames = []
-    for stage in planner.trace:
-        frame = render_frame_with_shapes(
-            states=states,
-            robot_shapes=[r.shape for r in env.robots],
-            goals=env._goals,
-            obstacles=env._obstacles,
-            trails=[[p for p in path] for path in stage["paths"]],
-            world_size=env._world_size,
-            reached=[False] * env._n,
-            step=0,
-            title=stage["label"],
-            markers=stage["markers"],
+    shapes = [r.shape for r in env.robots]
+    start = [s.copy() for s in env._states]
+    skip = int(cfg.get("frame_skip", 3))
+
+    def draw(states, trails, label, markers):
+        return render_frame_with_shapes(
+            states=states, robot_shapes=shapes, goals=env._goals,
+            obstacles=env._obstacles, trails=trails, world_size=env._world_size,
+            reached=[False] * env._n, step=0, title=label, markers=markers,
             goal_radius=env.goal_radius,
         )
-        frames.extend([frame] * hold)
-        print(f"  {stage['label']}")
+
+    frames = []
+    for stage in planner.trace:
+        static = [list(p) for p in stage["static"]]
+        anim = stage["anim"]
+        label, markers = stage["label"], stage["markers"]
+
+        if not anim or max(len(a) for a in anim) < 2:
+            # A path with no dynamics (the kinematic reference): nothing to drive.
+            frames.extend([draw(start, static, label, markers)] * fps)
+            print(f"  {label}  [still]")
+            continue
+
+        # Drive every robot along its candidate trajectory, holding the short ones at
+        # their last state so the frame count is the longest robot's, not the shortest.
+        horizon = max(len(a) for a in anim)
+        for t in range(0, horizon, skip):
+            states = [a[min(t, len(a) - 1)] for a in anim]
+            trails = [static[i] + [a[k, :2] for k in range(min(t, len(a) - 1) + 1)]
+                      for i, a in enumerate(anim)]
+            frames.append(draw(states, trails, label, markers))
+        # Hold on the finished trajectory, with the conflicts it produced still marked.
+        end = [a[-1] for a in anim]
+        end_trails = [static[i] + [p for p in a[:, :2]] for i, a in enumerate(anim)]
+        frames.extend([draw(end, end_trails, label, markers)] * (fps // 2))
+        print(f"  {label}  [{horizon} steps]")
 
     save_gif(frames, out, fps)
-    print(f"{len(planner.trace)} stages → {out}")
+    print(f"{len(planner.trace)} stages, {len(frames)} frames → {out}")
 
 
 if __name__ == "__main__":

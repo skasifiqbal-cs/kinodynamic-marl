@@ -122,9 +122,10 @@ python main.py approach=planning approach.method=karc \
   eval.gif_path=experiments/open_cross_karc.gif
 ```
 
-`scripts/karc_trace_gif.py` renders the planning *process* instead of its execution —
-one frame per algorithm stage: the kinematic reference paths, each segment's uncoordinated
-solve with its conflicts marked, what every ladder rung changed, and the committed plan.
+`scripts/karc_trace_gif.py` renders the planning *process* instead of its execution. The
+robots are driven along each candidate trajectory as it is proposed: the kinematic
+reference paths, each segment's uncoordinated solve with its conflicts marked, what every
+ladder rung changed, and finally the whole committed plan. `+frame_skip=2` for smoother.
 
 ```bash
 python scripts/karc_trace_gif.py approach=planning env=open_cross_4_unicycle2 \

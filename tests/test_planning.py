@@ -207,9 +207,22 @@ def test_karc_trace_is_off_by_default_and_records_every_stage_when_on():
     assert any("prioritized" in ln for ln in labels), "swap2 conflicts; a rung must run"
 
     for st in on.trace:
-        assert len(st["paths"]) == env._n, "one path per robot, every stage"
-        for path in st["paths"]:
-            assert path.ndim == 2 and path.shape[1] == 2, "paths are (T, 2) for drawing"
+        assert len(st["static"]) == env._n
+        # anim is empty exactly for a stage with no dynamics to replay (the reference
+        # path); every other stage carries one trajectory per robot.
+        assert len(st["anim"]) in (0, env._n)
+        for path in st["static"]:
+            assert path.ndim == 2 and path.shape[1] == 2, "static trails are (T, 2)"
+        for path in st["anim"]:
+            # (T, 3): the heading is what orients the robot body while it is driven, so a
+            # trajectory stored as bare xy would render every robot pointing along +x.
+            assert path.ndim == 2 and path.shape[1] == 3, "driven paths need headings"
+
+    # The last stage drives the whole committed plan, so it must be longer than any one
+    # segment -- that is the difference between replaying the plan and replaying a piece.
+    assert on.trace[-1]["label"] == "final plan"
+    longest_segment = max(len(a) for st in on.trace[:-1] for a in st["anim"] if len(a))
+    assert max(len(a) for a in on.trace[-1]["anim"]) > longest_segment
     # The conflict markers are what the red crosses are drawn at, so at least one stage
     # must carry them -- swap2's head-on pair is the reason this scenario is used here.
     assert any(st["markers"] for st in on.trace)

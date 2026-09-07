@@ -81,11 +81,13 @@ class KARCPlanner(BasePlanner):
         # only its outcome: reference paths, the uncoordinated solve, the conflicts it
         # produced, and what each ladder rung did about them.
         self.trace = [] if k_cfg.get("trace", False) else None
-        self._committed_xy = [np.asarray(state[i][:2], float).reshape(1, 2)
-                              for i in range(env._n)]
-        self._snap("kinematic reference paths (Alg. 1 line 3)",
-                   [np.vstack([state[i][:2], np.asarray(milestones[i], float)[:, :2]])
-                    for i in range(env._n)])
+        self._committed = [np.asarray(state[i][:3], float).reshape(1, 3)
+                           for i in range(env._n)]
+        # The reference is a PATH, not a trajectory -- no dynamics, nothing to drive along
+        # it -- so it is the one stage that stays a still frame.
+        self._snap("kinematic reference paths (Alg. 1 line 3)", [],
+                   static=[np.vstack([state[i][:2], np.asarray(milestones[i], float)[:, :2]])
+                           for i in range(env._n)])
 
         for j in range(m):
             goals = [milestones[i][j] for i in range(env._n)]
@@ -154,12 +156,14 @@ class KARCPlanner(BasePlanner):
                     us, state[i] = self._brake(env, i, state[i], len(np.atleast_2d(ctrls[i])))
                     self._controls[a].extend(us)
             if self.trace is not None:
-                self._committed_xy = [
-                    np.vstack([self._committed_xy[i], np.asarray(segs[i], float)[:, :2]])
+                self._committed = [
+                    np.vstack([self._committed[i], np.asarray(segs[i], float)[:, :3]])
                     for i in range(env._n)
                 ]
 
-        self._snap("final plan", [])
+        # Drive the whole committed plan end to end: the payoff shot.
+        self._snap("final plan", [], static=[np.zeros((0, 2)) for _ in agents],
+                   anim=self._committed if self.trace is not None else [])
         self.stats["conflicts_remaining"] = len(conflicts)
         self.stats["wall_time"] = time.perf_counter() - t0
         self.stats["path_cost"] = sum(len(v) for v in self._controls.values()) * env.dt
@@ -172,25 +176,27 @@ class KARCPlanner(BasePlanner):
             out[agent] = seq.pop(0) if seq else np.zeros(env.robots[i].action_dim)
         return out
 
-    def _snap(self, label, segs, conflicts=()) -> None:
+    def _snap(self, label, segs, conflicts=(), static=None, anim=None) -> None:
         """Keep one stage of the plan for rendering. No-op unless karc.trace is set.
 
-        Paths are drawn as committed-so-far + the segment under consideration, so the
-        picture builds up the way the algorithm does instead of jumping between segments.
-        A conflict (i, j, k) marks the first index where two trajectories violate
-        separation; the marker goes at the midpoint, which is where the pair is.
+        Two path sets per stage, because they are drawn differently. ``static`` is context
+        that is already settled -- the committed segments, or the reference path -- and is
+        rendered as a dim trail. ``anim`` is the trajectory under consideration, with
+        headings, and the robots are DRIVEN along it: that is what makes a candidate
+        trajectory legible as motion rather than as a line on a picture.
+
+        A conflict (i, j, k) is the first index where two trajectories violate separation;
+        the marker goes at the pair's midpoint.
         """
         if self.trace is None:
             return
         segs = [np.asarray(sg, dtype=float) for sg in segs]
-        paths = [
-            np.vstack([self._committed_xy[i], segs[i][:, :2]]) if i < len(segs)
-            else self._committed_xy[i]
-            for i in range(len(self._committed_xy))
-        ]
         self.trace.append({
             "label": label,
-            "paths": paths,
+            "static": [np.asarray(p, float)[:, :2] for p in
+                       (static if static is not None else self._committed)],
+            "anim": [np.asarray(p, float)[:, :3] for p in
+                     (anim if anim is not None else segs)],
             "markers": [0.5 * (segs[i][k][:2] + segs[j][k][:2]) for i, j, k in conflicts],
         })
 
