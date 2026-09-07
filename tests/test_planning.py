@@ -341,7 +341,10 @@ def test_adapt_subproblem_reopens_the_previous_segment_and_rescues_it():
     One adaptation resolves it. Without this, max_rounds re-solves a near-identical problem,
     since nothing about the window changes between rounds.
     """
-    _, off = _karc_stats("swap2_unicycle2", adapt_max=0)
+    # The `off` arm needs on_unsolved=brake to have a path cost at all: under K-ARC's own
+    # `return ∅` semantics an unresolved segment discards the whole plan, so the comparison
+    # below would be against nothing.
+    _, off = _karc_stats("swap2_unicycle2", adapt_max=0, on_unsolved="brake")
     _, on = _karc_stats("swap2_unicycle2", adapt_max=1)
 
     assert off.stats["adaptations"] == 0
@@ -350,6 +353,7 @@ def test_adapt_subproblem_reopens_the_previous_segment_and_rescues_it():
     assert on.stats["adaptations"] >= 1, "the hierarchy failed; adaptation must have run"
     assert on.stats["unsolved_segments"] == 0
     assert on.stats["braked_segments"] == 0
+    assert on.stats["plan_failed"] == 0
     # Re-opening committed motion buys a better plan, not just a feasible one.
     assert on.stats["path_cost"] < off.stats["path_cost"]
     # And it is not free: the rescued window is solved twice.

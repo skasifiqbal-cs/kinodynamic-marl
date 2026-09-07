@@ -59,6 +59,26 @@ def _dist(states, goals) -> float:
                for s, g in zip(states, goals))
 
 
+def _metric(a, b) -> float:
+    """Nearest-neighbour metric on the joint state: summed position error.
+
+    Deliberately position-only. A metric weighting heading and velocity is more correct for
+    a kinodynamic tree, but the weights are unitless guesses and a bad one silently destroys
+    the Voronoi bias this metric exists to create.
+    """
+    return float(np.sum(np.linalg.norm(np.asarray(a)[:, :2] - np.asarray(b)[:, :2], axis=1)))
+
+
+def _sample(robots, world_size, rng):
+    """A random joint state: uniform position and heading, zero velocity.
+
+    Only the position/heading part is ever read (see `_metric`), so sampling velocities
+    would add noise to the nearest-neighbour query without changing where the tree grows.
+    """
+    return np.array([[rng.uniform(0.0, world_size), rng.uniform(0.0, world_size),
+                      rng.uniform(-np.pi, np.pi), 0.0, 0.0] for _ in robots])
+
+
 def plan(robots, starts, goals, obstacles, world_size, dt, horizon, others=(),
          goal_tol=0.2, terminal_stop=True, stop_speed=0.4, max_iters=3000,
          n_controls=10, steps=5, goal_bias=0.15, rng=None):
@@ -84,15 +104,20 @@ def plan(robots, starts, goals, obstacles, world_size, dt, horizon, others=(),
     depth = [0]                    # index on the dt grid -- the whole point
     best, best_d = 0, _dist(root, goals)
 
+    goal_state = np.asarray(goals, dtype=np.float64)
     for _ in range(int(max_iters)):
-        # Bias toward nodes that are both close to the goal and not yet out of time.
+        # RRT proper: sample a state, extend the NEAREST node toward it. Growing a random
+        # node instead (what this did before) drops the Voronoi bias -- the property that
+        # makes an RRT expand toward unexplored space rather than thickening where it
+        # already is -- and turns the rung into a goal-greedy random tree that stalls the
+        # moment the greedy direction is blocked. That is the case the sampling rungs exist
+        # for, so the bias is not optional here.
+        target = goal_state if rng.random() < goal_bias else _sample(robots, world_size, rng)
+        # Only nodes with time left can be extended: node depth IS the timestep index.
         live = [n for n in range(len(nodes)) if depth[n] + steps <= horizon]
         if not live:
             break
-        if rng.random() < goal_bias:
-            near = min(live, key=lambda n: _dist(nodes[n], goals))
-        else:
-            near = live[int(rng.integers(len(live)))]
+        near = min(live, key=lambda n: _metric(nodes[n], target))
 
         state, k = nodes[near], depth[near]
         best_child, best_child_d, best_u = None, np.inf, None
@@ -107,19 +132,22 @@ def plan(robots, starts, goals, obstacles, world_size, dt, horizon, others=(),
                     break
             if not ok:
                 continue
-            d = _dist(s, goals)
+            # Best-input extension: of the sampled controls, keep the one that gets
+            # closest to the SAMPLE, not to the goal -- the goal only steers via goal_bias.
+            d = _metric(s, target)
             if d < best_child_d:
                 best_child, best_child_d, best_u = s, d, u
         if best_child is None:
             continue
+        child_goal_d = _dist(best_child, goals)
 
         nodes.append(best_child)
         parent.append(near)
         action.append(best_u)
         depth.append(k + steps)
-        if best_child_d < best_d:
-            best, best_d = len(nodes) - 1, best_child_d
-        if best_child_d <= goal_tol and (
+        if child_goal_d < best_d:
+            best, best_d = len(nodes) - 1, child_goal_d
+        if child_goal_d <= goal_tol and (
                 not terminal_stop
                 or all(abs(float(s[3])) <= stop_speed for s in best_child)):
             best = len(nodes) - 1

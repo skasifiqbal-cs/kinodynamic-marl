@@ -49,6 +49,65 @@ import numpy as np
 from src.collision.shapes import Obstacle
 
 
+def _obstacle_sq_dist(ca, px, py, obs):
+    """Squared distance from a point to an obstacle's ACTUAL surface, as a CasADi expression.
+
+    A box used to enter this program as its circumscribed circle, which for a square inflates
+    every face by 41% of the half-width. That is sound -- never optimistic -- but it closes
+    corridors that exist: the Dijkstra reference grid inflates the true box by a clearance
+    disc, so it happily routes a path through a gap the optimizer then calls infeasible, and
+    the segment fails for a geometric reason that is not in the scenario. K-ARC §V-A instead
+    uses "simple polyhedrons for both our obstacle and robot models, and we calculate the
+    shortest distances between any two objects".
+
+    Boxes use the standard OBB exterior distance: rotate the point into the box frame, take
+    the per-axis overshoot beyond the half-extents, and keep only its positive part. A point
+    inside the box gives zero, so `>= (r + clearance)^2` is correctly infeasible there. The
+    ROBOT is still a disc of `r_self` -- exact for the circular models, and for a box robot
+    the circumscribed disc is the conservative direction.
+    """
+    from src.collision.shapes import BoxShape
+    dx, dy = px - obs.x, py - obs.y
+    if not isinstance(obs.shape, BoxShape):
+        out = ca.fmax(ca.sqrt(dx * dx + dy * dy) - float(obs.shape.radius), 0.0)
+        return out * out
+
+    c, s_ = np.cos(obs.angle), np.sin(obs.angle)
+    lx = c * dx + s_ * dy          # into the box frame
+    ly = -s_ * dx + c * dy
+    ox = ca.fmax(ca.fabs(lx) - 0.5 * obs.shape.width, 0.0)
+    oy = ca.fmax(ca.fabs(ly) - 0.5 * obs.shape.length, 0.0)
+    return ox * ox + oy * oy
+
+
+def _near_guide(obstacles, guide, margin: float) -> list:
+    """Obstacles within `margin` of any vertex of the guide polyline."""
+    if guide is None or len(guide) < 1:
+        return list(obstacles)
+    pts = np.asarray(guide, dtype=float)[:, :2]
+    out = []
+    for obs in obstacles:
+        d = float(np.min(np.linalg.norm(pts - np.array([obs.x, obs.y]), axis=1)))
+        if d <= margin + float(obs.shape.bounding_radius):
+            out.append(obs)
+    return out
+
+
+def _resample_guide(path: np.ndarray, n: int) -> np.ndarray:
+    """A polyline -> n points at equal fractions of its arclength.
+
+    The guide comes from a kinematic planner and has no relation to the program's knot
+    count, so it has to be re-gridded before it can seed one.
+    """
+    pts = np.asarray(path, dtype=float)[:, :2]
+    seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+    cum = np.concatenate([[0.0], np.cumsum(seg)])
+    if cum[-1] < 1e-12:
+        return np.repeat(pts[:1], n, axis=0)
+    return np.stack([np.interp(np.linspace(0.0, cum[-1], n), cum, pts[:, c])
+                     for c in (0, 1)], axis=1)
+
+
 def solve_group(
     robots: Sequence,
     starts: Sequence[np.ndarray],
@@ -65,6 +124,8 @@ def solve_group(
     clearance: float = 0.05,
     terminal_stop: bool = True,
     max_iter: int = 500,
+    guides: Sequence[np.ndarray] | None = None,
+    obstacle_margin: float | None = None,
 ) -> tuple[list[np.ndarray], list[np.ndarray], float, bool]:
     """Solve one minimum-time program covering ``len(robots)`` robots jointly.
 
@@ -75,6 +136,21 @@ def solve_group(
 
     ``goal_tol`` may be a scalar or one tolerance per robot -- per-robot values are what
     let a caller relax only the lower-priority robots' terminal constraints.
+
+    ``guides``, when given, is one ``(>=2, >=2)`` polyline per robot used to seed the
+    solver's initial iterate instead of the straight line: K-ARC's Alg. 1 line 17 passes the
+    kinematic path segment into the optimizer for exactly this, and §IV-B calls it "a
+    reference for the trajectory optimizer". A nonlinear program does not change homotopy
+    class during the solve, so the seed decides which side of an obstacle the answer comes
+    out on -- with no guide the optimizer is free to ignore the path the planner chose.
+
+    ``obstacle_margin``, with ``guides``, keeps only the obstacles within that distance of a
+    robot's guide instead of constraining against all of them. Every knot otherwise carries
+    one nonlinear constraint per obstacle, which in a cluttered scene is most of the program
+    and nearly all of it redundant -- a pillar on the far side of the world cannot be hit in
+    one segment. DEVIATION: this is a heuristic, not a reachability bound. A resolution that
+    needs to detour further than the margin from the guide will not see the obstacles out
+    there, so keep it comfortably wider than any detour the ladder should be allowed to find.
 
     ``clearance`` inflates every separation constraint. It is not cosmetic: minimising
     time drives the solution hard onto the constraint boundary, and a trajectory that
@@ -92,6 +168,11 @@ def solve_group(
     n = len(robots)
     radii = [float(r.shape.bounding_radius) for r in robots]
     tols = [float(goal_tol)] * n if np.isscalar(goal_tol) else [float(t) for t in goal_tol]
+
+    near = [list(obstacles)] * n
+    if obstacle_margin is not None and guides is not None:
+        near = [_near_guide(obstacles, guides[i], float(obstacle_margin) + radii[i])
+                for i in range(n)]
 
     opti = ca.Opti()
     X = [opti.variable(5, N + 1) for _ in range(n)]
@@ -139,13 +220,10 @@ def solve_group(
             opti.subject_to(opti.bounded(r_self, X[i][0, k], world_size - r_self))
             opti.subject_to(opti.bounded(r_self, X[i][1, k], world_size - r_self))
 
-            # ponytail: obstacles inflated to their bounding circle -- sound
-            # (conservative) but loose for long boxes. Swap in a superquadric if
-            # clutter gets tight.
-            for obs in obstacles:
-                clear = float(obs.shape.bounding_radius) + r_self + clearance
+            for obs in near[i]:
+                clear = r_self + clearance
                 opti.subject_to(
-                    (X[i][0, k] - obs.x) ** 2 + (X[i][1, k] - obs.y) ** 2 >= clear**2
+                    _obstacle_sq_dist(ca, X[i][0, k], X[i][1, k], obs) >= clear**2
                 )
 
             for traj, r_other in zip(avoid, avoid_radii):
@@ -165,12 +243,16 @@ def solve_group(
             opti.subject_to(X[i][3, N] == 0.0)
             opti.subject_to(X[i][4, N] == 0.0)
 
-        # Warm start: straight line from start to goal, at rest.
+        # Warm start. The guide polyline if the caller supplied one, resampled onto this
+        # program's knots by arclength; otherwise a straight line from start to goal.
+        guide = None if guides is None else guides[i]
+        seed = (_resample_guide(guide, N + 1) if guide is not None and len(guide) >= 2
+                else np.stack([np.linspace(s[c], g[c], N + 1) for c in (0, 1)], axis=1))
+        heads = np.arctan2(*np.flip(np.diff(seed, axis=0), axis=1).T)
         for k in range(N + 1):
-            t = k / N
-            opti.set_initial(X[i][0, k], (1 - t) * s[0] + t * g[0])
-            opti.set_initial(X[i][1, k], (1 - t) * s[1] + t * g[1])
-            opti.set_initial(X[i][2, k], np.arctan2(g[1] - s[1], g[0] - s[0]))
+            opti.set_initial(X[i][0, k], seed[k, 0])
+            opti.set_initial(X[i][1, k], seed[k, 1])
+            opti.set_initial(X[i][2, k], heads[min(k, N - 1)])
 
     # Pairwise separation WITHIN the group. This is the whole point of a joint solve:
     # both robots' trajectories are free, so the solver can make them yield to each

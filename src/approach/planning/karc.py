@@ -61,6 +61,7 @@ class KARCPlanner(BasePlanner):
         adapt_max = int(k_cfg.get("adapt_max", 1))
         d_min = k_cfg.get("d_min", None)
         clearance = float(t_cfg.get("clearance", 0.05))
+        on_unsolved = str(k_cfg.get("on_unsolved", "return_empty"))
         budget = k_cfg.get("timeout", 600.0)
         # A plan is only a plan if it arrives in time. K-ARC's experimental setup gives every
         # method 600 s per instance, so a run that keeps solving past it has not produced a
@@ -69,11 +70,13 @@ class KARCPlanner(BasePlanner):
         # can spend minutes on one subproblem.
         self._deadline = None if not budget else t0 + float(budget)
 
-        total_h = self._total_horizon(env, t_cfg)
+        _total_h_pending = True   # sized from the reference paths, once they exist
 
         radii = [float(r.shape.bounding_radius) for r in env.robots]
         agents = list(env.possible_agents)
         milestones, ref_paths = self._milestones(env, m, clearance)
+        assert _total_h_pending
+        total_h = self._total_horizon(env, t_cfg, ref_paths)
 
         self.stats = {
             "conflicts": 0, "rounds": 0, "subproblems": 0,
@@ -84,6 +87,7 @@ class KARCPlanner(BasePlanner):
             "merges": 0,
             "adaptations": 0,
             "timed_out": 0,
+            "plan_failed": 0,
             "subproblem_sizes": [],
             "rungs": {},
         }
@@ -133,6 +137,8 @@ class KARCPlanner(BasePlanner):
                     if self.trace is not None:
                         self._committed[i] = np.vstack([self._committed[i], braked[:, :3]])
                 self.stats["unsolved_segments"] += m - j
+                if on_unsolved == "return_empty":
+                    self._abandon(agents, env)
                 break
 
             goals = [milestones[i][j] for i in range(env._n)]
@@ -151,10 +157,16 @@ class KARCPlanner(BasePlanner):
             while True:
                 # Sized from the window's own geometry, so rolling the start back widens
                 # the budget by itself -- the leg is longer, the bang-bang time is longer.
-                seg_h = self._segment_horizon(env, t_cfg, state, goals, total_h, m)
+                # Alg. 1 line 17 hands the optimizer this window's slice of the kinematic
+                # path. After an adaptation the window reaches back `adapt` segments, so
+                # the guide does too -- and the horizon is measured along it.
+                lo, hi = max(0, j - adapt) / m, (j + 1) / m
+                guides = [self._guide(ref_paths[i], state[i], lo, hi)
+                          for i in range(env._n)]
+                seg_h = self._segment_horizon(env, t_cfg, state, goals, total_h, m, guides)
                 segs, ctrls, oks, conflicts, rounds = self._plan_segment(
                     env, state, goals, seg_h, last, t_cfg, radii, d_min, clearance,
-                    ladder, max_rounds, j, m, adapt,
+                    ladder, max_rounds, j, m, adapt, guides,
                 )
                 self.stats["rounds"] += rounds
                 if ((not conflicts and all(oks)) or adapt >= adapt_max
@@ -166,8 +178,12 @@ class KARCPlanner(BasePlanner):
                 state = self._restore(agents, start_ck)
 
             prev_starts.append(start_ck)
-            if conflicts or not all(oks):
+            unsolved = bool(conflicts) or not all(oks)
+            if unsolved:
                 self.stats["unsolved_segments"] += 1
+            if unsolved and on_unsolved == "return_empty":
+                self._abandon(agents, env)
+                break
 
             # Commit the segment and advance. An UNSOLVED segment is never
             # committed: solve_trajectory returns IPOPT's last iterate on failure,
@@ -262,6 +278,23 @@ class KARCPlanner(BasePlanner):
             "waypoints": list(self._waypoints),
         })
 
+    def _abandon(self, agents, env) -> None:
+        """Alg. 1 lines 26-27: `return ∅` -- no plan at all, not a partial one.
+
+        K-ARC fails the WHOLE instance when a segment's subproblem is unresolved; it never
+        emits a plan with a conflict left in it. Executing the segments that did solve, as
+        `on_unsolved: brake` does, measures something the algorithm would not have returned.
+        No plan means no motion, so every control sequence is discarded and the robots stand
+        where they started.
+        """
+        self.stats["plan_failed"] = 1
+        for i, a in enumerate(agents):
+            self._controls[a] = []
+            self._solved[a] = False
+        if self.trace is not None:
+            self._committed = [np.asarray(env._states[i], float)[None, :3].copy()
+                               for i in range(env._n)]
+
     def _over_budget(self) -> bool:
         """True once the planning time budget is spent.
 
@@ -300,42 +333,62 @@ class KARCPlanner(BasePlanner):
     # ── pieces ────────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _segment_horizon(env, t_cfg, state, goals, total_h, m) -> int:
+    def _segment_horizon(env, t_cfg, state, goals, total_h, m, guides=None) -> int:
         """Steps allotted to one segment: the slowest robot's bang-bang time over its
-        own leg. Capped by the whole-plan budget so a pathological leg cannot eat it."""
+        own leg. Capped by the whole-plan budget so a pathological leg cannot eat it.
+
+        The leg is measured along the KINEMATIC GUIDE, not start-to-goal. With obstacles the
+        two diverge without limit -- a robot rounding a pillar covers far more ground than
+        the chord -- and a horizon sized from the chord makes the segment infeasible on time
+        alone. The optimizer then reports failure for a segment that has a perfectly good
+        solution, and the ladder burns every rung rediscovering that. In an empty world the
+        guide IS the chord and nothing changes.
+        """
         h = t_cfg.get("horizon", None)
         if h is not None:
             return max(2, int(h) // m)
         slack = float(t_cfg.get("slack", 1.5))
         from src.shaping.braking_potential import bangbang_time
+        legs = [
+            KARCPlanner._path_len(guides[i]) if guides is not None
+            else float(np.linalg.norm(np.asarray(goals[i])[:2] - np.asarray(state[i])[:2]))
+            for i in range(env._n)
+        ]
         worst = max(
-            bangbang_time(
-                float(np.linalg.norm(np.asarray(goals[i])[:2] - np.asarray(state[i])[:2])),
-                0.0, env.robots[i].v_max, env.robots[i].a_max,
-            )
+            bangbang_time(legs[i], 0.0, env.robots[i].v_max, env.robots[i].a_max)
             for i in range(env._n)
         )
         return int(np.clip(np.ceil(slack * worst / env.dt), 2, total_h))
 
     @staticmethod
-    def _total_horizon(env, t_cfg) -> int:
-        """Time budget in env steps. See OptimizationPlanner._auto_horizon."""
+    def _path_len(path: np.ndarray) -> float:
+        pts = np.asarray(path, dtype=float)[:, :2]
+        return float(np.sum(np.linalg.norm(np.diff(pts, axis=0), axis=1))) if len(pts) > 1 else 0.0
+
+    @staticmethod
+    def _total_horizon(env, t_cfg, refs=None) -> int:
+        """Time budget in env steps. See OptimizationPlanner._auto_horizon.
+
+        Measured along the reference paths when they are available, for the same reason
+        `_segment_horizon` is: with obstacles the chord understates the journey.
+        """
         h = t_cfg.get("horizon", None)
         if h is not None:
             return int(h)
         slack = float(t_cfg.get("slack", 1.5))
         from src.shaping.braking_potential import bangbang_time
+        legs = [
+            KARCPlanner._path_len(refs[i]) if refs is not None
+            else float(np.linalg.norm(env._goals[i][:2] - env._states[i][:2]))
+            for i in range(env._n)
+        ]
         worst = max(
-            bangbang_time(
-                float(np.linalg.norm(env._goals[i][:2] - env._states[i][:2])),
-                0.0, env.robots[i].v_max, env.robots[i].a_max,
-            )
+            bangbang_time(legs[i], 0.0, env.robots[i].v_max, env.robots[i].a_max)
             for i in range(env._n)
         )
         return min(env.max_steps, max(10, int(np.ceil(slack * worst / env.dt))))
 
-    @staticmethod
-    def _milestones(env, m: int, clearance: float):
+    def _milestones(self, env, m: int, clearance: float):
         """Milestones spaced evenly along an obstacle-aware reference path.
 
         K-ARC seeds its optimiser from a *kinematic planner*, and that matters more
@@ -354,6 +407,7 @@ class KARCPlanner(BasePlanner):
             env.cfg.env.obstacles, env._world_size, v_max=1.0,
             clearance=clearance + max(r.shape.bounding_radius for r in env.robots),
         )
+        self._grid = grid
         out, refs = [], []
         for i in range(env._n):
             s0 = np.asarray(env._states[i], dtype=np.float64)
@@ -436,6 +490,26 @@ class KARCPlanner(BasePlanner):
         return np.asarray(pts)
 
     @staticmethod
+    def _guide(path: np.ndarray, start, lo: float, hi: float) -> np.ndarray:
+        """The piece of a reference path between two arclength fractions, from `start`.
+
+        This is Alg. 1 line 17's ``Pri[j]`` -- the kinematic segment handed to the optimizer
+        as its reference. The robot is rarely standing exactly on the reference when the
+        segment begins (the previous segment ended wherever the dynamics allowed, which
+        §III-A calls out as the whole reason the construction is sequential), so the guide
+        starts from where the robot actually is and joins the path from there.
+        """
+        pts = np.asarray(path, dtype=float)[:, :2]
+        seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+        cum = np.concatenate([[0.0], np.cumsum(seg)])
+        total = float(cum[-1])
+        if total < 1e-9:
+            return np.asarray([start[:2], pts[-1]], dtype=float)
+        keep = pts[(cum >= total * lo) & (cum <= total * hi)]
+        out = np.vstack([np.asarray(start, dtype=float)[None, :2], keep])
+        return out if len(out) >= 2 else np.vstack([out, pts[-1][None]])
+
+    @staticmethod
     def _resample(path: np.ndarray, goal: np.ndarray, m: int) -> list[np.ndarray]:
         """m waypoints at equal arclength; the last is the true goal."""
         seg = np.linalg.norm(np.diff(path, axis=0), axis=1)
@@ -468,7 +542,7 @@ class KARCPlanner(BasePlanner):
         return min(tol, self.GOAL_INSET * env.goal_radius) if terminal_stop else tol
 
     def _solve(self, env, i, start, goal, seg_h, t_cfg, avoid, goal_scale=1.0,
-               terminal_stop=True):
+               terminal_stop=True, guide=None):
         avoid_trajs = tuple(a[0] for a in avoid)
         avoid_radii = tuple(a[1] for a in avoid)
         self.stats["solver_calls"] += 1
@@ -482,6 +556,8 @@ class KARCPlanner(BasePlanner):
             clearance=float(t_cfg.get("clearance", 0.05)),
             terminal_stop=terminal_stop,
             max_iter=int(t_cfg.get("max_iters", 500)),
+            guides=None if guide is None else [guide],
+            obstacle_margin=t_cfg.get("obstacle_margin", None),
         )
         return X, _U, ok
 
@@ -508,13 +584,13 @@ class KARCPlanner(BasePlanner):
         return out
 
     def _plan_segment(self, env, state, goals, seg_h, last, t_cfg, radii, d_min,
-                      clearance, ladder, max_rounds, j, m, adapt):
+                      clearance, ladder, max_rounds, j, m, adapt, guides):
         """Solve one window: uncoordinated first (Alg. 1 lines 17-18), then the hierarchy."""
         span = f"segment {j + 1}/{m}" + (f" (+{adapt} back)" if adapt else "")
         segs, ctrls, oks = [], [], []
         for i in range(env._n):
             X, U, ok = self._solve(env, i, state[i], goals[i], seg_h, t_cfg, (),
-                                   terminal_stop=last)
+                                   terminal_stop=last, guide=guides[i])
             segs.append(X)
             ctrls.append(U)
             oks.append(ok)
@@ -536,7 +612,7 @@ class KARCPlanner(BasePlanner):
             self.stats["conflicts"] += len(conflicts)
             segs, ctrls, oks, conflicts = self._resolve_segment(
                 conflicts, segs, ctrls, oks, env, state, goals, seg_h, t_cfg,
-                radii, last, ladder, d_min, clearance, span,
+                radii, last, ladder, d_min, clearance, span, guides,
             )
             rounds += 1
         return segs, ctrls, oks, conflicts, rounds
@@ -564,7 +640,7 @@ class KARCPlanner(BasePlanner):
         return [np.asarray(s, float).copy() for s in ck["state"]]
 
     def _resolve_segment(self, conflicts, segs, ctrls, oks, env, state, goals, seg_h,
-                         t_cfg, radii, last, ladder, d_min, clearance, span):
+                         t_cfg, radii, last, ladder, d_min, clearance, span, guides):
         """One pass of Alg. 2 over a segment: a SUBPROBLEM PER CONFLICTING PAIR.
 
         ARC (arXiv:2312.08554 SS IV-B) is explicit that a subproblem is built around one
@@ -605,7 +681,7 @@ class KARCPlanner(BasePlanner):
                             segs, radii, d_min, clearance)
                     segs, ctrls, oks = self._resolve(
                         rung, group, segs, ctrls, oks, env, state, goals, seg_h,
-                        t_cfg, radii, last,
+                        t_cfg, radii, last, guides,
                     )
                     self.stats["rungs"][rung] = self.stats["rungs"].get(rung, 0) + 1
                     conflicts = self._find_conflicts(segs, radii, d_min, clearance)
@@ -636,8 +712,54 @@ class KARCPlanner(BasePlanner):
         return (all(oks[i] for i in group)
                 and not any(a in group or b in group for a, b, _ in conflicts))
 
+    def _group_paths(self, env, involved, state, goals):
+        """Kinematic paths for R' from a GROUP planner -- §IV-C's first step, before any
+        optimisation happens.
+
+        The paper is explicit about the order: *"For robots {r1, r2, ..., rk}, we first find
+        the kinematic paths through a group planner. The paths are then sequentially
+        optimized."* Skipping the group planner and re-optimising from the previous seed, as
+        this used to do, leaves every robot in the homotopy class its solo path picked -- so
+        the only concession the rung can express is slowing down, and it can never route a
+        robot the other way round an obstacle. That is the rung doing half its job.
+
+        Prioritised planning on the shared grid: each robot descends the cost-to-go field
+        with the earlier robots' paths masked out as obstacles. Cells near a robot's own
+        start and goal are never masked -- blocking them would make its own query
+        unsolvable rather than route it elsewhere.
+        """
+        grid = self._grid
+        free0 = grid._free
+        blocked = free0.copy()
+        radii = [float(r.shape.bounding_radius) for r in env.robots]
+        paths = {}
+        try:
+            for i in involved:
+                grid._free = blocked
+                start, goal = np.asarray(state[i], float), np.asarray(goals[i], float)
+                path = self._descend(grid, start[:2], goal[:2])
+                if len(path) < 2:                      # masked into a dead end
+                    grid._free = free0
+                    path = self._descend(grid, start[:2], goal[:2])
+                paths[i] = np.asarray(path, dtype=np.float64)
+                # Mask this path for whoever comes next.
+                r = radii[i] + max(radii) + float(
+                    self.approach_cfg.get("trajopt", {}).get("clearance", 0.05))
+                cells = int(np.ceil(r / grid.cell))
+                keep = (start[:2], goal[:2])
+                for pt in paths[i]:
+                    if min(float(np.linalg.norm(pt[:2] - k)) for k in keep) < r:
+                        continue
+                    ci, cj = grid._to_cell(float(pt[0]), float(pt[1]))
+                    lo_i, hi_i = max(0, ci - cells), min(grid.n, ci + cells + 1)
+                    lo_j, hi_j = max(0, cj - cells), min(grid.n, cj + cells + 1)
+                    blocked[lo_i:hi_i, lo_j:hi_j] = False
+        finally:
+            grid._free = free0
+        return paths
+
     def _resolve(self, rung, involved, segs, ctrls, oks, env, state, goals, seg_h,
-                 t_cfg, radii, last=True):
+                 t_cfg, radii, last=True, guides=None):
         """One rung of the solver hierarchy S, applied to ONE subproblem.
 
         `involved` is the subproblem's robot set R', chosen by the caller. Its members are
@@ -658,7 +780,7 @@ class KARCPlanner(BasePlanner):
         if rung == "joint":
             return self._solve_joint(
                 involved, segs, ctrls, oks, env, state, goals, seg_h, t_cfg,
-                tuple(avoid), last,
+                tuple(avoid), last, guides,
             )
         if rung in ("decoupled_rrt", "composite_rrt"):
             return self._solve_rrt(
@@ -666,11 +788,13 @@ class KARCPlanner(BasePlanner):
                 last,
             )
 
+        # §IV-C: group planner first, then sequential optimisation against it.
+        group_paths = self._group_paths(env, involved, state, goals)
         for level, i in enumerate(involved):
             scale = 1.0 if rung == "prioritized" else relax ** level
             X, U, ok = self._solve(
                 env, i, state[i], goals[i], seg_h, t_cfg, tuple(avoid), goal_scale=scale,
-                terminal_stop=last,
+                terminal_stop=last, guide=group_paths.get(i),
             )
             segs[i], ctrls[i], oks[i] = X, U, ok
             avoid.append((X, radii[i]))
@@ -736,7 +860,7 @@ class KARCPlanner(BasePlanner):
         return segs, ctrls, oks
 
     def _solve_joint(self, involved, segs, ctrls, oks, env, state, goals, seg_h, t_cfg,
-                     avoid, last):
+                     avoid, last, guides=None):
         """Re-solve the conflicting robots TOGETHER in one nonlinear program.
 
         NOT a K-ARC rung -- its hierarchy goes prioritized -> decoupled RRT -> composite RRT
@@ -769,6 +893,8 @@ class KARCPlanner(BasePlanner):
             clearance=float(t_cfg.get("clearance", 0.05)),
             terminal_stop=last,
             max_iter=int(t_cfg.get("max_iters", 500)),
+            guides=None if guides is None else [guides[i] for i in involved],
+            obstacle_margin=t_cfg.get("obstacle_margin", None),
         )
         segs, ctrls, oks = list(segs), list(ctrls), list(oks)
         # One program, one verdict: the group is feasible together or not at all.

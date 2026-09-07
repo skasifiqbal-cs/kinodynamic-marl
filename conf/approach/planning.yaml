@@ -31,6 +31,13 @@ approach:
     # once execution drifts off them.
     clearance: 0.05
     max_iters: 500
+    # Only obstacles within this distance of the segment's kinematic guide get a constraint.
+    # Every knot otherwise carries one nonlinear constraint per obstacle, which in a
+    # cluttered scene is most of the program and nearly all of it redundant. null = keep all
+    # of them, which is what an empty world does anyway. DEVIATION: a heuristic, not a
+    # reachability bound -- a detour wider than this cannot see what is out there, so keep it
+    # wider than any manoeuvre the ladder should be allowed to find.
+    obstacle_margin: 4.0
     # dt is a DECISION VARIABLE when free (true minimum time, K-ARC's objective).
     # Execution needs the env's grid, so planners pass dt_fixed=env.dt; these
     # bounds apply only to free-dt solves used for planning-quality comparisons.
@@ -109,6 +116,15 @@ approach:
     # the run reports `timed_out=1` with the remaining segments counted unsolved -- a timeout
     # is a FAILURE, not a slow success, and must be reported as one. null disables it.
     timeout: 600.0
+    # What to do when a segment's subproblem is never resolved (or the budget expires).
+    #   return_empty - K-ARC's Alg. 1 lines 26-27: `return ∅`. The WHOLE instance fails and
+    #                  no plan is emitted, so nothing moves. K-ARC never returns a plan with
+    #                  a conflict left in it, and executing the segments that did solve
+    #                  measures something the algorithm would not have produced.
+    #   brake        - commit the solved segments and bring everyone to rest at the failure.
+    #                  Not K-ARC; useful for rendering WHERE a run fails, which `return_empty`
+    #                  by construction cannot show.
+    on_unsolved: return_empty
     # Cap on resolution rounds per segment before the segment is committed as-is.
     max_rounds: 3
     # Priority order within a subproblem: index (agent order) or distance
