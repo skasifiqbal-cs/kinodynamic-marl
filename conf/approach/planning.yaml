@@ -66,6 +66,11 @@ approach:
     # Priority order within a subproblem: index (agent order) or distance
     # (closest-to-goal first).
     priority: index
+    # Keep every intermediate stage of the plan (reference paths, the uncoordinated
+    # solve, the conflicts it produced, what each rung changed) so scripts/karc_trace_gif.py
+    # can draw the planning PROCESS. Off by default: it holds the whole trajectory history
+    # in memory, which at N=32 is not free.
+    trace: false
     # Terminal tolerance granted to lower-priority robots, in multiples of
     # trajopt.goal_tol, per priority level. 1.0 makes the `relaxed_goal` rung a
     # no-op (identical to `prioritized`), so it must exceed 1 to do anything.

@@ -122,6 +122,15 @@ python main.py approach=planning approach.method=karc \
   eval.gif_path=experiments/open_cross_karc.gif
 ```
 
+`scripts/karc_trace_gif.py` renders the planning *process* instead of its execution —
+one frame per algorithm stage: the kinematic reference paths, each segment's uncoordinated
+solve with its conflicts marked, what every ladder rung changed, and the committed plan.
+
+```bash
+python scripts/karc_trace_gif.py approach=planning env=open_cross_4_unicycle2 \
+  'approach.karc.ladder=[prioritized]' eval.gif_path=experiments/oc4_trace.gif
+```
+
 Every planning run prints a `STATS,<method>,...` line beside `RESULT`: conflicts,
 subproblems, rounds, `rungs` (which ones actually fired), `solver_calls`, `joint_solves`,
 `wall_time`. Read the ablation off `rungs` — success rate alone cannot tell you whether

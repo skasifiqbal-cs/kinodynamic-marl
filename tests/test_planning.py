@@ -175,3 +175,41 @@ def test_planning_run_reports_the_coordination_counters(capsys, tmp_path):
     assert "STATS,karc," in out
     for key in ("rungs=", "solver_calls=", "conflicts="):
         assert key in out, f"{key} missing from the planning report"
+
+
+def test_karc_trace_is_off_by_default_and_records_every_stage_when_on():
+    """The trace is what scripts/karc_trace_gif.py draws. It must stay off unless asked
+    (it retains every intermediate trajectory), and when on it must cover the whole
+    algorithm: reference paths, the uncoordinated solve, and each rung that ran."""
+    from src.approach.planning import build_planner
+    from src.env.factory import build_env
+
+    def plan(trace):
+        GlobalHydra.instance().clear()
+        with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
+            cfg = compose("config", overrides=["approach=planning", "approach.method=karc",
+                                               "env=swap2_unicycle2", "init=fixed",
+                                               f"approach.karc.trace={str(trace).lower()}"])
+        env = build_env(cfg)
+        env.reset(seed=0)
+        p = build_planner(cfg.approach)
+        p.reset(env)
+        return env, p
+
+    _, off = plan(False)
+    assert off.trace is None, "trace must be opt-in"
+
+    env, on = plan(True)
+    labels = [st["label"] for st in on.trace]
+    assert labels[0].startswith("kinematic reference paths")
+    assert labels[-1] == "final plan"
+    assert any("uncoordinated solve" in ln for ln in labels)
+    assert any("prioritized" in ln for ln in labels), "swap2 conflicts; a rung must run"
+
+    for st in on.trace:
+        assert len(st["paths"]) == env._n, "one path per robot, every stage"
+        for path in st["paths"]:
+            assert path.ndim == 2 and path.shape[1] == 2, "paths are (T, 2) for drawing"
+    # The conflict markers are what the red crosses are drawn at, so at least one stage
+    # must carry them -- swap2's head-on pair is the reason this scenario is used here.
+    assert any(st["markers"] for st in on.trace)

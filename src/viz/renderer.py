@@ -108,6 +108,8 @@ def render_frame_with_shapes(
     fig_px: int = 480,
     step_rewards: Optional[Dict[str, float]] = None,
     goal_radius: float = 0.2,
+    title: Optional[str] = None,
+    markers: Optional[List[np.ndarray]] = None,
 ) -> np.ndarray:
     """Render one frame with correct robot shapes (circle or OBB).
 
@@ -124,8 +126,13 @@ def render_frame_with_shapes(
     ax.set_aspect("equal")
     ax.set_xticks([])
     ax.set_yticks([])
-    ax.set_title(f"step {step}", fontsize=9, pad=3)
+    ax.set_title(title if title is not None else f"step {step}", fontsize=9, pad=3)
     fs = _label_fontsize(fig_px)
+
+    for m in (markers or []):
+        # Conflict points: where two planned trajectories first violate separation.
+        ax.plot(float(m[0]), float(m[1]), marker="x", markersize=9, markeredgewidth=2.0,
+                color="#c0392b", linestyle="none", zorder=6)
 
     for obs in obstacles:
         _draw_shape(ax, obs.x, obs.y, obs.angle, obs.shape, OBS_COLOR, alpha=0.85,

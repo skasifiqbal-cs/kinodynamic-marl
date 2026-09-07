@@ -76,6 +76,17 @@ class KARCPlanner(BasePlanner):
         self._solved = {a: True for a in agents}
         state = [env._states[i].copy() for i in range(env._n)]
 
+        # Every intermediate stage of Alg. 1/2 is computed below and then overwritten.
+        # With trace on they are kept, so the planning PROCESS can be drawn rather than
+        # only its outcome: reference paths, the uncoordinated solve, the conflicts it
+        # produced, and what each ladder rung did about them.
+        self.trace = [] if k_cfg.get("trace", False) else None
+        self._committed_xy = [np.asarray(state[i][:2], float).reshape(1, 2)
+                              for i in range(env._n)]
+        self._snap("kinematic reference paths (Alg. 1 line 3)",
+                   [np.vstack([state[i][:2], np.asarray(milestones[i], float)[:, :2]])
+                    for i in range(env._n)])
+
         for j in range(m):
             goals = [milestones[i][j] for i in range(env._n)]
             last = (j == m - 1)   # only the final milestone requires a full stop
@@ -98,6 +109,9 @@ class KARCPlanner(BasePlanner):
                 oks.append(ok)
 
             conflicts = self._find_conflicts(segs, radii, d_min, clearance)
+            self._snap(f"segment {j + 1}/{m}: uncoordinated solve "
+                       f"({len(conflicts)} conflict{'' if len(conflicts) == 1 else 's'})",
+                       segs, conflicts)
             # The ladder handles two failure kinds, not one. A segment can be in
             # conflict, but it can also just be INFEASIBLE on its own: segmentation
             # constrains intermediate milestones by position only, so the previous
@@ -116,6 +130,8 @@ class KARCPlanner(BasePlanner):
                     )
                     self.stats["rungs"][rung] = self.stats["rungs"].get(rung, 0) + 1
                     conflicts = self._find_conflicts(segs, radii, d_min, clearance)
+                    self._snap(f"segment {j + 1}/{m}: {rung} -> "
+                               f"{len(conflicts)} conflicts remaining", segs, conflicts)
                     if not conflicts and all(oks):
                         break
                 rounds += 1
@@ -137,7 +153,13 @@ class KARCPlanner(BasePlanner):
                     self.stats["braked_segments"] += 1
                     us, state[i] = self._brake(env, i, state[i], len(np.atleast_2d(ctrls[i])))
                     self._controls[a].extend(us)
+            if self.trace is not None:
+                self._committed_xy = [
+                    np.vstack([self._committed_xy[i], np.asarray(segs[i], float)[:, :2]])
+                    for i in range(env._n)
+                ]
 
+        self._snap("final plan", [])
         self.stats["conflicts_remaining"] = len(conflicts)
         self.stats["wall_time"] = time.perf_counter() - t0
         self.stats["path_cost"] = sum(len(v) for v in self._controls.values()) * env.dt
@@ -149,6 +171,28 @@ class KARCPlanner(BasePlanner):
             seq = self._controls.get(agent, [])
             out[agent] = seq.pop(0) if seq else np.zeros(env.robots[i].action_dim)
         return out
+
+    def _snap(self, label, segs, conflicts=()) -> None:
+        """Keep one stage of the plan for rendering. No-op unless karc.trace is set.
+
+        Paths are drawn as committed-so-far + the segment under consideration, so the
+        picture builds up the way the algorithm does instead of jumping between segments.
+        A conflict (i, j, k) marks the first index where two trajectories violate
+        separation; the marker goes at the midpoint, which is where the pair is.
+        """
+        if self.trace is None:
+            return
+        segs = [np.asarray(sg, dtype=float) for sg in segs]
+        paths = [
+            np.vstack([self._committed_xy[i], segs[i][:, :2]]) if i < len(segs)
+            else self._committed_xy[i]
+            for i in range(len(self._committed_xy))
+        ]
+        self.trace.append({
+            "label": label,
+            "paths": paths,
+            "markers": [0.5 * (segs[i][k][:2] + segs[j][k][:2]) for i, j, k in conflicts],
+        })
 
     @staticmethod
     def _brake(env, i, state, n_steps):
