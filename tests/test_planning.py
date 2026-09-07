@@ -419,3 +419,31 @@ def test_adaptation_is_configurable_and_off_by_zero():
         cfg = compose("config", overrides=["approach=planning", "approach.method=karc"])
     assert cfg.approach.karc.adapt_max == 1, "K-ARC's 'previous segment' is one step back"
     assert "adapt_max" in OmegaConf.to_container(cfg.approach.karc)
+
+
+def test_timeout_fails_safely_instead_of_planning_forever():
+    """K-ARC's setup (SS V) gives every method 600 s per instance, so an unbounded planner
+    cannot produce a comparable number: a plan found at three hours is a failure nobody
+    stopped. Two things must hold when the budget expires -- the run must STOP, and it must
+    stop at rest. `act` pads an exhausted control sequence with zero ACCELERATION, which for
+    a second-order robot is coasting, so a timeout that simply stopped planning would send
+    every robot on at its current velocity and score collisions the planner never chose.
+    """
+    from src.approach.planning import build_planner
+    from src.approach.rollout import run_episode
+    from src.env.factory import build_env
+
+    cfg = _cfg("open_cross_16_unicycle2",
+               **{"approach.method": "karc", "approach.karc.timeout": 5.0})
+    env = build_env(cfg)
+    planner = build_planner(cfg.approach)
+    stats, _ = run_episode(env, planner, render=False)
+
+    assert planner.stats["timed_out"] == 1
+    assert planner.stats["unsolved_segments"] > 0
+    assert not stats["success"]
+    # Overshoot is bounded by one solver call, not by the ladder.
+    assert planner.stats["wall_time"] < 60.0
+    assert stats["collisions"] == 0.0, "timed out into a crash instead of braking to rest"
+    for i, a in enumerate(env.possible_agents):
+        assert abs(float(env._states[i][3])) < 1e-6, f"{a} still moving after the timeout"

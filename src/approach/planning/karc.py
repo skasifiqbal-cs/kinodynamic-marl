@@ -61,6 +61,13 @@ class KARCPlanner(BasePlanner):
         adapt_max = int(k_cfg.get("adapt_max", 1))
         d_min = k_cfg.get("d_min", None)
         clearance = float(t_cfg.get("clearance", 0.05))
+        budget = k_cfg.get("timeout", 600.0)
+        # A plan is only a plan if it arrives in time. K-ARC's experimental setup gives every
+        # method 600 s per instance, so a run that keeps solving past it has not produced a
+        # slow success -- it has produced a failure that nobody stopped. Without this the
+        # hierarchy is unbounded: rounds x subproblems x rungs, and the composite RRT alone
+        # can spend minutes on one subproblem.
+        self._deadline = None if not budget else t0 + float(budget)
 
         total_h = self._total_horizon(env, t_cfg)
 
@@ -76,6 +83,7 @@ class KARCPlanner(BasePlanner):
             "composite_rrt_solves": 0,
             "merges": 0,
             "adaptations": 0,
+            "timed_out": 0,
             "subproblem_sizes": [],
             "rungs": {},
         }
@@ -106,7 +114,27 @@ class KARCPlanner(BasePlanner):
         # several, and the checkpoints it consumed are popped with it.
         prev_starts: list[dict] = []
 
+        conflicts: list = []   # survives a timeout before the first segment is planned
+
+        # Steps to bring the fastest robot from v_max to rest, for the timeout fallback.
+        brake_h = max(2, int(max(r.v_max / max(r.a_max, 1e-6) for r in env.robots)
+                             / env.dt) + 2)
+
         for j in range(m):
+            if self._over_budget():
+                # Out of time with segments left. Every robot brakes to rest from wherever
+                # it stands: `act` pads an exhausted control sequence with ZERO acceleration,
+                # which for a second-order robot means coasting at its current velocity into
+                # whatever is ahead. A timeout must fail safely, not fail moving.
+                for i, a in enumerate(agents):
+                    self._solved[a] = False
+                    us, state[i], braked = self._brake(env, i, state[i], brake_h)
+                    self._controls[a].extend(us)
+                    if self.trace is not None:
+                        self._committed[i] = np.vstack([self._committed[i], braked[:, :3]])
+                self.stats["unsolved_segments"] += m - j
+                break
+
             goals = [milestones[i][j] for i in range(env._n)]
             last = (j == m - 1)   # only the final milestone requires a full stop
             start_ck = self._checkpoint(agents, state)
@@ -129,7 +157,8 @@ class KARCPlanner(BasePlanner):
                     ladder, max_rounds, j, m, adapt,
                 )
                 self.stats["rounds"] += rounds
-                if (not conflicts and all(oks)) or adapt >= adapt_max or not prev_starts:
+                if ((not conflicts and all(oks)) or adapt >= adapt_max
+                        or not prev_starts or self._over_budget()):
                     break
                 adapt += 1
                 self.stats["adaptations"] += 1
@@ -232,6 +261,20 @@ class KARCPlanner(BasePlanner):
             "markers": [0.5 * (segs[i][k][:2] + segs[j][k][:2]) for i, j, k in conflicts],
             "waypoints": list(self._waypoints),
         })
+
+    def _over_budget(self) -> bool:
+        """True once the planning time budget is spent.
+
+        Checked at loop boundaries only -- between rungs, rounds and segments -- so the
+        overshoot is bounded by ONE solver call rather than by the ladder. Both solvers cap
+        their own work (IPOPT `max_iters`, RRT `rrt_iters`), so that call terminates.
+        """
+        if self._deadline is None:
+            return False
+        if time.perf_counter() < self._deadline:
+            return False
+        self.stats["timed_out"] = 1
+        return True
 
     @staticmethod
     def _brake(env, i, state, n_steps):
@@ -475,7 +518,8 @@ class KARCPlanner(BasePlanner):
         # its milestone in the time it has. Gating on conflicts alone sends those straight
         # to the braking fallback without ever trying a rung.
         rounds = 0
-        while (conflicts or not all(oks)) and rounds < max_rounds:
+        while (conflicts or not all(oks)) and rounds < max_rounds \
+                and not self._over_budget():
             self.stats["conflicts"] += len(conflicts)
             segs, ctrls, oks, conflicts = self._resolve_segment(
                 conflicts, segs, ctrls, oks, env, state, goals, seg_h, t_cfg,
@@ -543,6 +587,9 @@ class KARCPlanner(BasePlanner):
                 self.stats["subproblems"] += 1
                 self.stats["subproblem_sizes"].append(len(group))
                 for rung in ladder:
+                    if self._over_budget():
+                        return segs, ctrls, oks, self._find_conflicts(
+                            segs, radii, d_min, clearance)
                     segs, ctrls, oks = self._resolve(
                         rung, group, segs, ctrls, oks, env, state, goals, seg_h,
                         t_cfg, radii, last,

@@ -103,6 +103,12 @@ approach:
     # them per-robot. The mechanism's purpose -- room to manoeuvre that the window did not
     # previously contain -- is served by re-opening committed motion.
     adapt_max: 1
+    # Planning time budget in seconds for the WHOLE instance, matching K-ARC's experimental
+    # setup (SS V), which gives every method 600 s. Checked between rungs, rounds and
+    # segments, so the overshoot is one solver call. On expiry every robot brakes to rest and
+    # the run reports `timed_out=1` with the remaining segments counted unsolved -- a timeout
+    # is a FAILURE, not a slow success, and must be reported as one. null disables it.
+    timeout: 600.0
     # Cap on resolution rounds per segment before the segment is committed as-is.
     max_rounds: 3
     # Priority order within a subproblem: index (agent order) or distance

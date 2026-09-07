@@ -149,6 +149,13 @@ python scripts/karc_trace_gif.py approach=planning env=open_cross_4_unicycle2 \
   'approach.karc.ladder=[prioritized]' eval.gif_path=experiments/oc4_trace.gif
 ```
 
+**Time budget.** `approach.karc.timeout` (default **600 s**) matches K-ARC's setup — §V-A:
+*"Each method is given 20 trials for each scenario, with a timeout of 600 seconds."* It is
+checked between rungs, rounds and segments, so overshoot is one solver call. On expiry every
+robot brakes to rest, `timed_out=1` is reported, and the remaining segments count as
+unsolved: a timeout is a failure, not a slow success. `null` disables it, which is only
+useful for debugging — never for a number that goes in a table.
+
 Every planning run prints a `STATS,<method>,...` line beside `RESULT`: conflicts,
 subproblems, rounds, `rungs` (which ones actually fired), `solver_calls`, `joint_solves`,
 `wall_time`. Read the ablation off `rungs` — success rate alone cannot tell you whether
