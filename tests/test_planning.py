@@ -301,9 +301,13 @@ def test_a_subproblem_is_one_conflicting_pair_not_every_conflicting_robot():
 
     open_cross_4 is two independent head-on pairs, so the two settings must reach the same
     plan by different routes -- which is what makes |R'| the thing being measured.
+
+    min_time=false is pinned: with a free dt the segment horizons shrink, the two pairs stop
+    conflicting inside the SAME segment, and `merged` degenerates to `pair` -- which makes the
+    scenario stop being a test of |R'| at all.
     """
-    env, pair = _karc_stats("open_cross_4_unicycle2", subproblem="pair")
-    _, merged = _karc_stats("open_cross_4_unicycle2", subproblem="merged")
+    env, pair = _karc_stats("open_cross_4_unicycle2", subproblem="pair", min_time=False)
+    _, merged = _karc_stats("open_cross_4_unicycle2", subproblem="merged", min_time=False)
 
     assert pair.stats["subproblem_max"] == 2, pair.stats["subproblem_max"]
     assert merged.stats["subproblem_max"] == env._n, merged.stats["subproblem_max"]
@@ -348,9 +352,12 @@ def test_adapt_subproblem_reopens_the_previous_segment_and_rescues_it():
     #     the default this scenario solves outright and there is nothing to adapt.
     #   on_unsolved=brake (off arm) - under K-ARC's `return ∅` an unresolved segment
     #     discards the whole plan, so the path-cost comparison below would be against nothing.
+    #   min_time=false - a free dt re-times the milestones, so the segment that adaptation
+    #     rescues here is no longer the one that fails. Adaptation is what is under test.
     _, off = _karc_stats("swap2_unicycle2", adapt_max=0, on_unsolved="brake",
-                         initial_paths="dijkstra")
-    _, on = _karc_stats("swap2_unicycle2", adapt_max=1, initial_paths="dijkstra")
+                         initial_paths="dijkstra", min_time=False)
+    _, on = _karc_stats("swap2_unicycle2", adapt_max=1, initial_paths="dijkstra",
+                        min_time=False)
 
     assert off.stats["adaptations"] == 0
     assert off.stats["unsolved_segments"] >= 1, "swap2 must still be the hard case here"

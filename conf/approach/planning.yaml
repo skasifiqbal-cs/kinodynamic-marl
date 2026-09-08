@@ -67,6 +67,31 @@ approach:
     # is ~30% longer than a shortest path, and with dt fixed the segment horizon IS the
     # duration, so a raw guide buys a slower plan and needs env.max_steps sized for it.
     initial_rrt_shortcut: false
+    # Size each segment by SOLVING for it with Delta t free (K-ARC Eq. 2, §IV-B: "we can
+    # instead minimize DeltaT and set it as a decision variable"), then convert the minimum
+    # duration to a whole number of env steps and plan the segment there.
+    #
+    # Without this the objective is gone, not approximated: with dt pinned to the env grid
+    # and N fixed, `N * dt` is a constant, so the program minimises effort alone -- and effort
+    # is minimised by spreading motion thinly over the whole horizon. The segment then takes
+    # exactly as long as the horizon it was handed, and that horizon came from the guide, so
+    # a wandering guide is spent rather than optimised away.
+    #
+    # Costs one extra single-robot solve per robot per segment (counted in min_time_solves).
+    # false reproduces the guide-length sizing used before 2026-09-08.
+    min_time: true
+    # Process pool for the per-robot solves that Alg. 1 lines 15-19 and the min-time probes
+    # perform. Those are independent by construction -- each robot is solved with no
+    # knowledge of the others, which is precisely why a conflict-resolution stage follows --
+    # so solving them one at a time is a property of THIS implementation, not of K-ARC, whose
+    # experiments ran on a 32-core i9-14900K (§V-A). Results are identical either way; only
+    # wall time changes, and the pool cannot reorder or alter a plan.
+    #   0 or 1 - serial (default; reproduces every run before 2026-09-08)
+    #   N      - pool of N workers
+    #   -1     - one worker per core
+    # Threads are useless here: CasADi holds the GIL through a solve, measured at 0.65x on
+    # 8 threads (slower than serial) against 4.11x on 8 processes.
+    workers: 0
     # Number of equal segments the reference path is split into (K-ARC's `m`).
     # Segmentation synchronises milestones so robots share a time grid, which is
     # what makes the inter-robot constraints meaningful. The paper does not publish

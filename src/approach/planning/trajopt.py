@@ -80,6 +80,23 @@ def _obstacle_sq_dist(ca, px, py, obs):
     return ox * ox + oy * oy
 
 
+def solve_one(args):
+    """``solve_group`` for a single robot, from one picklable tuple.
+
+    Exists so the per-robot solves of K-ARC Alg. 1 lines 15-19 can go to a process pool.
+    They are independent by construction -- each robot is solved with no knowledge of the
+    others, which is exactly why the algorithm needs a conflict-resolution stage afterwards
+    -- so running them one at a time is a property of this implementation, not of K-ARC,
+    whose experiments ran on a 32-core machine.
+
+    A pool is needed rather than threads: CasADi holds the GIL through a solve, measured at
+    0.65x (slower than serial) on 8 threads against 4.1x on 8 processes.
+    """
+    robot, start, goal, obstacles, world_size, kw = args
+    xs, us, dt, ok = solve_group([robot], [start], [goal], obstacles, world_size, **kw)
+    return xs[0], us[0], dt, ok
+
+
 def _near_guide(obstacles, guide, margin: float) -> list:
     """Obstacles within `margin` of any vertex of the guide polyline."""
     if guide is None or len(guide) < 1:

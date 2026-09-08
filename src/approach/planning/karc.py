@@ -35,13 +35,19 @@ paper reports — conflicts found, resolution rounds, solver calls and wall time
 """
 from __future__ import annotations
 
+import os
 import time
+from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 
 from src.approach.planning import geometric_rrt, krrt
 from src.approach.planning.base import BasePlanner
-from src.approach.planning.trajopt import solve_group, solve_trajectory
+from src.approach.planning.trajopt import (
+    solve_group,
+    solve_one,
+    solve_trajectory,
+)
 from src.conflict.margin import provable_ics
 from src.shaping.dijkstra_potential import DijkstraPotential
 
@@ -50,6 +56,8 @@ class KARCPlanner(BasePlanner):
     method = "karc"
 
     # ── planning ──────────────────────────────────────────────────────────────
+
+    _pool = None   # process pool for the independent per-robot solves; see `workers`
 
     def reset(self, env) -> None:
         t0 = time.perf_counter()
@@ -71,6 +79,13 @@ class KARCPlanner(BasePlanner):
         # can spend minutes on one subproblem.
         self._deadline = None if not budget else t0 + float(budget)
 
+        # K-ARC's experiments ran on a 32-core machine and its per-robot solves are
+        # independent; running them serially is our limitation, not the algorithm's.
+        workers = int(k_cfg.get("workers", 0))
+        if workers < 0:
+            workers = os.cpu_count() or 1
+        self._pool = (ProcessPoolExecutor(max_workers=workers) if workers > 1 else None)
+
         self.stats = {
             "conflicts": 0, "rounds": 0, "subproblems": 0,
             "solver_calls": 0, "unsolved_segments": 0, "braked_segments": 0,
@@ -82,6 +97,7 @@ class KARCPlanner(BasePlanner):
             "timed_out": 0,
             "plan_failed": 0,
             "initial_path_fallbacks": 0,
+            "min_time_solves": 0,
             "rungs_skipped": 0,
             "escalated": 0,
             "subproblem_sizes": [],
@@ -168,6 +184,9 @@ class KARCPlanner(BasePlanner):
                 guides = [self._guide(ref_paths[i], state[i], lo, hi)
                           for i in range(env._n)]
                 seg_h = self._segment_horizon(env, t_cfg, state, goals, total_h, m, guides)
+                if bool(k_cfg.get("min_time", True)):
+                    seg_h = self._min_time_horizon(env, t_cfg, state, goals, guides,
+                                                   total_h, seg_h, last)
                 segs, ctrls, oks, conflicts, rounds = self._plan_segment(
                     env, state, goals, seg_h, last, t_cfg, radii, d_min, clearance,
                     ladder, max_rounds, j, m, adapt, guides,
@@ -224,6 +243,9 @@ class KARCPlanner(BasePlanner):
         self.stats["conflicts_remaining"] = len(conflicts)
         self.stats["wall_time"] = time.perf_counter() - t0
         self.stats["path_cost"] = sum(len(v) for v in self._controls.values()) * env.dt
+        if self._pool is not None:
+            self._pool.shutdown(wait=True)
+            self._pool = None
         self._plan = self._controls
 
     def act(self, obs_dict: dict, env) -> dict:
@@ -363,6 +385,67 @@ class KARCPlanner(BasePlanner):
             for i in range(env._n)
         )
         return int(np.clip(np.ceil(slack * worst / env.dt), 2, total_h))
+
+    def _solve_many(self, specs):
+        """Run independent single-robot solves, in parallel when a pool is configured.
+
+        `specs` are (robot, start, goal, obstacles, world_size, kwargs) tuples. Order of
+        results matches order of specs, so a parallel run and a serial one are
+        indistinguishable to the caller -- the pool must not be able to change a plan.
+        """
+        self.stats["solver_calls"] += len(specs)
+        if self._pool is None:
+            return [solve_one(sp) for sp in specs]
+        return list(self._pool.map(solve_one, specs))
+
+    def _min_time_horizon(self, env, t_cfg, state, goals, guides, total_h, seg_h, last):
+        """Segment duration from Eq. 2 with Delta t as a DECISION VARIABLE, as K-ARC states it.
+
+        §IV-B: "Since the number of decision variables is fixed and we cannot directly set
+        the number as a decision variable, we can instead minimize DeltaT and set it as a
+        decision variable." So the knot count N is fixed and the solver shrinks the spacing;
+        the segment's duration is N * Delta t*.
+
+        Pinning Delta t to the env's grid, as this used to do, does not merely approximate
+        that -- it DELETES the objective. With dt fixed and N fixed, `N * dt` is a constant,
+        so the program minimises control effort alone, and effort is minimised by spreading
+        the motion thinly across the whole horizon. The trajectory then takes exactly as long
+        as the horizon it was given, and the horizon was sized from the guide, so a wandering
+        guide is not optimised away: it is spent. On open_cross_8 that cost path_cost 632.0
+        against 477.6 for a shorter guide -- 32% more motion for the same task, entirely
+        because nothing in the objective wanted it done sooner.
+
+        K-ARC never has to resolve this because it never executes: it reports planner
+        metrics. We roll the plan out in an env that steps at a fixed rate, so the objective
+        needs free Delta t and execution needs the env's grid. Both, in that order: solve
+        each robot's segment with Delta t free to find the minimum duration, convert that to
+        a whole number of env steps, and let the rest of the pipeline plan on the env grid at
+        that length. Conflict detection, the ladder and the RRT rungs are untouched -- they
+        still share one index per instant.
+
+        The segment takes the SLOWEST robot's minimum time, which is what makes the
+        milestones simultaneous (§IV-D-2: "the robots need to achieve the milestones for a
+        segment at the same time").
+        """
+        base = dict(
+            horizon=seg_h,
+            effort_weight=float(t_cfg.get("effort_weight", 0.01)),
+            dt_fixed=None,
+            dt_bounds=tuple(t_cfg.get("dt_bounds", (0.02, 0.5))),
+            goal_tol=self._terminal_tol(env, t_cfg, 1.0, last),
+            clearance=float(t_cfg.get("clearance", 0.05)),
+            terminal_stop=last,
+            max_iter=int(t_cfg.get("max_iters", 500)),
+            obstacle_margin=t_cfg.get("obstacle_margin", None),
+        )
+        specs = [(env.robots[i], state[i], goals[i], env._obstacles, env._world_size,
+                  dict(base, guides=[guides[i]])) for i in range(env._n)]
+        self.stats["min_time_solves"] += len(specs)
+        steps = [int(np.ceil(seg_h * float(dt) / env.dt))
+                 for _X, _U, dt, ok in self._solve_many(specs) if ok]
+        # An infeasible free-dt probe says nothing about duration, so fall back to the
+        # guide-length estimate rather than to whatever the last iterate happened to be.
+        return int(np.clip(max(steps) if steps else seg_h, 2, total_h))
 
     @staticmethod
     def _path_len(path: np.ndarray) -> float:
@@ -621,10 +704,22 @@ class KARCPlanner(BasePlanner):
                       clearance, ladder, max_rounds, j, m, adapt, guides):
         """Solve one window: uncoordinated first (Alg. 1 lines 17-18), then the hierarchy."""
         span = f"segment {j + 1}/{m}" + (f" (+{adapt} back)" if adapt else "")
+        # Alg. 1 lines 15-19: every robot solved with no knowledge of the others. Independent
+        # by construction, so they go to the pool together when one is configured.
+        base = dict(
+            horizon=seg_h,
+            effort_weight=float(t_cfg.get("effort_weight", 0.01)),
+            dt_fixed=env.dt,
+            goal_tol=self._terminal_tol(env, t_cfg, 1.0, last),
+            clearance=float(t_cfg.get("clearance", 0.05)),
+            terminal_stop=last,
+            max_iter=int(t_cfg.get("max_iters", 500)),
+            obstacle_margin=t_cfg.get("obstacle_margin", None),
+        )
+        specs = [(env.robots[i], state[i], goals[i], env._obstacles, env._world_size,
+                  dict(base, guides=[guides[i]])) for i in range(env._n)]
         segs, ctrls, oks = [], [], []
-        for i in range(env._n):
-            X, U, ok = self._solve(env, i, state[i], goals[i], seg_h, t_cfg, (),
-                                   terminal_stop=last, guide=guides[i])
+        for X, U, _dt, ok in self._solve_many(specs):
             segs.append(X)
             ctrls.append(U)
             oks.append(ok)
