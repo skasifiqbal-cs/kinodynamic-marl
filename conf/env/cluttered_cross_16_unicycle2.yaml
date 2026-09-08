@@ -39,7 +39,7 @@
 #
 # Observation is 11 + 2*(N-1) = 41 wide, so a policy trained here will not load at a
 # different N. Every N is its own run.
-# Use shaping=dijkstra, not braking or euclidean: with pillars in the way a
+# Use shaping=dijkstra, not braking or euclidean: with blocks in the way a
 # straight-line potential points into obstacles and actively misleads.
 # Collision checking is O(N^2) — time one episode before queueing a long run at N=32.
 # Identifies the scenario in run directory names and W&B tags. Must match the
@@ -70,106 +70,22 @@ require_stop_at_goal: true
 stop_speed: 0.4
 
 obstacles: 
-  - x: 3.36551
-    y: 1.77474
+  - x: 4.335
+    y: 11.645
     angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 3.48168
-    y: 5.40067
+    shape: {type: box, width: 2.21, length: 4.25}
+  - x: 12.58
+    y: 10.54
     angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 3.89871
-    y: 9.32741
+    shape: {type: box, width: 2.04, length: 2.04}
+  - x: 11.56
+    y: 6.46
     angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 3.83021
-    y: 11.7404
+    shape: {type: box, width: 4.08, length: 2.04}
+  - x: 4.335
+    y: 4.42
     angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 3.46022
-    y: 15.7807
-    angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 5.74676
-    y: 1.65463
-    angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 5.50164
-    y: 3.81398
-    angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 5.39277
-    y: 7.41221
-    angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 5.47457
-    y: 13.501
-    angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 5.71779
-    y: 15.7219
-    angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 7.58547
-    y: 3.6686
-    angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 7.53419
-    y: 7.38688
-    angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 7.6595
-    y: 11.6036
-    angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 9.59615
-    y: 1.75668
-    angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 9.81987
-    y: 5.56212
-    angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 9.27028
-    y: 9.51354
-    angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 9.85098
-    y: 13.6674
-    angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 9.60841
-    y: 15.7192
-    angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 11.707
-    y: 1.46201
-    angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 11.4606
-    y: 7.52846
-    angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 11.3479
-    y: 11.4481
-    angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 13.7859
-    y: 1.88745
-    angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 13.3248
-    y: 5.63547
-    angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 13.3268
-    y: 9.6719
-    angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
-  - x: 13.2857
-    y: 13.3978
-    angle: 0.0
-    shape: {type: box, width: 0.9, length: 0.9}
+    shape: {type: box, width: 2.21, length: 2.04}
 
 agents:
   - id: agent_0

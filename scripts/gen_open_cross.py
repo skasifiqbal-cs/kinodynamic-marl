@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import random
 import sys
 from pathlib import Path
 
@@ -78,44 +77,40 @@ def geometry(n: int):
 
 
 # Cluttered Cross (SS V-B-2): "the environment is filled with cluttered obstacles. The
-# robots have the same starts and goals as in open cross." Nothing else is published -- no
-# count, no size, no layout -- so the field below is ours, and its only job is to be an
-# honest obstacle field: fixed seed, square pillars on a jittered lattice, never placed
-# where they would make a robot's own query unsolvable.
-CLUTTER_SIDE = 0.9      # pillar side, ~1.6x the unicycle_db body diagonal
-CLUTTER_SEED = 20260908
+# robots have the same starts and goals as in open cross." -- so the obstacle field is the
+# ONLY difference from open cross, and it does not change with N. Congestion comes from the
+# robot count alone, exactly as in the paper.
+#
+# The paper publishes no coordinates, but it does publish a picture: Fig. 2(b) shows FOUR
+# large rectangular blocks of differing sizes in the interior, with the start/goal rows
+# running clear of them. The fractions below were measured off that figure (extracted from
+# the PDF at 1506x1506) and are expressed as fractions of the world so the layout is
+# reproducible and rescales with WORLD.
+#
+# This replaces an earlier field of 31 small 0.9 m pillars on a jittered lattice. That field
+# was ours, not theirs, and it was a different kind of environment: "a forest to weave
+# through" rather than "a few big things to go around". Worse, pillars landed ON the travel
+# rows, so a robot was in clutter from its first metre and cluttered_cross_4 failed before a
+# single conflict existed (rounds=0, rungs={}). Fig. 2(b) keeps the lanes clear.
+#
+# (cx, cy, width, height), all as fractions of WORLD.
+CLUTTER_BLOCKS = [
+    (0.255, 0.685, 0.130, 0.250),   # tall block, upper left
+    (0.740, 0.620, 0.120, 0.120),   # square, right of centre
+    (0.680, 0.380, 0.240, 0.120),   # wide block, lower right
+    (0.255, 0.260, 0.130, 0.120),   # square, lower left
+]
 
 
-def obstacles(n: int) -> list[tuple[float, float]]:
-    """Pillar centres for the cluttered variant of the N-robot cross.
+def obstacles(n: int) -> list[tuple[float, float, float, float]]:
+    """(cx, cy, width, height) for the cluttered variant. Identical at every N.
 
-    Rejection rules, in order: keep clear of every start and goal by more than a body plus a
-    pillar half-diagonal (otherwise a robot begins or ends in collision), and keep clear of
-    every other pillar by the same, so gaps stay wider than a robot and the instance stays
-    solvable. A cluttered scenario nobody can solve measures nothing.
+    Blocks span x in [0.19, 0.80] of the world, so they never reach the start column at
+    MARGIN or the goal column at WORLD - MARGIN; `check` asserts that rather than trusting it.
     """
-    world, x_left, x_right, ys = geometry(n)
-    ends = [(x, y) for y in ys for x in (x_left, x_right)]
-    half = CLUTTER_SIDE * math.sqrt(2) / 2
-    keep = body_diameter() / 2 + half + 0.25
-    rng = random.Random(CLUTTER_SEED)
-    out: list[tuple[float, float]] = []
-    # A lattice one pillar-pitch coarser than the pillars themselves, jittered, so the field
-    # reads as clutter rather than as a grid the planner can exploit.
-    pitch = CLUTTER_SIDE * 2.2
-    steps = int((world - 2 * MARGIN) // pitch)
-    for a in range(steps + 1):
-        for b in range(steps + 1):
-            x = MARGIN + half + a * pitch + rng.uniform(-0.3, 0.3)
-            y = MARGIN + half + b * pitch + rng.uniform(-0.3, 0.3)
-            if not (half <= x <= world - half and half <= y <= world - half):
-                continue
-            if any(math.hypot(x - ex, y - ey) < keep for ex, ey in ends):
-                continue
-            if any(math.hypot(x - ox, y - oy) < CLUTTER_SIDE + keep for ox, oy in out):
-                continue
-            out.append((x, y))
-    return out
+    del n            # the field is the environment, and the environment does not vary
+    return [(cx * WORLD, cy * WORLD, w * WORLD, h * WORLD)
+            for cx, cy, w, h in CLUTTER_BLOCKS]
 
 
 def render(n: int, cluttered: bool = False) -> str:
@@ -155,11 +150,11 @@ def render(n: int, cluttered: bool = False) -> str:
     obs = obstacles(n) if cluttered else []
     obs_block = "[]" if not obs else "\n" + "\n".join(
         f"  - x: {num(x)}\n    y: {num(y)}\n    angle: 0.0\n"
-        f"    shape: {{type: box, width: {num(CLUTTER_SIDE)}, length: {num(CLUTTER_SIDE)}}}"
-        for x, y in obs)
+        f"    shape: {{type: box, width: {num(w)}, length: {num(h)}}}"
+        for x, y, w, h in obs)
     stem = f"{'cluttered' if cluttered else 'open'}_cross_{n}_unicycle2"
     shaping_note = (
-        "# Use shaping=dijkstra, not braking or euclidean: with pillars in the way a\n"
+        "# Use shaping=dijkstra, not braking or euclidean: with blocks in the way a\n"
         "# straight-line potential points into obstacles and actively misleads."
         if cluttered else
         "# Prefer shaping=braking or shaping=euclidean, not dijkstra: the world is empty, so the\n"
@@ -290,6 +285,23 @@ def check() -> None:
     # The point of the redesign: more robots must mean rows PACKED CLOSER, not a bigger world.
     gaps = [row_spacing(n // 2) for n in SIZES if n > 2]
     assert gaps == sorted(gaps, reverse=True), dict(zip(SIZES[1:], gaps))
+
+    # Fig. 2(b) keeps the start/goal columns clear of every block. A robot that begins or
+    # ends inside an obstacle makes the instance unsolvable for reasons that are ours, and
+    # that is precisely how the old pillar field broke cluttered_cross_4.
+    half_body = body_diameter() / 2
+    for n in SIZES:
+        world, x_left, x_right, ys = geometry(n)
+        ends = [(x, y) for y in ys for x in (x_left, x_right)]
+        for cx, cy, w, h in obstacles(n):
+            assert 0 <= cx - w / 2 and cx + w / 2 <= world, f"block off-world at N={n}"
+            for ex, ey in ends:
+                gap = max(abs(ex - cx) - w / 2, abs(ey - cy) - h / 2)
+                assert gap > half_body, (
+                    f"N={n}: start/goal ({ex:.2f},{ey:.2f}) is {gap:.3f} m from block "
+                    f"({cx:.2f},{cy:.2f},{w:.2f}x{h:.2f}), inside the {half_body:.3f} m body")
+    # The field is the environment: identical at every N, so N alone sets congestion.
+    assert all(obstacles(n) == obstacles(SIZES[0]) for n in SIZES)
 
 
 def main() -> None:
