@@ -109,6 +109,10 @@ class KARCPlanner(BasePlanner):
             "initial_path_fallbacks": 0,
             "min_time_solves": 0,
             "min_time_failures": 0,
+            "guide_repair_attempts": 0,
+            "guide_repair_found": 0,
+            "guide_repair_blocked": 0,
+            "guide_repair_solved": 0,
             "rungs_skipped": 0,
             "escalated": 0,
             "subproblem_sizes": [],
@@ -1166,6 +1170,11 @@ class KARCPlanner(BasePlanner):
                 involved, segs, ctrls, oks, env, state, goals, seg_h, t_cfg,
                 tuple(avoid), last, guides,
             )
+        if rung == "guide_repair":
+            return self._repair_guides(
+                involved, segs, ctrls, oks, env, state, goals, seg_h, t_cfg,
+                radii, last, tuple(avoid),
+            )
         if rung in ("decoupled_rrt", "composite_rrt"):
             return self._solve_rrt(
                 rung, involved, segs, ctrls, oks, env, state, goals, seg_h, t_cfg,
@@ -1182,6 +1191,114 @@ class KARCPlanner(BasePlanner):
             )
             segs[i], ctrls[i], oks[i] = X, U, ok
             avoid.append((X, radii[i]))
+        return segs, ctrls, oks
+
+    @staticmethod
+    def _corridor(traj, shape, stride_m=0.25):
+        """A robot's planned segment as static blockers: its own footprint along the path.
+
+        Deduped by arclength rather than by index, so the count follows the distance covered
+        and not the knot count -- a segment of a few metres costs a few dozen blockers.
+        """
+        from src.collision.shapes import Obstacle
+
+        pts = np.asarray(traj, dtype=float)
+        if len(pts) == 0:
+            return []
+        out, last = [], None
+        for st in pts:
+            xy = st[:2]
+            if last is not None and float(np.linalg.norm(xy - last)) < stride_m:
+                continue
+            last = xy
+            out.append(Obstacle(float(st[0]), float(st[1]), shape,
+                                float(st[2]) if len(st) > 2 else 0.0))
+        return out
+
+    def _repair_guides(self, involved, segs, ctrls, oks, env, state, goals, seg_h, t_cfg,
+                       radii, last, avoid):
+        """Resolve a conflict by re-planning the GUIDE, not by searching the joint space.
+
+        K-ARC escalates solver power on a fixed guide: prioritized optimization, then
+        decoupled kinodynamic RRT, then composite kinodynamic RRT over the joint state of R'.
+        The sampling rungs exist for one reason the paper states plainly -- optimization
+        cannot change homotopy class, so they buy that change with a joint search that is
+        exponential in |R'|.
+
+        But which side of a conflict a robot passes on is a 2-D geometric decision. It does
+        not need the joint kinodynamic space; it needs the robot's own kinematic guide
+        re-planned with the partner's corridor treated as an obstacle. That is the same
+        geometric RRT Alg. 1 line 3 already uses, over a single segment, and the result is
+        realised by the SAME single-robot kinodynamic solve as every other rung -- the
+        dynamics remain the oracle that accepts or rejects it.
+
+        Evidence this channel carries the weight: shortcutting the initial guides, which
+        touches nothing but guidance, moved open_cross_16 from a 1800 s failure with
+        merges=10 and subproblem_max=10 to a 52 s solve with merges=0 and the ladder never
+        escalating past `prioritized`.
+
+        Robots are repaired in priority order; the first keeps its trajectory and each later
+        one routes around everything already fixed. A robot whose guide cannot be re-planned
+        keeps its current trajectory, and the ladder escalates as before.
+        """
+        involved = list(involved)
+        segs, ctrls, oks = list(segs), list(ctrls), list(oks)
+        clearance = float(t_cfg.get("clearance", 0.05))
+        rng = np.random.default_rng(
+            int(self.params.get("rrt_seed", 0)) + 7919 * (self.stats["rounds"] + 1)
+            + len(self.stats["subproblem_sizes"]))
+        fixed = list(avoid)          # (traj, radius) for everything outside R'
+        # Blockers for the GUIDE are the subproblem's own robots only -- the partner this
+        # conflict is against -- never every robot in the scene. Collapsing a trajectory to
+        # a static obstacle throws away the time dimension, and doing that for all N-|R'|
+        # others makes the plane impassable at scale: at N=32 it walls off 30 lanes and the
+        # repair RRT found no path in 28 of 30 attempts. The guide is guidance (SS IV-A,
+        # "not used as the final solutions"); the kinodynamic solve below still avoids
+        # everyone through `fixed`.
+        blocking: list = []
+
+        for pos, i in enumerate(involved):
+            if pos == 0:
+                fixed.append((segs[i], radii[i]))
+                blocking.append((segs[i], radii[i]))
+                continue
+            blockers = list(env._obstacles)
+            for traj, _r in blocking:
+                # The blocker's footprint is its own box at its own heading, not a
+                # circumscribed disc: for a 0.5 x 0.25 body the disc is 0.559 m across
+                # against a 0.25 m lateral extent, which closes gaps a robot fits through.
+                blockers += self._corridor(
+                    traj, env.robots[i].shape,
+                    stride_m=float(self.params.get("repair_stride", 0.25)))
+
+            self.stats["guide_repair_attempts"] += 1
+            path = geometric_rrt.plan_path(
+                np.asarray(state[i], float)[:2], np.asarray(goals[i], float)[:2],
+                blockers, env._world_size,
+                radius=env.robots[i].shape.bounding_radius + clearance,
+                max_iters=int(self.params.get("repair_rrt_iters", 2000)),
+                step=float(self.params.get("initial_rrt_step", 0.6)),
+                goal_bias=float(self.params.get("initial_rrt_goal_bias", 0.1)),
+                shortcut=True, rng=rng,
+            )
+            if path is None:
+                # No way around the partner in the plane. That is the honest signal to
+                # escalate: the conflict is not a homotopy choice, it is a coupled one.
+                self.stats["guide_repair_blocked"] += 1
+                fixed.append((segs[i], radii[i]))
+                blocking.append((segs[i], radii[i]))
+                continue
+
+            self.stats["guide_repair_found"] += 1
+            X, U, ok = self._solve(
+                env, i, state[i], goals[i], seg_h, t_cfg, tuple(fixed),
+                terminal_stop=last, guide=np.asarray(path, dtype=np.float64),
+            )
+            if ok:
+                segs[i], ctrls[i], oks[i] = X, U, ok
+                self.stats["guide_repair_solved"] += 1
+            fixed.append((segs[i], radii[i]))
+            blocking.append((segs[i], radii[i]))
         return segs, ctrls, oks
 
     def _solve_rrt(self, rung, involved, segs, ctrls, oks, env, state, goals, seg_h,

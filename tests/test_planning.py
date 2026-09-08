@@ -579,3 +579,59 @@ def test_a_failed_min_time_probe_cannot_shorten_the_segment():
     p._solve_many = lambda specs: [(None, None, 0.033, True)] * 3
     assert p._min_time_horizon(env, {}, [None] * 3, [None] * 3, [None] * 3,
                                total_h, seg_h, True) < seg_h
+
+
+def test_corridor_blockers_follow_distance_not_knot_count():
+    """A partner's segment becomes static blockers for the guide-repair rung. Dedupe is by
+    ARCLENGTH, so the cost tracks the metres covered rather than the knot count -- otherwise
+    a finely discretised segment would bury the geometric RRT in redundant obstacles.
+
+    The footprint is the robot's own box at its own heading, not a circumscribed disc: for
+    the 0.5 x 0.25 body here the disc is 0.559 m across against a 0.25 m lateral extent, and
+    the difference is exactly the gap a robot can pass through.
+    """
+    from src.approach.planning.karc import KARCPlanner
+    from src.collision.shapes import BoxShape
+
+    shape = BoxShape(0.5, 0.25)
+    # 4 m of travel, sampled 400 times -- 0.01 m apart.
+    fine = np.array([[x, 1.0, 0.0] for x in np.linspace(0.0, 4.0, 400)])
+    coarse = np.array([[x, 1.0, 0.0] for x in np.linspace(0.0, 4.0, 40)])
+
+    b_fine = KARCPlanner._corridor(fine, shape, stride_m=0.25)
+    b_coarse = KARCPlanner._corridor(coarse, shape, stride_m=0.25)
+    # 10x the knots over the same 4 m must not cost 10x the blockers: both land near
+    # 4 m / 0.25 m, against 400 and 40 if the stride were counted in knots.
+    assert 14 <= len(b_fine) <= 18, len(b_fine)
+    assert 14 <= len(b_coarse) <= 18, len(b_coarse)
+    assert abs(len(b_fine) - len(b_coarse)) <= 2, (len(b_fine), len(b_coarse))
+    assert all(b.shape is shape for b in b_fine)
+    assert all(abs(b.angle) < 1e-9 for b in b_fine)
+    # Consecutive blockers must OVERLAP along the path, or a robot could slip between two
+    # of them. A blocker is kept once the last one is >= stride away, so the gap can exceed
+    # the stride by one sample spacing -- what has to hold is that it stays under the box's
+    # own extent along travel (0.5 m here).
+    for b in (b_fine, b_coarse):
+        gaps = np.diff([o.x for o in b])
+        assert gaps.max() < shape.width, (gaps.max(), shape.width)
+
+    assert KARCPlanner._corridor(np.zeros((0, 3)), shape) == []
+
+
+def test_guide_repair_blockers_come_only_from_the_subproblem():
+    """The guide must route around the conflict partner, not every robot in the scene.
+
+    Collapsing a trajectory into a static obstacle discards time; doing it for all
+    N-|R'| robots outside the subproblem walls off the workspace and the repair RRT
+    finds nothing (28/30 blocked at N=32). `avoid` still constrains the kinodynamic
+    solve -- it just must not constrain the guide.
+    """
+    import inspect
+
+    from src.approach.planning.karc import KARCPlanner
+
+    src = inspect.getsource(KARCPlanner._repair_guides)
+    assert "for traj, _r in blocking:" in src, "guide blockers must come from `blocking`"
+    assert "for traj, _r in fixed:" not in src, (
+        "`fixed` holds every robot outside R'; using it as guide blockers is the bug"
+    )

@@ -196,10 +196,20 @@ approach:
     #   joint          - the conflicting robots in ONE nonlinear program so both can yield.
     #                    Solves a symmetric head-on swap that no ordering can; the
     #                    optimisation-side counterpart of composite_rrt.
+    #   guide_repair   - re-plan the GUIDE (2-D geometric RRT) of each lower-priority robot
+    #                    around the corridor swept by the robots already fixed in this
+    #                    subproblem, then re-solve kinodynamically along it. Changes homotopy
+    #                    class -- which prioritized cannot -- at 2-D cost rather than
+    #                    composite_rrt's joint-state cost. Only the subproblem's own robots
+    #                    block the guide; everyone else is still avoided by the solve, since
+    #                    flattening every trajectory into a static wall makes the workspace
+    #                    impassable at N=32.
     ladder: [prioritized, decoupled_rrt, composite_rrt]
     # Sampling-rung knobs, shared by both RRT rungs.
     rrt_seed: 0          # tree growth is randomised, so a run is only reproducible per-seed.
     rrt_iters: 3000      # extension attempts before giving up and failing the rung.
+    repair_rrt_iters: 2000   # guide_repair's 2-D RRT; cheaper per sample than the above.
+    repair_stride: 0.25      # corridor blockers are deduped by ARCLENGTH, metres.
     rrt_controls: 10     # controls sampled per extension; the best is kept (best-input RRT).
     rrt_steps: 5         # env.dt steps one control is held for. MUST divide the segment
                          # horizon's grid -- node depth is the timestep index, which is what
