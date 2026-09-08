@@ -99,6 +99,9 @@ class KARCPlanner(BasePlanner):
         self.stats = {
             "conflicts": 0, "rounds": 0, "subproblems": 0,
             "solver_calls": 0, "unsolved_segments": 0, "braked_segments": 0,
+            # Diagnostic only -- how many conflicts a 1-D timing intervention could
+            # settle, measured on every subproblem regardless of the rung taken.
+            "pairs_seen": 0, "pairs_wait_resolvable": 0, "pairs_ics": 0,
             "joint_solves": 0,
             "decoupled_rrt_solves": 0,
             "composite_rrt_solves": 0,
@@ -994,6 +997,19 @@ class KARCPlanner(BasePlanner):
             while True:
                 self.stats["subproblems"] += 1
                 self.stats["subproblem_sizes"].append(len(group))
+                # Does this pair need geometry at all, or only order? `_waiting_resolves`
+                # already answers that without a solve; _start_rung uses the answer to pick
+                # a rung and then discards it. Count it so we know how much of the ladder's
+                # cost is spent re-deriving a wait it could have been handed.
+                for _a, _b, *_ in conflicts:
+                    if _a not in group or _b not in group:
+                        continue
+                    self.stats["pairs_seen"] += 1
+                    if provable_ics(np.asarray(segs[_a][0], float), env.robots[_a],
+                                    np.asarray(segs[_b][0], float), env.robots[_b])[0]:
+                        self.stats["pairs_ics"] += 1
+                    elif self._waiting_resolves(env, _a, _b, segs, radii, d_min, clearance):
+                        self.stats["pairs_wait_resolvable"] += 1
                 start = self._start_rung(ladder, env, group, conflicts, segs,
                                          radii, d_min, clearance)
                 for rung in ladder[start:]:
