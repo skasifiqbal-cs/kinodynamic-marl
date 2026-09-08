@@ -67,7 +67,10 @@ def main() -> None:
     ap.add_argument("--concurrency", type=int, default=3, help="scenarios run at once")
     ap.add_argument("--out", default="experiments/karc_bench.csv")
     ap.add_argument("--scenarios", nargs="*", default=SCENARIOS)
-    ap.add_argument("extra", nargs="*", help="extra hydra overrides")
+    # NOT a positional: `--scenarios a b c foo=bar` is nargs="*" and swallows the override
+    # as a fourth scenario name, silently benchmarking the default config under the
+    # ablation's label. Cost an hour once; do not make it a positional again.
+    ap.add_argument("--extra", nargs="*", default=[], help="extra hydra overrides")
     args = ap.parse_args()
 
     out = ROOT / args.out

@@ -21,10 +21,14 @@ Faithfulness notes, all deliberate:
   conflicts this way. That is precisely the property this baseline exists to expose,
   so it is reproduced rather than improved. ``scripts/ics_diag.py`` holds the
   braking-margin alternative.
-* K-ARC's objective is ``beta1*||u||^2 + dt`` with ``dt`` free. For *execution* we
-  must land on the env's grid, so segments are solved at ``dt_fixed=env.dt``; the
-  free-dt mode stays available in :func:`.trajopt.solve_trajectory` for
-  planning-quality comparisons.
+* K-ARC's objective is ``beta1*||u||^2 + dt`` with ``dt`` a DECISION VARIABLE
+  (SS IV-B), and :func:`.trajopt.solve_trajectory` minimises exactly that. Execution,
+  which the paper never does, must land on the env's fixed grid, so a segment is
+  solved TWICE: once with ``dt`` free to find its minimum duration
+  (:meth:`_min_time_horizon`), then on the env grid at that duration. The conversion
+  keeps the duration and loses knots whenever ``dt* < env.dt``, which is this
+  implementation's largest known deviation. ``karc.min_time=false`` sizes segments
+  from guide length instead, for the ablation.
 * The paper publishes neither ``m``, ``d_min``, the timestep, nor the robot
   dimensions. Every one of those is a config knob here, defaulted from our own
   geometry, and none of it should be compared against their published runtimes.
@@ -48,6 +52,7 @@ from src.approach.planning.trajopt import (
     solve_one,
     solve_trajectory,
 )
+from src.collision.shapes import shape_distance
 from src.conflict.margin import provable_ics
 from src.shaping.dijkstra_potential import DijkstraPotential
 
@@ -58,6 +63,11 @@ class KARCPlanner(BasePlanner):
     # ── planning ──────────────────────────────────────────────────────────────
 
     _pool = None   # process pool for the independent per-robot solves; see `workers`
+
+    def __init__(self, approach_cfg, params):
+        super().__init__(approach_cfg, params)
+        # Known before reset(), because the runner has to decide whether to roll out at all.
+        self._execute = bool((params or {}).get("execute", False))
 
     def reset(self, env) -> None:
         t0 = time.perf_counter()
@@ -105,7 +115,19 @@ class KARCPlanner(BasePlanner):
             "rungs": {},
         }
 
+        # K-ARC never executes; it reports planner metrics. `execute: false` reproduces
+        # that -- segments are solved on a shared FREE timestep and no env grid is involved.
+        # `execute: true` re-lands the plan on env.dt so it can be rolled out, which is what
+        # the RL comparison needs and what costs knots (see `_min_time_horizon`).
+        self._execute = bool(k_cfg.get("execute", False))
+        self._dt_seg = env.dt          # the timestep THIS segment is solved on
+        self._traj = [[np.asarray(env._states[i], float).copy()] for i in range(env._n)]
+        self._plan_time = 0.0          # sum of segment durations = makespan
+
         radii = [float(r.shape.bounding_radius) for r in env.robots]
+        # Eq. 6 compares GEOMETRIC POSES. `circumscribed` falls back to centre-vs-radii.
+        shapes = (None if str(k_cfg.get("robot_distance", "polyhedral")) == "circumscribed"
+                  else [r.shape for r in env.robots])
         agents = list(env.possible_agents)
         # Alg. 1 lines 2-5, then the horizon: both sized from the reference paths, since with
         # obstacles the journey and the chord are different lengths.
@@ -185,12 +207,13 @@ class KARCPlanner(BasePlanner):
                 guides = [self._guide(ref_paths[i], state[i], lo, hi)
                           for i in range(env._n)]
                 seg_h = self._segment_horizon(env, t_cfg, state, goals, total_h, m, guides)
+                self._dt_seg = env.dt
                 if bool(k_cfg.get("min_time", True)):
-                    seg_h = self._min_time_horizon(env, t_cfg, state, goals, guides,
-                                                   total_h, seg_h, last)
+                    seg_h, self._dt_seg = self._min_time_horizon(
+                        env, t_cfg, state, goals, guides, total_h, seg_h, last)
                 segs, ctrls, oks, conflicts, rounds = self._plan_segment(
                     env, state, goals, seg_h, last, t_cfg, radii, d_min, clearance,
-                    ladder, max_rounds, j, m, adapt, guides,
+                    ladder, max_rounds, j, m, adapt, guides, shapes,
                 )
                 self.stats["rounds"] += rounds
                 if ((not conflicts and all(oks)) or adapt >= adapt_max
@@ -227,6 +250,11 @@ class KARCPlanner(BasePlanner):
                         env, i, state[i], len(np.atleast_2d(ctrls[i])))
                     self._controls[a].extend(us)
                     executed.append(braked)
+            # The plan itself, on its own timestep -- this is what K-ARC reports on, and it
+            # exists whether or not the plan is ever rolled out.
+            self._plan_time += seg_h * self._dt_seg
+            for i in range(env._n):
+                self._traj[i].extend(np.asarray(executed[i], dtype=np.float64)[1:])
             if self.trace is not None:
                 self._committed = [
                     np.vstack([self._committed[i], executed[i][:, :3]])
@@ -251,11 +279,70 @@ class KARCPlanner(BasePlanner):
         # of planning is a timeout regardless of which loop noticed it.
         if self._deadline is not None and time.perf_counter() >= self._deadline:
             self.stats["timed_out"] = 1
-        self.stats["path_cost"] = sum(len(v) for v in self._controls.values()) * env.dt
+        # SS V-D: "We evaluate the methods based mainly on the runtime", alongside path cost.
+        # Path cost here is the summed trajectory duration over robots, which is what
+        # `sum(len(controls)) * dt` measured on the env grid; off the grid it is the same
+        # quantity built from each segment's own timestep.
+        self.stats["path_cost"] = round(self._plan_time * env._n, 4)
+        self.stats["makespan"] = round(self._plan_time, 4)
+        if not self._execute:
+            self._check_plan(env, radii, d_min, clearance, shapes)
         if self._pool is not None:
             self._pool.shutdown(wait=True)
             self._pool = None
         self._plan = self._controls
+
+    def _check_plan(self, env, radii, d_min, clearance, shapes) -> None:
+        """Validate the plan the way a rollout would, without rolling it out.
+
+        Alg. 1's output is "a set of valid, kinodynamically feasible paths". Executing is
+        one way to establish validity and it is the way that forces the env's grid on us;
+        checking the trajectory directly is the other, and it is the one K-ARC uses.
+
+        Dynamic feasibility is already structural -- Eq. 3 is a hard constraint in the
+        program, so a converged solve satisfies it by construction. What is left to verify
+        is what the constraints were *given*: no robot overlaps an obstacle or a wall
+        (Eq. 5), no two robots come within `d_min` (Eq. 6), and every robot ends inside its
+        goal region (Eq. 2's terminal constraint).
+        """
+        from src.collision.shapes import collides, collides_wall
+
+        n = env._n
+        traj = [np.asarray(t, dtype=np.float64) for t in self._traj]
+        if any(len(t) < 2 for t in traj):
+            self.stats["plan_obstacle_hits"] = 0
+            self.stats["plan_robot_hits"] = 0
+            self.stats["plan_goals_reached"] = 0
+            return
+
+        obs_hits = 0
+        for i in range(n):
+            shape = env.robots[i].shape
+            for st in traj[i]:
+                pose = (float(st[0]), float(st[1]), float(st[2]))
+                if collides_wall(shape, pose, env._world_size) or any(
+                        collides(shape, pose, o.shape, o.pose) for o in env._obstacles):
+                    obs_hits += 1
+                    break
+
+        # Same predicate as conflict detection, so a plan the planner calls conflict-free
+        # cannot be reported as colliding here for a different reason.
+        pair_hits = len(self._find_conflicts(traj, radii, d_min, clearance, shapes))
+
+        reached = sum(
+            1 for i in range(n)
+            if float(np.linalg.norm(traj[i][-1][:2] - np.asarray(env._goals[i])[:2]))
+            < env.goal_radius
+        )
+        self.stats["plan_obstacle_hits"] = obs_hits
+        self.stats["plan_robot_hits"] = pair_hits
+        self.stats["plan_goals_reached"] = reached
+        # One number the runner can read as success, on K-ARC's own terms: a plan exists,
+        # every robot is at its goal, and it violates neither Eq. 5 nor Eq. 6.
+        self.stats["plan_valid"] = int(
+            all(self._solved.values()) and not self.stats["plan_failed"]
+            and obs_hits == 0 and pair_hits == 0 and reached == n
+        )
 
     def act(self, obs_dict: dict, env) -> dict:
         out = {}
@@ -436,11 +523,19 @@ class KARCPlanner(BasePlanner):
         milestones simultaneous (§IV-D-2: "the robots need to achieve the milestones for a
         segment at the same time").
         """
+        lo, hi = tuple(t_cfg.get("dt_bounds", (0.02, 0.5)))
+        # The floor matters only when the result has to land on the env grid: dt* below
+        # env.dt cannot be represented there, so the conversion would discard knots. Off the
+        # grid there is nothing to represent and a floor would only cap how far minimum-time
+        # can shrink the segment -- with seg_h sized in env steps, a 0.1 floor pins the
+        # duration at seg_h*0.1 and deletes the objective a second time.
+        if self._execute:
+            lo = max(lo, env.dt)
         base = dict(
             horizon=seg_h,
             effort_weight=float(t_cfg.get("effort_weight", 0.01)),
             dt_fixed=None,
-            dt_bounds=tuple(t_cfg.get("dt_bounds", (0.02, 0.5))),
+            dt_bounds=(lo, hi),
             goal_tol=self._terminal_tol(env, t_cfg, 1.0, last),
             clearance=float(t_cfg.get("clearance", 0.05)),
             terminal_stop=last,
@@ -460,10 +555,29 @@ class KARCPlanner(BasePlanner):
         # infeasible problem until it gives up. That is cluttered_cross_16: timed_out=0,
         # rounds=3, unsolved_segments=1, with all three rungs fired and failed.
         results = self._solve_many(specs)
+        self.stats["min_time_failures"] += sum(1 for *_r, ok in results if not ok)
+
+        if not self._execute:
+            # Faithful path. Every robot keeps the SAME knot count `seg_h`; the segment
+            # simply runs at the slowest robot's minimum timestep, so its duration is that
+            # robot's minimum time and the others hold -- SS IV-D-2's "waiting states for
+            # robots that arrive first". Index k stays a common instant, which is what makes
+            # Eq. 6 meaningful, and nothing is discretised away.
+            dts = [float(dt) if ok else hi for _X, _U, dt, ok in results]
+            # The probe solves each robot ALONE. Inter-robot constraints can only lengthen a
+            # segment, never shorten it, so the unconstrained maximum is a strict lower bound
+            # and a segment sized exactly at it has no room left for the coordination that
+            # follows -- open_cross_4 fails in its first segment. `min_time_slack` is that
+            # headroom, and it is the only place it enters; on the execution path the
+            # ceil-to-whole-env-steps conversion was supplying it by accident.
+            slack = float(self.params.get("min_time_slack", 1.5))
+            return seg_h, min(hi, slack * max(dts)) if dts else env.dt
+
+        # Execution path: the env steps at a fixed rate, so the free solution is converted
+        # to whole env steps. Duration survives, knots do not when dt* < env.dt.
         steps = [int(np.ceil(seg_h * float(dt) / env.dt)) if ok else seg_h
                  for _X, _U, dt, ok in results]
-        self.stats["min_time_failures"] += sum(1 for *_r, ok in results if not ok)
-        return int(np.clip(max(steps) if steps else seg_h, 2, total_h))
+        return int(np.clip(max(steps) if steps else seg_h, 2, total_h)), env.dt
 
     @staticmethod
     def _path_len(path: np.ndarray) -> float:
@@ -538,6 +652,12 @@ class KARCPlanner(BasePlanner):
                 path = KARCPlanner._descend(grid, s0[:2], g[:2])
             refs.append(np.asarray(path, dtype=np.float64))
             out.append(KARCPlanner._resample(path, g, m))
+        # Pulling coincident milestones apart appears nowhere in K-ARC. It was needed when
+        # every reference came from one shared cost-to-go field and robots could inherit
+        # identical waypoints; with per-robot sampling (Alg. 1 line 3, Fig. 1(a) "each robot
+        # builds their individual roadmap") they do not. Off by default.
+        if not bool(self.params.get("separate_milestones", False)):
+            return out, refs
         radii = [float(r.shape.bounding_radius) for r in env.robots]
         return KARCPlanner._separate(out, radii, clearance, env._world_size), refs
 
@@ -671,7 +791,17 @@ class KARCPlanner(BasePlanner):
     GOAL_INSET = 0.9
 
     def _terminal_tol(self, env, t_cfg, goal_scale, terminal_stop) -> float:
-        tol = float(t_cfg.get("goal_tol", env.goal_radius)) * goal_scale
+        # Alg. 1 line 16: the per-segment query is "(g_last, g_j) where g_j is a REGION
+        # centered around G_ri[j]", and SS IV-C says why -- "to make sure the local
+        # subproblem is solvable, we define a tolerance for the goal state". An intermediate
+        # milestone is a region; only the final goal is the env's own goal_radius. Sizing
+        # the region at the env's success radius makes every milestone as strict as the real
+        # goal, which is not what the paper describes and is what forces the ladder to
+        # escalate on segments that have no genuine conflict.
+        base = (float(t_cfg.get("goal_tol", env.goal_radius)) if terminal_stop
+                else float(self.params.get("milestone_region",
+                                           t_cfg.get("goal_tol", env.goal_radius))))
+        tol = base * goal_scale
         # Intermediate milestones are never tested by the env, so only the final one needs
         # the inset -- and relaxing it there would mean a robot that stops short "succeeds".
         return min(tol, self.GOAL_INSET * env.goal_radius) if terminal_stop else tol
@@ -685,7 +815,7 @@ class KARCPlanner(BasePlanner):
             env.robots[i], start, goal, env._obstacles, env._world_size,
             horizon=seg_h,
             effort_weight=float(t_cfg.get("effort_weight", 0.01)),
-            dt_fixed=env.dt,
+            dt_fixed=self._dt_seg,
             avoid=avoid_trajs, avoid_radii=avoid_radii,
             goal_tol=self._terminal_tol(env, t_cfg, goal_scale, terminal_stop),
             clearance=float(t_cfg.get("clearance", 0.05)),
@@ -697,29 +827,52 @@ class KARCPlanner(BasePlanner):
         return X, _U, ok
 
     @staticmethod
-    def _find_conflicts(segs, radii, d_min, clearance):
+    def _find_conflicts(segs, radii, d_min, clearance, shapes=None):
         """K-ARC Eq. 6: geometric separation at matching time indices.
 
         No velocity term — see the module docstring.
+
+        ``c_i,k`` is the robot's GEOMETRIC POSE, not its centre, and SS V-A pins the models
+        down: "we use simple polyhedrons for both our obstacle and robot models, and we
+        calculate the shortest distances between any two objects". So the quantity compared
+        against ``d_min`` is the surface-to-surface distance between two oriented boxes.
+
+        Comparing centres against a sum of bounding radii is a strictly stronger predicate:
+        the 0.5 x 0.25 box here circumscribes at 0.559 m against a 0.25 m half-width, so it
+        reports conflicts at up to 0.3 m of genuine clearance per pair and hands the
+        resolution hierarchy work K-ARC never has to do. ``robot_distance: circumscribed``
+        keeps that behaviour for the ablation.
+
+        The exact test runs only where the cheap radius bound cannot already rule a pair
+        out, which is what keeps this O(n^2 * T) loop affordable.
         """
         out = []
         n = len(segs)
+        exact = shapes is not None
         for i in range(n):
             for j in range(i + 1, n):
-                thresh = (
-                    float(d_min) if d_min is not None
-                    else radii[i] + radii[j] + clearance
-                )
+                # Surface distance and centre distance differ by at most the two radii, so
+                # one threshold prefilters the other with no false negatives.
+                thresh = (float(d_min) if d_min is not None
+                          else (clearance if exact else radii[i] + radii[j] + clearance))
+                gate = thresh + (radii[i] + radii[j] if exact else 0.0)
                 horizon = min(len(segs[i]), len(segs[j]))
                 for k in range(horizon):
-                    d = float(np.linalg.norm(segs[i][k][:2] - segs[j][k][:2]))
+                    if float(np.linalg.norm(segs[i][k][:2] - segs[j][k][:2])) >= gate:
+                        continue
+                    if not exact:
+                        out.append((i, j, k))
+                        break
+                    a, b = segs[i][k], segs[j][k]
+                    d = shape_distance(shapes[i], (float(a[0]), float(a[1]), float(a[2])),
+                                       shapes[j], (float(b[0]), float(b[1]), float(b[2])))
                     if d < thresh:
                         out.append((i, j, k))
                         break
         return out
 
     def _plan_segment(self, env, state, goals, seg_h, last, t_cfg, radii, d_min,
-                      clearance, ladder, max_rounds, j, m, adapt, guides):
+                      clearance, ladder, max_rounds, j, m, adapt, guides, shapes):
         """Solve one window: uncoordinated first (Alg. 1 lines 17-18), then the hierarchy."""
         span = f"segment {j + 1}/{m}" + (f" (+{adapt} back)" if adapt else "")
         # Alg. 1 lines 15-19: every robot solved with no knowledge of the others. Independent
@@ -727,7 +880,7 @@ class KARCPlanner(BasePlanner):
         base = dict(
             horizon=seg_h,
             effort_weight=float(t_cfg.get("effort_weight", 0.01)),
-            dt_fixed=env.dt,
+            dt_fixed=self._dt_seg,
             goal_tol=self._terminal_tol(env, t_cfg, 1.0, last),
             clearance=float(t_cfg.get("clearance", 0.05)),
             terminal_stop=last,
@@ -742,7 +895,7 @@ class KARCPlanner(BasePlanner):
             ctrls.append(U)
             oks.append(ok)
 
-        conflicts = self._find_conflicts(segs, radii, d_min, clearance)
+        conflicts = self._find_conflicts(segs, radii, d_min, clearance, shapes)
         self._snap(f"{span}: uncoordinated solve "
                    f"({len(conflicts)} conflict{'' if len(conflicts) == 1 else 's'})",
                    segs, conflicts)
@@ -753,13 +906,20 @@ class KARCPlanner(BasePlanner):
         # arrive pointing the wrong way, and the next one then cannot turn around and reach
         # its milestone in the time it has. Gating on conflicts alone sends those straight
         # to the braking fallback without ever trying a rung.
+        # The loop must spin only on what the subproblem builder can actually address. With
+        # `singleton_subproblems: false` (K-ARC's own scope: Alg. 1 line 21 builds
+        # subproblems from the conflict set C) an individually infeasible robot produces no
+        # subproblem, so gating on `not all(oks)` would re-solve an untouched problem until
+        # max_rounds and then adapt -- 6 rounds and 2 adaptations on open_cross_4, which has
+        # two independent head-on pairs and needs neither.
+        singles = bool(self.params.get("singleton_subproblems", False))
         rounds = 0
-        while (conflicts or not all(oks)) and rounds < max_rounds \
+        while (conflicts or (singles and not all(oks))) and rounds < max_rounds \
                 and not self._over_budget():
             self.stats["conflicts"] += len(conflicts)
             segs, ctrls, oks, conflicts = self._resolve_segment(
                 conflicts, segs, ctrls, oks, env, state, goals, seg_h, t_cfg,
-                radii, last, ladder, d_min, clearance, span, guides,
+                radii, last, ladder, d_min, clearance, span, guides, shapes,
             )
             rounds += 1
         return segs, ctrls, oks, conflicts, rounds
@@ -787,7 +947,8 @@ class KARCPlanner(BasePlanner):
         return [np.asarray(s, float).copy() for s in ck["state"]]
 
     def _resolve_segment(self, conflicts, segs, ctrls, oks, env, state, goals, seg_h,
-                         t_cfg, radii, last, ladder, d_min, clearance, span, guides):
+                         t_cfg, radii, last, ladder, d_min, clearance, span, guides,
+                         shapes):
         """One pass of Alg. 2 over a segment: a SUBPROBLEM PER CONFLICTING PAIR.
 
         ARC (arXiv:2312.08554 SS IV-B) is explicit that a subproblem is built around one
@@ -813,8 +974,15 @@ class KARCPlanner(BasePlanner):
         groups = [set(pr) for pr in pairs]
         if self.params.get("subproblem", "pair") == "merged":
             groups = [set().union(*groups)] if groups else []
-        stranded = {i for i, ok in enumerate(oks) if not ok} - set().union(*groups, set())
-        groups += [{i} for i in sorted(stranded)]
+        # Alg. 1 line 21 builds subproblems from the CONFLICT set C alone, and SS IV-C says
+        # how an individually hard segment is meant to be absorbed instead: "to make sure the
+        # local subproblem is solvable, we define a tolerance for the goal state" -- Alg. 1
+        # line 16's goal is "a region centered around G_ri[j]", not an exact state. So a
+        # robot that merely misses its milestone is not a subproblem in K-ARC; the goal
+        # region is what gives it room. Singletons are ours, and off by default.
+        if bool(self.params.get("singleton_subproblems", False)):
+            stranded = {i for i, ok in enumerate(oks) if not ok} - set().union(*groups, set())
+            groups += [{i} for i in sorted(stranded)]
 
         settled: list[set] = []
         for group in groups:
@@ -827,13 +995,13 @@ class KARCPlanner(BasePlanner):
                 for rung in ladder[start:]:
                     if self._over_budget():
                         return segs, ctrls, oks, self._find_conflicts(
-                            segs, radii, d_min, clearance)
+                            segs, radii, d_min, clearance, shapes)
                     segs, ctrls, oks = self._resolve(
                         rung, group, segs, ctrls, oks, env, state, goals, seg_h,
                         t_cfg, radii, last, guides,
                     )
                     self.stats["rungs"][rung] = self.stats["rungs"].get(rung, 0) + 1
-                    conflicts = self._find_conflicts(segs, radii, d_min, clearance)
+                    conflicts = self._find_conflicts(segs, radii, d_min, clearance, shapes)
                     self._snap(f"{span}: R'={sorted(group)} {rung} -> "
                                f"{len(conflicts)} conflicts remaining", segs, conflicts)
                     if self._clear(group, conflicts, oks):
@@ -841,7 +1009,7 @@ class KARCPlanner(BasePlanner):
 
                 # Did resolving this subproblem invalidate an earlier one? A conflict that
                 # straddles the boundary, with a robot on the settled side, means it did.
-                conflicts = self._find_conflicts(segs, radii, d_min, clearance)
+                conflicts = self._find_conflicts(segs, radii, d_min, clearance, shapes)
                 spoiled = {r for a, b, _ in conflicts for r in (a, b)
                            if (a in group) != (b in group)
                            and any(r in prev for prev in settled)}
@@ -853,7 +1021,7 @@ class KARCPlanner(BasePlanner):
                 group = merged
             settled = [prev for prev in settled if not (prev & group)] + [group]
 
-        return segs, ctrls, oks, self._find_conflicts(segs, radii, d_min, clearance)
+        return segs, ctrls, oks, self._find_conflicts(segs, radii, d_min, clearance, shapes)
 
     @staticmethod
     def _clear(group, conflicts, oks) -> bool:
@@ -1059,7 +1227,7 @@ class KARCPlanner(BasePlanner):
             X, U, ok = krrt.plan(
                 [env.robots[i] for i in involved], [state[i] for i in involved],
                 [goals[i] for i in involved], env._obstacles, env._world_size,
-                env.dt, seg_h, others=tuple(outside), **kw)
+                self._dt_seg, seg_h, others=tuple(outside), **kw)
             # One tree, one verdict -- as with the joint program.
             for slot, i in enumerate(involved):
                 segs[i], ctrls[i], oks[i] = X[:, slot], U[:, slot], ok
@@ -1070,7 +1238,7 @@ class KARCPlanner(BasePlanner):
         for i in involved:
             X, U, ok = krrt.plan(
                 [env.robots[i]], [state[i]], [goals[i]], env._obstacles,
-                env._world_size, env.dt, seg_h, others=tuple(avoid), **kw)
+                env._world_size, self._dt_seg, seg_h, others=tuple(avoid), **kw)
             segs[i], ctrls[i], oks[i] = X[:, 0], U[:, 0], ok
             avoid.append((segs[i], env.robots[i].shape))
         return segs, ctrls, oks
@@ -1103,7 +1271,7 @@ class KARCPlanner(BasePlanner):
             env._obstacles, env._world_size,
             horizon=seg_h,
             effort_weight=float(t_cfg.get("effort_weight", 0.01)),
-            dt_fixed=env.dt,
+            dt_fixed=self._dt_seg,
             avoid=tuple(a[0] for a in avoid), avoid_radii=tuple(a[1] for a in avoid),
             goal_tol=self._terminal_tol(env, t_cfg, 1.0, last),
             clearance=float(t_cfg.get("clearance", 0.05)),

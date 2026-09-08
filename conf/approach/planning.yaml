@@ -39,8 +39,19 @@ approach:
     # wider than any manoeuvre the ladder should be allowed to find.
     obstacle_margin: 4.0
     # dt is a DECISION VARIABLE when free (true minimum time, K-ARC's objective).
-    # Execution needs the env's grid, so planners pass dt_fixed=env.dt; these
-    # bounds apply only to free-dt solves used for planning-quality comparisons.
+    #
+    # The LOWER bound must not go below the env's step. K-ARC never executes, so any Delta t
+    # is fine for it; we do, and a segment solved at spacing finer than env.dt cannot be
+    # represented on the grid it is executed from. `_min_time_horizon` converts the free
+    # solution to a whole number of env steps, so Delta t* < env.dt silently DISCARDS knots
+    # -- at the old floor of 0.02 against env.dt=0.1, up to five out of every six. The
+    # segment then has to thread the same obstacles at five times the spacing, which is
+    # feasible in open space and not under clutter: cluttered_cross_8 succeeds with
+    # min_time=false (766 steps) and exhausts the 600s budget with it on.
+    #
+    # At a floor of env.dt the conversion can only ever ADD knots, never drop them, and the
+    # objective is untouched -- the solver still minimises N*dt freely above the floor.
+    # 0.1 is env.dt for every unicycle2 scenario here; raise both if the env steps slower.
     dt_bounds: [0.02, 0.5]
 
   # ── K-ARC (arXiv:2501.01559) ────────────────────────────────────────────────
@@ -110,6 +121,43 @@ approach:
     #             implementation did before 2026-09-07; kept for the ablation, since it is
     #             the difference between 16 independent pair solves and one 32-robot solve.
     subproblem: pair
+    # Eq. 6 constrains ||c_i,k - c_j,k|| where c is the robot's GEOMETRIC POSE, and SS V-A:
+    # "we use simple polyhedrons for both our obstacle and robot models, and we calculate
+    # the shortest distances between any two objects".
+    #   polyhedral   - exact surface-to-surface distance (faithful)
+    #   circumscribed - centre distance vs summed bounding radii (what we did before
+    #                   2026-09-08; for a 0.5x0.25 box that invents up to 0.3 m of phantom
+    #                   proximity per pair and manufactures conflicts K-ARC never sees)
+    robot_distance: polyhedral
+    # K-ARC never executes a trajectory -- Alg. 1 returns "a set of valid, kinodynamically
+    # feasible paths" and SS V-D scores runtime, path cost and success on the PLAN.
+    #   false - faithful. Each segment is solved on one shared FREE timestep (the slowest
+    #           robot's minimum, SS IV-D-2's "waiting states for robots that arrive first"),
+    #           knot count preserved, no env grid anywhere. The plan is then validated
+    #           directly against Eq. 5 and Eq. 6 (`_check_plan`).
+    #   true  - re-lands the plan on env.dt so it can be rolled out. Needed to share a
+    #           metric with the RL side; costs knots whenever dt* < env.dt.
+    execute: false
+    # Headroom on the minimum-time segment duration. The per-robot minimum-time probe is
+    # UNCONSTRAINED by the other robots, and coordination can only lengthen a segment, so
+    # the probe's answer is a strict lower bound. 1.0 sizes segments at that bound and they
+    # fail; the execution path used to get this slack for free from rounding up to whole
+    # env steps.
+    min_time_slack: 1.5
+    # Radius of the INTERMEDIATE milestone region (Alg. 1 line 16: "g_j is a region centered
+    # around G_ri[j]"; SS IV-C: "to make sure the local subproblem is solvable, we define a
+    # tolerance for the goal state"). The final goal keeps the env's own goal_radius, since
+    # that is what success actually means. Null falls back to trajopt.goal_tol, which makes
+    # every milestone as strict as the real goal -- not what the paper describes.
+    milestone_region: 0.6
+    # A robot whose own segment is infeasible but which conflicts with nobody. Alg. 1 line 21
+    # builds subproblems from the conflict set alone; SS IV-C absorbs the individually-hard
+    # case through the goal REGION instead ("we define a tolerance for the goal state").
+    # Ours, and off by default.
+    singleton_subproblems: false
+    # Pull apart milestones that land on the same point. Nowhere in K-ARC; an artefact of
+    # deriving every reference from one shared Dijkstra field. Ours, off by default.
+    separate_milestones: false
     # Conflict predicate: robots closer than d_min at the same index conflict.
     # null -> sum of the two bounding radii + trajopt.clearance. This is a purely
     # GEOMETRIC test with no velocity term, faithful to K-ARC Eq. 6.

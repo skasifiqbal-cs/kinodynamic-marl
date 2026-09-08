@@ -33,6 +33,25 @@ class PlanningApproach(BaseApproach):
         print(f"approach=planning method={method}  env={cfg.env.get('_name_', 'custom')}  "
               f"episodes={n_episodes}")
 
+        # K-ARC reports PLANNER metrics: a plan was found inside the budget, it is valid,
+        # and what it cost (SS V-D: "We evaluate the methods based mainly on the runtime").
+        # It never executes. When the planner is configured that way there is nothing to
+        # roll out, and rolling out anyway would re-impose the env's fixed timestep that
+        # the whole mode exists to avoid.
+        if getattr(planner, "_execute", True) is False:
+            env.reset()          # normally run_episode's job; there is no episode here
+            planner.reset(env)
+            st = planner.stats
+            ok = float(st.get("plan_valid", 0))
+            print(f"  plan_valid={int(ok)}  makespan={st.get('makespan')}  "
+                  f"path_cost={st.get('path_cost')}  wall={st.get('wall_time'):.1f}s")
+            print(f"RESULT,{method},{ok:.4f},0.0000,"
+                  f"{float(st.get('plan_robot_hits', 0)) + float(st.get('plan_obstacle_hits', 0)):.2f},"
+                  f"{st.get('makespan', float('nan')):.1f}")
+            print("  " + "  ".join(f"{k}={v}" for k, v in sorted(st.items())))
+            print(f"STATS,{method}," + ",".join(f"{k}={v}" for k, v in sorted(st.items())))
+            return
+
         stats_list, frames = [], []
         for ep in range(n_episodes):
             stats, fr = run_episode(env, planner, render=render)

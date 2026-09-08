@@ -144,6 +144,59 @@ def _obb_obb(a: BoxShape, pa: Pose, b: BoxShape, pb: Pose) -> bool:
     return True
 
 
+def _corners(box: BoxShape, pose: Pose) -> np.ndarray:
+    hw, hl = box.width / 2, box.length / 2
+    local = np.array([[-hw, -hl], [hw, -hl], [hw, hl], [-hw, hl]], dtype=np.float64)
+    c, s = np.cos(pose[2]), np.sin(pose[2])
+    return (np.array([[c, -s], [s, c]]) @ local.T).T + np.array([pose[0], pose[1]])
+
+
+def _pts_to_segs(pts: np.ndarray, poly: np.ndarray) -> float:
+    """Smallest distance from any point in `pts` to the boundary of convex polygon `poly`."""
+    a = poly
+    b = np.roll(poly, -1, axis=0)
+    ab = b - a                                          # (E, 2)
+    denom = np.einsum("ej,ej->e", ab, ab)
+    denom[denom < 1e-18] = 1e-18
+    ap = pts[:, None, :] - a[None, :, :]                # (P, E, 2)
+    t = np.clip(np.einsum("pej,ej->pe", ap, ab) / denom, 0.0, 1.0)
+    closest = a[None, :, :] + t[..., None] * ab[None, :, :]
+    return float(np.min(np.linalg.norm(pts[:, None, :] - closest, axis=2)))
+
+
+def shape_distance(shape_a: Shape, pose_a: Pose, shape_b: Shape, pose_b: Pose) -> float:
+    """Shortest distance between two shapes' actual surfaces. 0.0 when they overlap.
+
+    K-ARC Eq. 6 constrains ``||c_i,k - c_j,k|| >= d_min`` where ``c`` is the robot's
+    *geometric pose*, and SS V-A states the models plainly: "we use simple polyhedrons for
+    both our obstacle and robot models, and we calculate the shortest distances between any
+    two objects". Testing centre-to-centre against a sum of bounding radii is a different
+    predicate -- for a 0.5 x 0.25 box the circumscribed disc is 0.559 m against a 0.25 m
+    half-width, so it reports conflicts at up to 0.3 m of real clearance and hands the
+    resolution hierarchy work K-ARC never has to do.
+
+    Two convex polygons that do not overlap realise their distance at a vertex of one
+    against an edge of the other, so the vertex-to-edge minimum over both orderings is
+    exact here -- no GJK needed for boxes.
+    """
+    a_box, b_box = isinstance(shape_a, BoxShape), isinstance(shape_b, BoxShape)
+    if not a_box and not b_box:
+        d = float(np.hypot(pose_a[0] - pose_b[0], pose_a[1] - pose_b[1]))
+        return max(0.0, d - shape_a.radius - shape_b.radius)
+    if a_box and b_box:
+        if _obb_obb(shape_a, pose_a, shape_b, pose_b):
+            return 0.0
+        ca, cb = _corners(shape_a, pose_a), _corners(shape_b, pose_b)
+        return min(_pts_to_segs(ca, cb), _pts_to_segs(cb, ca))
+    # One box, one circle: distance from the circle's centre to the box, less its radius.
+    box, bpose, circ, cpose = ((shape_a, pose_a, shape_b, pose_b) if a_box
+                               else (shape_b, pose_b, shape_a, pose_a))
+    centre = np.array([[cpose[0], cpose[1]]], dtype=np.float64)
+    inside = _obb_obb(box, bpose, BoxShape(1e-9, 1e-9), (cpose[0], cpose[1], 0.0))
+    d = 0.0 if inside else _pts_to_segs(centre, _corners(box, bpose))
+    return max(0.0, d - circ.radius)
+
+
 # ── Ray casting (for lidar) ────────────────────────────────────────────────────
 
 def ray_distance(origin: np.ndarray, direction: np.ndarray,
