@@ -243,6 +243,14 @@ class KARCPlanner(BasePlanner):
         self.stats["subproblem_mean"] = round(sum(sizes) / len(sizes), 2) if sizes else 0.0
         self.stats["conflicts_remaining"] = len(conflicts)
         self.stats["wall_time"] = time.perf_counter() - t0
+        # `_over_budget` only marks a timeout when it is CALLED past the deadline, and it is
+        # called at loop boundaries. A run can overshoot inside one solver call and then exit
+        # through the `unsolved -> return empty` branch without checking again, which reports a
+        # budget exhaustion as an algorithmic failure -- the wrong attribution entirely, since
+        # nothing about the ladder was tested by the time that ran out. Budget spent by the end
+        # of planning is a timeout regardless of which loop noticed it.
+        if self._deadline is not None and time.perf_counter() >= self._deadline:
+            self.stats["timed_out"] = 1
         self.stats["path_cost"] = sum(len(v) for v in self._controls.values()) * env.dt
         if self._pool is not None:
             self._pool.shutdown(wait=True)
