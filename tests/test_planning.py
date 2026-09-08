@@ -543,3 +543,39 @@ def test_margin_rung_select_keeps_the_ladder_below_the_rung_it_picks():
     p.params = dict(p.params)
     p.params["rung_select"] = "sequential"
     assert p._start_rung(ladder, env, {0, 1}, [(0, 1, 20)], head_on, radii, None, 0.05) == 0
+
+
+def test_a_failed_min_time_probe_cannot_shorten_the_segment():
+    """The segment must take the SLOWEST robot's minimum time (K-ARC SS IV-D-2: the robots
+    "achieve the milestones for a segment at the same time"). A robot whose free-dt probe
+    fails to converge is not a fast robot -- it is the constrained one -- so taking `max`
+    over only the probes that converged is a max over a biased subsample.
+
+    Dropping it hands the segment a horizon SHORTER than the guide-length estimate. That
+    robot's own solve then cannot succeed at any rung, because every rung re-solves inside
+    the same horizon, and the round loop re-solves an identical infeasible problem until it
+    gives up with budget to spare. Observed on cluttered_cross_16: timed_out=0, rounds=3,
+    unsolved_segments=1, all three rungs fired and failed.
+    """
+    from types import SimpleNamespace
+
+    from src.approach.planning.karc import KARCPlanner
+
+    p = KARCPlanner.__new__(KARCPlanner)
+    p.stats = {"min_time_solves": 0, "min_time_failures": 0}
+    env = SimpleNamespace(robots=[None] * 3, _obstacles=[], _world_size=10.0, _n=3,
+                          dt=0.1, goal_radius=0.2)
+    seg_h, total_h = 40, 400
+
+    # Two easy robots converge at a third of the guide estimate; the third does not converge.
+    p._solve_many = lambda specs: [(None, None, 0.033, True), (None, None, 0.033, True),
+                                   (None, None, 0.5, False)]
+    h = p._min_time_horizon(env, {}, [None] * 3, [None] * 3, [None] * 3,
+                            total_h, seg_h, True)
+    assert h == seg_h, h
+    assert p.stats["min_time_failures"] == 1
+
+    # All converged -> the slowest one sets the horizon, and it may be shorter than the guide.
+    p._solve_many = lambda specs: [(None, None, 0.033, True)] * 3
+    assert p._min_time_horizon(env, {}, [None] * 3, [None] * 3, [None] * 3,
+                               total_h, seg_h, True) < seg_h

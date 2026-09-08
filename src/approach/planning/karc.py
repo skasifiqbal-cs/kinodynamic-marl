@@ -98,6 +98,7 @@ class KARCPlanner(BasePlanner):
             "plan_failed": 0,
             "initial_path_fallbacks": 0,
             "min_time_solves": 0,
+            "min_time_failures": 0,
             "rungs_skipped": 0,
             "escalated": 0,
             "subproblem_sizes": [],
@@ -441,10 +442,19 @@ class KARCPlanner(BasePlanner):
         specs = [(env.robots[i], state[i], goals[i], env._obstacles, env._world_size,
                   dict(base, guides=[guides[i]])) for i in range(env._n)]
         self.stats["min_time_solves"] += len(specs)
-        steps = [int(np.ceil(seg_h * float(dt) / env.dt))
-                 for _X, _U, dt, ok in self._solve_many(specs) if ok]
-        # An infeasible free-dt probe says nothing about duration, so fall back to the
+        # An infeasible free-dt probe says nothing about duration, so it falls back to the
         # guide-length estimate rather than to whatever the last iterate happened to be.
+        # It must NOT be dropped: `max` over only the probes that converged is a max over a
+        # biased subsample, because the robot whose probe fails is the constrained one, not
+        # a fast one. Dropping it hands the segment a horizon shorter than the guide
+        # estimate, that robot's solve then cannot succeed at any rung -- every rung
+        # re-solves inside the same horizon -- and the round loop re-solves an identical
+        # infeasible problem until it gives up. That is cluttered_cross_16: timed_out=0,
+        # rounds=3, unsolved_segments=1, with all three rungs fired and failed.
+        results = self._solve_many(specs)
+        steps = [int(np.ceil(seg_h * float(dt) / env.dt)) if ok else seg_h
+                 for _X, _U, dt, ok in results]
+        self.stats["min_time_failures"] += sum(1 for *_r, ok in results if not ok)
         return int(np.clip(max(steps) if steps else seg_h, 2, total_h))
 
     @staticmethod
