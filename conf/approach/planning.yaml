@@ -73,11 +73,26 @@ approach:
     initial_rrt_iters: 5000
     initial_rrt_step: 0.6
     initial_rrt_goal_bias: 0.1
-    # Keep the sampling planner's raw path (false) or shortcut it first (true). Raw is the
-    # faithful choice -- the jaggedness is part of what K-ARC's optimizer is fixing -- but it
-    # is ~30% longer than a shortest path, and with dt fixed the segment horizon IS the
-    # duration, so a raw guide buys a slower plan and needs env.max_steps sized for it.
-    initial_rrt_shortcut: false
+    # Keep the sampling planner's raw path (false) or shortcut it first (true).
+    #
+    # TRUE is the faithful choice, and the earlier comment here had it backwards. K-ARC's
+    # Fig. 1(a) says "each robot builds their individual ROADMAP", and SS II-A separates "a
+    # roadmap [10]" (PRM, Kavraki et al.) from "a tree [11]" (RRT, LaValle & Kuffner) -- so
+    # their initial paths are PRM, which in open space returns essentially the chord. A RAW
+    # RRT path is nothing like that: RRT explores by extending toward random samples, so its
+    # path inherits every meander of the tree. Post-processing it is universal practice, not
+    # an embellishment (Geraerts & Overmars, IJRR 26(8):845-863, 2007; Hauser &
+    # Ng-Thow-Hing, ICRA 2010 pp. 2493-2498; OMPL's PathSimplifier, whose own docs note that
+    # sampling-based planners "produce solutions that contain many unnecessary waypoints and
+    # inefficient routes"). Ours only drops vertices the RRT already produced.
+    #
+    # On open_cross_16 the raw guides averaged 1.25x chord over 33 vertices and wandered
+    # 3.16 m off-row against a 2.14 m row spacing -- so they routed each robot through one to
+    # two NEIGHBOURING lanes and manufactured the conflicts. The cost was not marginal:
+    #   raw       1800 s, FAILED, merges=10, subproblem_max=10, conflicts_remaining=9
+    #   shortcut    52 s, solved, merges=0,  subproblem_max=2,  rungs={'prioritized': 9}
+    # Shortcutting collapses the guide to 1.00x chord and 2 vertices -- the PRM answer.
+    initial_rrt_shortcut: true
     # Size each segment by SOLVING for it with Delta t free (K-ARC Eq. 2, §IV-B: "we can
     # instead minimize DeltaT and set it as a decision variable"), then convert the minimum
     # duration to a whole number of env steps and plan the segment there.
