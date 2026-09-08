@@ -635,3 +635,48 @@ def test_guide_repair_blockers_come_only_from_the_subproblem():
     assert "for traj, _r in fixed:" not in src, (
         "`fixed` holds every robot outside R'; using it as guide blockers is the bug"
     )
+
+
+def test_wait_plan_picks_the_shorter_wait_and_refuses_an_unclearable_pair():
+    """`_wait_plan` returns the SHORTEST certified delay, or None when order cannot help.
+
+    Two robots crossing: whichever one is closer to being past should be the one asked to
+    wait fewer steps, and the rung installs that one. When the mover parks on top of the
+    waiter and never leaves, no delay separates them and the rung must decline rather than
+    install a wait that does not work.
+    """
+    from types import SimpleNamespace
+
+    from src.approach.planning.karc import KARCPlanner
+
+    class Bot:                      # a point mass with the unicycle state layout
+        v_max, a_max, a_min, alpha_max, alpha_min = 0.5, 0.25, -0.25, 1.0, -1.0
+
+        def step(self, st, u, dt):
+            out = np.asarray(st, float).copy()
+            out[3] = np.clip(out[3] + u[0] * dt, -self.v_max, self.v_max)
+            out[0] += out[3] * dt * np.cos(out[2])
+            out[1] += out[3] * dt * np.sin(out[2])
+            return out
+
+    env = SimpleNamespace(dt=0.1, robots=[Bot(), Bot()])
+    p = KARCPlanner.__new__(KARCPlanner)
+    p.params = {"d_min": None}
+
+    # Robot 0 sits at rest at the origin. Robot 1 starts 0.5 m short of it at 0.5 m/s --
+    # exactly its own braking distance, so robot 1 CANNOT resolve this by stopping: it
+    # coasts to a halt on top of robot 0. The only resolution is robot 0 holding until
+    # robot 1 has driven past, which is the wait this rung installs.
+    n = 60
+    waiter = np.tile(np.array([0.0, 0.0, 0.0, 0.0, 0.0]), (n, 1))
+    mover = np.array([[-0.5 + 0.05 * t, 0.0, 0.0, 0.5, 0.0] for t in range(n)])
+    plan = p._wait_plan(env, 0, 1, [waiter, mover], [0.28, 0.28], 0.05)
+    assert plan is not None
+    who, k = plan
+    assert who == 0, who          # robot 1 braking does not clear; robot 0 must yield
+    # It clears once robot 1 is 0.61 m past the origin, i.e. 1.11 m from its start.
+    assert k == pytest.approx(1.11 / 0.05, abs=2), k
+
+    # Mover parks on the waiter and never clears -> no delay can separate them.
+    parked = np.tile(np.array([0.0, 0.0, 0.0, 0.0, 0.0]), (n, 1))
+    assert p._wait_plan(env, 0, 1, [waiter, parked], [0.28, 0.28], 0.05) is None

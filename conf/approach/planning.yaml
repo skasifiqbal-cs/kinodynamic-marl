@@ -196,6 +196,13 @@ approach:
     #   joint          - the conflicting robots in ONE nonlinear program so both can yield.
     #                    Solves a symmetric head-on swap that no ordering can; the
     #                    optimisation-side counterpart of composite_rrt.
+    #   wait           - resolve by SCHEDULE alone: one robot brakes to rest, holds until
+    #                    the other has passed, then runs its segment in the time left. The
+    #                    smallest intervention there is -- one scalar, the delay -- and the
+    #                    one K-ARC's ladder has no rung for. Not the timestep insertion of
+    #                    kinematic MAPF: a second-order robot cannot be time-shifted, so the
+    #                    delay is only admissible if braking and re-accelerating fit inside
+    #                    its acceleration bounds and the segment's remaining steps.
     #   guide_repair   - re-plan the GUIDE (2-D geometric RRT) of each lower-priority robot
     #                    around the corridor swept by the robots already fixed in this
     #                    subproblem, then re-solve kinodynamically along it. Changes homotopy

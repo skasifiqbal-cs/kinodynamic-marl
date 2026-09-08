@@ -102,6 +102,7 @@ class KARCPlanner(BasePlanner):
             # Diagnostic only -- how many conflicts a 1-D timing intervention could
             # settle, measured on every subproblem regardless of the rung taken.
             "pairs_seen": 0, "pairs_wait_resolvable": 0, "pairs_ics": 0,
+            "wait_attempts": 0, "wait_blocked": 0, "wait_solved": 0,
             "joint_solves": 0,
             "decoupled_rrt_solves": 0,
             "composite_rrt_solves": 0,
@@ -1186,6 +1187,11 @@ class KARCPlanner(BasePlanner):
                 involved, segs, ctrls, oks, env, state, goals, seg_h, t_cfg,
                 tuple(avoid), last, guides,
             )
+        if rung == "wait":
+            return self._wait_rung(
+                involved, segs, ctrls, oks, env, state, goals, seg_h, t_cfg,
+                radii, last, tuple(avoid),
+            )
         if rung == "guide_repair":
             return self._repair_guides(
                 involved, segs, ctrls, oks, env, state, goals, seg_h, t_cfg,
@@ -1207,6 +1213,87 @@ class KARCPlanner(BasePlanner):
             )
             segs[i], ctrls[i], oks[i] = X, U, ok
             avoid.append((X, radii[i]))
+        return segs, ctrls, oks
+
+    def _wait_plan(self, env, a, b, segs, radii, clearance):
+        """Which robot yields, and for how many steps, or None if waiting cannot fix it.
+
+        Deliberately NOT the same predicate as `_waiting_resolves`, which asks the stricter
+        question "does holding for the WHOLE segment separate them" and exists to predict a
+        rung. This one asks what the rung has to install: hold the yielder at rest and find
+        the first index after which the mover has gone past for good. `k` is that index --
+        the shortest certified wait, not the longest safe one.
+
+        Both assignments are tried and the cheaper wait wins, since either robot may yield.
+        """
+        d_min = self.params.get("d_min", None)
+        best = None
+        for waiter, mover in ((a, b), (b, a)):
+            traj = np.atleast_2d(segs[mover])
+            thresh = (float(d_min) if d_min is not None
+                      else radii[waiter] + radii[mover] + clearance)
+            _, _, braked = self._brake(env, waiter, np.asarray(segs[waiter][0], float),
+                                       len(traj) - 1)
+            n = min(len(traj), len(braked))
+            gap = np.linalg.norm(np.asarray(traj)[:n, :2] - braked[:n, :2], axis=1)
+            bad = np.flatnonzero(gap < thresh)
+            k = 0 if len(bad) == 0 else int(bad[-1]) + 1
+            if k >= n:                      # the mover never clears; order cannot help
+                continue
+            if best is None or k < best[1]:
+                best = (waiter, k)
+        return best
+
+    def _wait_rung(self, involved, segs, ctrls, oks, env, state, goals, seg_h, t_cfg,
+                   radii, last, avoid):
+        """Resolve by SCHEDULE alone: one robot brakes to rest, holds until the other has
+        passed, then runs its own segment in what time is left.
+
+        NOVELTY -- not K-ARC. Its three rungs escalate the SOLVER (prioritised NLP, then
+        decoupled RRT, then a tree over the joint state) while leaving the intervention
+        identical: every one of them may rewrite the whole trajectory. A conflict whose only
+        real content is "you go second" is therefore answered by a solver licensed to
+        redesign the path, and pays for that licence. This rung escalates the intervention
+        instead, and starts at the smallest one there is -- a single scalar, the delay.
+
+        The wait is not free for a second-order robot, which is what keeps this from being
+        the timestep insertion of kinematic MAPF: the yielder cannot be time-shifted, it has
+        to decelerate and re-accelerate inside its own acceleration bounds. `_brake` produces
+        that rollout under the real limits, and the remainder is infeasible unless the
+        segment has the steps left for it -- so the rung is sound only because a kinodynamic
+        feasibility check backs it.
+        """
+        involved = list(involved)
+        segs, ctrls, oks = list(segs), list(ctrls), list(oks)
+        if len(involved) != 2:            # the ladder's other rungs own the merged case
+            return segs, ctrls, oks
+        clearance = float(t_cfg.get("clearance", 0.05))
+
+        self.stats["wait_attempts"] += 1
+        plan = self._wait_plan(env, involved[0], involved[1], segs, radii, clearance)
+        if plan is None or not 0 < plan[1] < seg_h - 1:
+            # No wait separates them, or no wait leaves time to finish the segment. Either
+            # way the conflict needs more than a schedule; fall through to the next rung.
+            self.stats["wait_blocked"] += 1
+            return segs, ctrls, oks
+        waiter, k = plan
+
+        us, st, braked = self._brake(env, waiter, np.asarray(segs[waiter][0], float), k)
+        # Avoidance is index-aligned, and the yielder now starts k steps late, so every
+        # trajectory it must avoid is consumed from k onwards.
+        fixed = [(np.asarray(t, float)[k:], r) for t, r in
+                 list(avoid) + [(segs[m], radii[m]) for m in involved if m != waiter]]
+        X, U, ok = self._solve(env, waiter, st, goals[waiter], seg_h - k, t_cfg,
+                               tuple(fixed), terminal_stop=last)
+        if not ok:
+            self.stats["wait_blocked"] += 1
+            return segs, ctrls, oks
+
+        segs[waiter] = np.vstack([braked[:-1], np.asarray(X, float)])
+        ctrls[waiter] = np.vstack([np.asarray(us, float).reshape(k, -1),
+                                   np.asarray(U, float)])
+        oks[waiter] = True
+        self.stats["wait_solved"] += 1
         return segs, ctrls, oks
 
     @staticmethod
