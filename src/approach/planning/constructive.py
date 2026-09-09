@@ -470,20 +470,33 @@ def plan(env, params, clearance=0.05, guides=None):
     order = sorted(range(n), key=lambda r: -len(tracks[r]))
 
     def _clash(a, da, b, db):
-        """Do shifted trajectories a (delayed da) and b (delayed db) ever come too close?"""
+        """Do a (delayed da) and b (delayed db) ever come within `clearance` of each other?
+
+        Compared over the WHOLE span, not just the window where both are driving. A robot
+        exists before its delay (parked at its start) and after it arrives (parked at its
+        goal), and the plan is padded that way, so the verifier sees those stretches even
+        though `_clash` used to skip them. That is a robot standing on its goal being driven
+        through by a later arrival -- 79 such hits on circular_cross_32, invisible to
+        insertion and fatal at verification. Index clamping makes the two agree.
+        """
         ta, tb = tracks[a], tracks[b]
-        lo, hi = max(da, db), min(da + len(ta), db + len(tb))
-        if hi <= lo:
-            return False
-        pa = ta[lo - da:hi - da, :2]
-        pb = tb[lo - db:hi - db, :2]
-        near = np.linalg.norm(pa - pb, axis=1) < radii[a] + radii[b] + clearance
+        span = max(da + len(ta), db + len(tb))
+        ia = np.clip(np.arange(span) - da, 0, len(ta) - 1)
+        ib = np.clip(np.arange(span) - db, 0, len(tb) - 1)
+        pa, pb = ta[ia], tb[ib]
+        near = np.linalg.norm(pa[:, :2] - pb[:, :2], axis=1) < radii[a] + radii[b] + clearance
         if not near.any():
             return False
         for k in np.flatnonzero(near):
-            qa, qb = ta[lo - da + k], tb[lo - db + k]
-            if collides(env.robots[a].shape, (float(qa[0]), float(qa[1]), float(qa[2])),
-                        env.robots[b].shape, (float(qb[0]), float(qb[1]), float(qb[2]))):
+            qa, qb = pa[k], pb[k]
+            # Must be the SAME predicate `_verify` applies, or insertion accepts placements
+            # the verifier then rejects. `collides` is overlap; the requirement is a
+            # clearance. cluttered_cross_16 came back collision-free, in budget, and was
+            # refused anyway on a 0.0122 m gap against the 0.05 m it must keep.
+            if shape_distance(env.robots[a].shape,
+                              (float(qa[0]), float(qa[1]), float(qa[2])),
+                              env.robots[b].shape,
+                              (float(qb[0]), float(qb[1]), float(qb[2]))) < clearance:
                 return True
         return False
 
