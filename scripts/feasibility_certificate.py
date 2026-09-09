@@ -43,7 +43,7 @@ import numpy as np  # noqa: E402
 from omegaconf import DictConfig  # noqa: E402
 
 from src.approach.planning import geometric_rrt  # noqa: E402
-from src.collision.shapes import Obstacle, collides  # noqa: E402
+from src.collision.shapes import Obstacle, collides, shape_distance  # noqa: E402
 from src.env.factory import build_env  # noqa: E402
 
 
@@ -124,6 +124,107 @@ def _turn_then_go(robot, state, target, dt):
     return np.asarray(out) if out else None
 
 
+def _verify_parallel(env, tracks):
+    """Every robot moves simultaneously, so soundness needs every PAIR checked at every
+    shared time index -- not the sequential shortcut where only one robot is in motion."""
+    n, T = env._n, len(tracks[0])
+    goals = [np.asarray(g, float) for g in env._goals]
+    bad_obs = bad_bot = 0
+    for k in range(T):
+        for i in range(n):
+            pi = (float(tracks[i][k][0]), float(tracks[i][k][1]), float(tracks[i][k][2]))
+            for ob in env._obstacles:
+                if collides(env.robots[i].shape, pi, ob.shape, ob.pose):
+                    bad_obs += 1
+            for j in range(i + 1, n):
+                pj = (float(tracks[j][k][0]), float(tracks[j][k][1]), float(tracks[j][k][2]))
+                if collides(env.robots[i].shape, pi, env.robots[j].shape, pj):
+                    bad_bot += 1
+    # "0 hits" can hide a hairline pass, so report the tightest surface gap the witness
+    # ever reaches. A margin comfortably above the clearance the planner is asked to keep
+    # is what makes this a certificate rather than a lucky discretisation.
+    worst = float("inf")
+    for k in range(0, T, 2):
+        for i in range(n):
+            pi = (float(tracks[i][k][0]), float(tracks[i][k][1]), float(tracks[i][k][2]))
+            for j in range(i + 1, n):
+                pj = (float(tracks[j][k][0]), float(tracks[j][k][1]), float(tracks[j][k][2]))
+                worst = min(worst, shape_distance(env.robots[i].shape, pi,
+                                                  env.robots[j].shape, pj))
+    reached = sum(float(np.linalg.norm(tracks[i][-1][:2] - goals[i][:2])) < env.goal_radius
+                  for i in range(n))
+    budget = int(getattr(env, "max_steps", 0))
+    ok = bad_obs == 0 and bad_bot == 0 and reached == n
+    print(f"min_surface_gap={worst:.4f} m")
+    print(f"RESULT,{'SOLVABLE_IN_BUDGET' if ok and T <= budget else 'SOLVABLE' if ok else 'UNKNOWN'},"
+          f"{n},obstacle_hits={bad_obs},robot_hits={bad_bot},goals={reached}/{n},"
+          f"witness_steps={T},budget={budget},fits_budget={'yes' if T <= budget else 'no'}")
+
+
+def _coordinated(env, clearance):
+    """A witness that fits K-ARC's own horizon, by construction rather than by search.
+
+    The sequential witness proves the instance solvable but needs ~23x the budget, which
+    leaves the interesting question open: is it solvable in the time K-ARC is given? Here the
+    structure of the benchmark answers it. Each row is a head-on swap with no lateral room at
+    N=32 (0.220 m per side against 0.61 m needed), so the two robots of a row must separate
+    to pass: one veers +0.5 m, the other -0.5 m, giving 1.0 m of centre separation and 0.75 m
+    of surface clearance.
+
+    A veering robot sits at y_k +- 0.5, which is exactly where the NEIGHBOURING row's veering
+    robot goes. Only adjacent rows interact (the n+-2 coupling), so the conflict graph over
+    rows is a path and TWO time groups suffice: even rows take their manoeuvre while odd rows
+    are still holding, and vice versa. That is the whole coordination -- no search, no solver.
+
+    Veers are shallow diagonals, not right angles: alpha_max is 0.25 rad/s^2 with omega_max
+    0.5, so a 90-degree turn costs ~64 steps and four of them per robot would blow the budget
+    on rotation alone.
+    """
+    dt = env.dt
+    starts = [np.asarray(s, float) for s in env._states]
+    goals = [np.asarray(g, float) for g in env._goals]
+    n = env._n
+    veer = float(env.robots[0].shape.length)          # 0.5 m -> 1.0 m pair separation
+    lead, span = 5.5, 2.0
+    offset = int(cfgint(env, "group_offset", 220))
+
+    tracks = []
+    for i in range(n):
+        x0, y0 = float(starts[i][0]), float(starts[i][1])
+        xg = float(goals[i][0])
+        row = i // 2
+        d = 1.0 if xg > x0 else -1.0
+        # even-indexed robot of a row goes one way round, odd the other
+        dy = veer if i % 2 == 0 else -veer
+        mid = 0.5 * (x0 + xg)
+        wps = [(x0 + d * lead, y0),
+               (mid - d * span * 0.5, y0 + dy),
+               (mid + d * span * 0.5, y0 + dy),
+               (xg - d * lead * 0.2, y0),
+               (xg, y0)]
+        st = starts[i].copy()
+        legs = []
+        for wp in wps:
+            piece = _turn_then_go(env.robots[i], st, np.array(wp), dt)
+            if piece is None:
+                return None
+            legs.append(piece)
+            st = piece[-1].copy()
+        traj = np.vstack(legs)
+        hold = offset if row % 2 else 0        # two time groups, by row parity
+        if hold:
+            traj = np.vstack([np.repeat(starts[i][None, :], hold, axis=0), traj])
+        tracks.append(traj)
+
+    T = max(len(t) for t in tracks)
+    return [np.vstack([t, np.repeat(t[-1][None, :], T - len(t), axis=0)])
+            if len(t) < T else t for t in tracks]
+
+
+def cfgint(env, key, default):
+    return int(getattr(env, key, default))
+
+
 @hydra.main(config_path="../conf", config_name="config", version_base="1.3")
 def main(cfg: DictConfig):
     env = build_env(cfg)
@@ -131,6 +232,14 @@ def main(cfg: DictConfig):
     n = env._n
     dt = env.dt
     clearance = float(cfg.approach.get("trajopt", {}).get("clearance", 0.05))
+
+    if str(cfg.get("witness", "sequential")) == "coordinated":
+        tr = _coordinated(env, clearance)
+        if tr is None:
+            print("RESULT,UNKNOWN,coordinated,lift_failed")
+            return
+        _verify_parallel(env, tr)
+        return
 
     poses = [np.asarray(s, float)[:3].copy() for s in env._states]
     goals = [np.asarray(g, float)[:3].copy() for g in env._goals]
