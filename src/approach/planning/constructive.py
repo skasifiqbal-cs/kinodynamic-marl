@@ -490,28 +490,6 @@ def _hits_obstacle(env, i, pts):
     return False
 
 
-def _traj_conflicts(tracks, radii, sep):
-    """Pairs that are too close on the CONSTRUCTED trajectories, with the last such index.
-
-    The lane assignment is spatial and can be decided from the routes alone, but WHEN two
-    robots are in the same place depends on how long their legs actually took -- which is
-    known only after construction. Scheduling on reference progress instead assumes every
-    robot advances at the same rate, which is true on the open cross (identical robots,
-    identical routes) and false everywhere else.
-    """
-    n = len(tracks)
-    out: dict = {}
-    for i in range(n):
-        for j in range(i + 1, n):
-            T = min(len(tracks[i]), len(tracks[j]))
-            d = np.linalg.norm(np.asarray(tracks[i])[:T, :2]
-                               - np.asarray(tracks[j])[:T, :2], axis=1)
-            bad = np.flatnonzero(d < radii[i] + radii[j] + sep)
-            if len(bad):
-                out[(i, j)] = int(bad[-1])
-    return out
-
-
 def _legs(env, i, route, dt):
     """Drive a route as a sequence of rest-to-rest legs. Returns (states, controls)."""
     st = np.asarray(env._states[i], float).copy()
