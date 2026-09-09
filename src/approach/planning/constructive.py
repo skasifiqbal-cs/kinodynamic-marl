@@ -531,6 +531,10 @@ def _fit_blur(env, i, route, target, base, cap):
     been displaced into a lane must stay in that lane or the displacement meant nothing.
     So take the largest blur whose curve stays within `cap` of the intended route and
     clear of the obstacles, and only then hand it to the profiler.
+
+    Returns None when even the smallest blur cannot meet `cap`. That is a real answer, not
+    a failure: some corridors have no room to round anything. Returning the base blur
+    anyway -- which this used to do -- silently spends separation the lane did not have.
     """
     for mult in (8.0, 4.0, 2.0, 1.0):
         got = flat._curve(route, base * mult)
@@ -541,7 +545,7 @@ def _fit_blur(env, i, route, target, base, cap):
                                    axis=2).min(axis=1).max())
         if dev <= cap and not _hits_obstacle(env, i, pts):
             return base * mult
-    return base
+    return None
 
 
 def _legs(env, i, route, dt):
@@ -704,7 +708,9 @@ def _build(env, params, clearance=0.05, guides=None):
     # that already work are untouched (open_cross_32: 2 lanes, 0.70 m of room, unchanged).
     pitch = min(lane_w, room / (lanes - 1)) if lanes > 1 else 0.0
 
-    routes, base, dropped = [], [], 0
+    routes, base, dropped, exact = [], [], 0, 0
+    full_routes: list = [None] * n     # what each robot was actually handed, for re-timing
+    blur_of: dict = {}
     for i in range(n):
         win = windows[i]
         # Hold the lane across the whole stretch the encounter COULD occupy, not just the
@@ -760,16 +766,40 @@ def _build(env, params, clearance=0.05, guides=None):
         # together and the intermediate waypoints stop being events at all -- which is
         # also why `_simplify` is skipped there: Douglas-Peucker exists to delete stops,
         # and in smooth mode there are none to delete.
+        blur = None
         if smooth > 0.0:
             full = np.vstack([starts[i][:2], route, goals[i][:2]])
-            # Room to round corners in. The budget is a fraction of the LANE PITCH
-            # because that is what the deviation spends: two robots in adjacent lanes
-            # each straying `cap` toward the other close 2*cap of the pitch that was
-            # separating them, so the fraction has to leave the lane meaning something.
-            cap = float(params.get("blur_cap", 0.5)) * (pitch if pitch > 1e-9 else lane_w)
-            built = flat.trajectory(env.robots[i], env._states[i], full, dt,
-                                    smooth=_fit_blur(env, i, full, route, smooth, cap))
+            # Room to round corners in, measured against the separation that actually
+            # exists rather than against the pitch. Two robots in adjacent lanes are
+            # `pitch` apart and their bodies need `lat + clearance` of that, so the whole
+            # budget for BOTH of them is the surplus, and each may spend half.
+            #
+            # The distinction is not academic. On cluttered_cross_16 the corridor caps the
+            # pitch at 0.345 while the bodies need 0.300, leaving 45 mm -- and a fraction
+            # of the PITCH permits 83 mm even at the tightest setting tried, so every
+            # setting quietly overspent and the scenario seated 14 of 16 robots under all
+            # six combinations of two knobs. Against the surplus the same corridor
+            # correctly allows almost nothing.
+            #
+            # Orbits are excluded because pitch is not what separates them -- their
+            # spacing is arc along the ring -- so they keep the lane-width budget.
+            if i in orbit_of or pitch <= 1e-9:
+                cap = float(params.get("blur_cap", 0.5)) * lane_w
+            else:
+                cap = float(params.get("blur_cap", 0.5)) * max(0.0, pitch - (lat + clearance))
+            blur = _fit_blur(env, i, full, route, smooth, cap)
+        if blur is not None:
+            blur_of[i] = blur
+            full_routes[i] = full
+            built = flat.trajectory(env.robots[i], env._states[i], full, dt, smooth=blur)
         else:
+            # No room to round this robot's corners. Stop-and-go follows the polyline
+            # exactly, so it spends no separation at all -- drive THIS robot that way and
+            # leave the others smooth. The two constructions produce the same kind of
+            # (states, controls) arrays, so the schedule and the verifier do not care
+            # which robot came from which.
+            if smooth > 0.0:
+                exact += 1
             route = _simplify(route, float(params.get("simplify_tol", 0.05)))
             route = np.vstack([route, goals[i][:2]])
             built = _legs(env, i, np.vstack([starts[i][:2], route]), dt)
@@ -780,6 +810,32 @@ def _build(env, params, clearance=0.05, guides=None):
 
     tracks = [b[0] for b in base]
     ctrls = [b[1] for b in base]
+
+    # Alternative traversals of the SAME route, at reduced speed. The scheduler's only
+    # instrument used to be delay, and delay is a blunt one: in a swap a robot waiting at
+    # its start IS the obstacle, so making it wait longer makes matters worse -- which is
+    # exactly the failure that caps cluttered_cross_16 at 14 of 16. Slowing down is the
+    # move that delay cannot express. A slow robot is still clearing its start, and it
+    # crosses a contested point at a different time without anyone standing still.
+    #
+    # It is available only under smooth driving, and it is free there: a smooth trajectory
+    # is a curve plus a speed profile, so dividing the profile is a reparameterisation, not
+    # a re-plan. Stop-and-go has no such knob -- its profile is a fixed trapezoid -- so it
+    # keeps exactly one variant and its behaviour is unchanged.
+    speeds = [1.0]
+    if smooth > 0.0:
+        speeds += [float(x) for x in params.get("speeds", (1.4, 2.0)) if float(x) > 1.0]
+    alts, actrls = [], []
+    for i in range(n):
+        va, vc = [tracks[i]], [ctrls[i]]
+        for sp in (speeds[1:] if full_routes[i] is not None else []):
+            got = flat.trajectory(env.robots[i], env._states[i], full_routes[i], dt,
+                                  smooth=blur_of[i], slow=sp)
+            if got is not None:
+                va.append(got[0])
+                vc.append(got[1])
+        alts.append(va)
+        actrls.append(vc)
 
     # --- SCHEDULE: per-robot delays, by insertion ---------------------------------------
     # Colouring conflicts and staggering colour c by c*offset is uniform and blunt: every
@@ -796,16 +852,16 @@ def _build(env, params, clearance=0.05, guides=None):
     step = max(1, int(params.get("delay_step", 5)))
     horizon_cap = int(getattr(env, "max_steps", 0) or 0) or 10 ** 6
 
-    def _clash(a, da, b, db):
-        """Do a (delayed da) and b (delayed db) ever come within `clearance`?
+    def _clash(a, da, ka, b, db, kb):
+        """Do a and b ever come within `clearance`, at these delays and these speeds?
 
-        Compared over the FULL span, clamped at both ends: before its delay a robot sits
-        at its start, and after arrival it sits at its goal. Both are real occupancy --
-        skipping the tail let a robot park on a spot a later robot drives through (79 hits
-        on circular_cross_32). Cheap centre-distance pre-filter, exact shape test only on
-        the steps that survive it.
+        Compared over the FULL span, clamped at both ends: before its delay a robot sits at
+        its start, and after arrival it sits at its goal. Both are real occupancy -- skipping
+        the tail let a robot park on a spot a later robot drives through (79 hits on
+        circular_cross_32). Cheap centre-distance pre-filter, exact shape test only on the
+        steps that survive it.
         """
-        ta, tb = tracks[a], tracks[b]
+        ta, tb = alts[a][ka], alts[b][kb]
         span = max(da + len(ta), db + len(tb))
         ia = np.clip(np.arange(span) - da, 0, len(ta) - 1)
         ib = np.clip(np.arange(span) - db, 0, len(tb) - 1)
@@ -821,6 +877,40 @@ def _build(env, params, clearance=0.05, guides=None):
                 return True
         return False
 
+    def _least(r, got, k, skip=None):
+        """Least delay at which variant k of r clears everything placed, or None."""
+        d = 0
+        while d + len(alts[r][k]) <= horizon_cap:
+            if not any(_clash(r, d, k, q, got[q][0], got[q][1]) for q in got if q != skip):
+                return d
+            d += step
+        return None
+
+    def _fit(r, got, skip=None):
+        """Cheapest (delay, speed) at which r clears everything placed, or None.
+
+        Waiting and slowing both cost makespan, and they are directly comparable in the
+        same unit: waiting `d` steps adds `d`, and taking a slower traversal adds however
+        many steps longer that traversal is. So score every option by the time it adds and
+        take the smallest -- which keeps full speed with no delay whenever that fits, and
+        otherwise picks whichever concession is actually cheaper rather than always
+        reaching for the same one.
+        """
+        best = None
+        for k in range(len(alts[r])):
+            extra = len(alts[r][k]) - len(alts[r][0])
+            if best is not None and extra >= best[0]:
+                continue                      # cannot beat what we already have
+            d = _least(r, got, k, skip=skip)
+            if d is None:
+                continue
+            cost = d + extra
+            if best is None or cost < best[0]:
+                best = (cost, d, k)
+                if cost == 0:
+                    break
+        return None if best is None else (best[1], best[2])
+
     def _blockers(r, got):
         """Who stopped `r` from fitting, and WHERE were they standing when they did?
 
@@ -832,8 +922,8 @@ def _build(env, params, clearance=0.05, guides=None):
         """
         best_at, fewest = None, None
         d = 0
-        while d + len(tracks[r]) <= horizon_cap:
-            hit = [q for q in got if _clash(r, d, q, got[q])]
+        while d + len(alts[r][0]) <= horizon_cap:
+            hit = [q for q in got if _clash(r, d, 0, q, got[q][0], got[q][1])]
             if fewest is None or len(hit) < len(fewest):
                 best_at, fewest = d, hit
                 if not hit:
@@ -841,36 +931,28 @@ def _build(env, params, clearance=0.05, guides=None):
             d += step
         where = {"at_goal": 0, "at_start": 0, "driving": 0}
         for q in (fewest or []):
-            ta, tb = tracks[r], tracks[q]
-            span = max(best_at + len(ta), got[q] + len(tb))
+            ta, tb = alts[r][0], alts[q][got[q][1]]
+            dq = got[q][0]
+            span = max(best_at + len(ta), dq + len(tb))
             ia = np.clip(np.arange(span) - best_at, 0, len(ta) - 1)
-            ib = np.clip(np.arange(span) - got[q], 0, len(tb) - 1)
+            ib = np.clip(np.arange(span) - dq, 0, len(tb) - 1)
             pa, pb = ta[ia], tb[ib]
             near = np.flatnonzero(np.linalg.norm(pa[:, :2] - pb[:, :2], axis=1)
                                   < radii[r] + radii[q] + clearance)
             k = int(near[0]) if len(near) else 0
-            if k >= got[q] + len(tb):
+            if k >= dq + len(tb):
                 where["at_goal"] += 1
-            elif k < got[q]:
+            elif k < dq:
                 where["at_start"] += 1
             else:
                 where["driving"] += 1
         return {"blocked_robot": int(r), "blockers": len(fewest or []), **where}
 
-    def _fit(r, got, skip=None):
-        """Least delay at which r clears everything in `got`, or None."""
-        d = 0
-        while d + len(tracks[r]) <= horizon_cap:
-            if not any(_clash(r, d, q, got[q]) for q in got if q != skip):
-                return d
-            d += step
-        return None
-
     def _place(order, why=None, budget=None):
-        """Insert in this order, each robot delayed the least that clears those before it.
+        """Insert in this order, each robot conceding the least that clears those before it.
 
         Insertion is greedy and has no backtracking, so one badly-seated robot can leave a
-        later one with no delay at all. Measured on cluttered_cross_32, that later robot had
+        later one with nowhere to go. Measured on cluttered_cross_32, that later robot had
         exactly ONE blocker -- so allow a bounded repair: evict the single blocker, seat the
         robot that could not fit, and re-seat the blocker afterwards. Each robot may be
         evicted `evictions` times, which bounds the work and keeps the loop finite. Measured
@@ -883,9 +965,9 @@ def _build(env, params, clearance=0.05, guides=None):
         queue = list(order)
         while queue:
             r = queue.pop(0)
-            d = _fit(r, got)
-            if d is not None:
-                got[r] = d
+            spot = _fit(r, got)
+            if spot is not None:
+                got[r] = spot
                 continue
             # Who blocks r at every delay? Take the delay where r is least obstructed: if
             # exactly one robot stands in the way there, that one is the repairable blocker.
@@ -893,8 +975,8 @@ def _build(env, params, clearance=0.05, guides=None):
             # the latter is O(placed^2 * delays) and does not finish.)
             best_at, fewest = None, None
             d = 0
-            while d + len(tracks[r]) <= horizon_cap:
-                hit = [q for q in got if _clash(r, d, q, got[q])]
+            while d + len(alts[r][0]) <= horizon_cap:
+                hit = [q for q in got if _clash(r, d, 0, q, got[q][0], got[q][1])]
                 if fewest is None or len(hit) < len(fewest):
                     best_at, fewest = d, hit
                     if len(hit) == 1:
@@ -904,7 +986,7 @@ def _build(env, params, clearance=0.05, guides=None):
                 q = fewest[0]
                 evicted[q] = evicted.get(q, 0) + 1
                 del got[q]
-                got[r] = best_at
+                got[r] = (best_at, 0)
                 queue.append(q)
                 continue
             if why is not None:
@@ -950,10 +1032,17 @@ def _build(env, params, clearance=0.05, guides=None):
                  "best_placed": best, "n": n, "offset_dropped": dropped, **why})
         return None
 
-    T = max(delay[r] + len(tracks[r]) for r in range(n))
-    held = [np.vstack([np.repeat(starts[r][None, :], delay[r], axis=0), tracks[r]])
-            if delay[r] else tracks[r] for r in range(n)]
-    heldu = [np.vstack([np.zeros((delay[r], 2)), ctrls[r]]) if delay[r] else ctrls[r]
+    # `delay` now carries both concessions: how long each robot waits, and which traversal
+    # speed it was given. Commit the variant it was actually scheduled against.
+    wait = {r: delay[r][0] for r in range(n)}
+    pick = {r: delay[r][1] for r in range(n)}
+    tracks = [alts[r][pick[r]] for r in range(n)]
+    ctrls = [actrls[r][pick[r]] for r in range(n)]
+
+    T = max(wait[r] + len(tracks[r]) for r in range(n))
+    held = [np.vstack([np.repeat(starts[r][None, :], wait[r], axis=0), tracks[r]])
+            if wait[r] else tracks[r] for r in range(n)]
+    heldu = [np.vstack([np.zeros((wait[r], 2)), ctrls[r]]) if wait[r] else ctrls[r]
              for r in range(n)]
     tracks = [np.vstack([t, np.repeat(t[-1][None, :], T - len(t), axis=0)])
               if len(t) < T else t for t in held]
@@ -970,7 +1059,9 @@ def _build(env, params, clearance=0.05, guides=None):
             "orbiting": len(orbit_of),
             "hub_radius": round(max([h[1] for h in hubs], default=0.0), 3),
             "drive": "smooth" if smooth > 0.0 else "legs",
-            "delayed": sum(1 for d in delay.values() if d),
-            "max_delay": max(delay.values()), "steps": T,
+            "delayed": sum(1 for d in wait.values() if d),
+            "slowed": sum(1 for k in pick.values() if k),
+            "exact_driven": exact,
+            "max_delay": max(wait.values()), "steps": T,
             "min_surface_gap": round(float(gap), 4)}
     return tracks, ctrls, info

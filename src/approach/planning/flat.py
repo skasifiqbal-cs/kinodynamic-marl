@@ -179,7 +179,7 @@ def _sample(pts, th, kappa, s, v, dt):
     }
 
 
-def reference(route, robot, dt, smooth=0.12, tries=6):
+def reference(route, robot, dt, smooth=0.12, tries=6, slow=1.0):
     """A bound-respecting smooth reference along `route`, sampled every `dt`.
 
     The speed profile handles v, w and tangential a. Angular acceleration is left over,
@@ -195,6 +195,12 @@ def reference(route, robot, dt, smooth=0.12, tries=6):
     pts, th, kappa, s = got
     ds = float(s[1] - s[0])
     v = _topp(kappa, ds, robot.v_max, robot.omega_max, robot.a_max)
+    # `slow` traverses the SAME curve at reduced speed. It is exact rather than
+    # approximate: dividing the speed profile by L is a reparameterisation t -> L*t, under
+    # which both velocities fall by L and both accelerations by L^2, so every bound only
+    # gets slacker. Nothing about the geometry -- lane, orbit, obstacle clearance -- is
+    # touched, which is what makes "go slower" a legal move for the scheduler to make.
+    v = v / max(float(slow), 1.0)
 
     for _ in range(tries):
         ref = _sample(pts, th, kappa, s, v, dt)
@@ -212,7 +218,7 @@ def reference(route, robot, dt, smooth=0.12, tries=6):
     return ref
 
 
-def trajectory(robot, state, route, dt, smooth=0.12, gain=(1.6, 1.2)):
+def trajectory(robot, state, route, dt, smooth=0.12, gain=(1.6, 1.2), slow=1.0):
     """Drive `route` as ONE smooth trajectory. Returns (states, controls) or None.
 
     Two phases, and only the first is stop-and-go: a robot at rest facing away from its
@@ -228,7 +234,7 @@ def trajectory(robot, state, route, dt, smooth=0.12, gain=(1.6, 1.2)):
     them with the environment's own collision checker, so a reference the robot does not
     track would verify something nobody drives.
     """
-    ref = reference(route, robot, dt, smooth=smooth)
+    ref = reference(route, robot, dt, smooth=smooth, slow=slow)
     if ref is None or len(ref["x"]) < 2:
         return None
 
