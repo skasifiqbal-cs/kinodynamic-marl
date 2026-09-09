@@ -453,95 +453,77 @@ def plan(env, params, clearance=0.05, guides=None):
     tracks = [b[0] for b in base]
     ctrls = [b[1] for b in base]
 
-    # --- GROUPS: temporal, and iterated to a fixed point -------------------------------
-    # Scheduling is over CONFLICTS, not robots: the two robots of a swap must move at the
-    # same time, since one's goal is the other's start and holding one parks it exactly
-    # where its partner is heading. Lanes separate partners; groups separate one conflict
-    # from another.
+    # --- SCHEDULE: per-robot delays, by insertion ---------------------------------------
+    # Colouring conflicts and staggering colour c by c*offset is uniform and blunt: every
+    # robot in a colour waits the same amount whether it needed 10 steps or 400, and the
+    # horizon is (groups-1)*offset + max_traj, which explodes exactly when a scenario needs
+    # many colours. Measured on cluttered_cross_16: 3 groups at offset 407 gave 1668 steps
+    # and 280 surviving collisions, and finer colouring made it 2804 steps and 2923.
     #
-    # The subtlety is that shifting a group CHANGES which robots meet. Detecting conflicts
-    # once on the unheld trajectories and then applying holds invalidates the very
-    # detection the holds were derived from -- measured on cluttered_cross_16 as 280
-    # collisions between robots that are both MOVING (none parked), surviving even the
-    # largest offset. So re-detect at the shifted timing and accumulate: the conflict graph
-    # only grows, so this terminates.
-    # Every robot needs a schedulable identity, not just those in a route pair. A robot
-    # whose route never came within the pairing radius can still COLLIDE -- guides bend
-    # around obstacles, so paths that look clear on the reference can meet in time -- and
-    # with no pair id it was dropped from the conflict graph entirely and could never be
-    # scheduled away. Singletons close that hole; they carry no lane, only a slot.
-    pair_of: dict = {}
-    for pi, (i, j) in enumerate(pairs):
-        pair_of.setdefault(i, pi)
-        pair_of.setdefault(j, pi)
-    groups_n = len(pairs)
-    for r in range(n):
-        if r not in pair_of:
-            pair_of[r] = groups_n
-            groups_n += 1
+    # Insert robots one at a time instead, each delayed the LEAST that clears everyone
+    # already placed. A placement is only accepted against trajectories already committed,
+    # so the schedule is correct by construction rather than by re-detection; the robots
+    # that need no delay get none. Longest trajectory first, because the hardest robot to
+    # fit should choose while the space is still empty.
+    step = max(1, int(params.get("delay_step", 10)))
+    horizon_cap = int(getattr(env, "max_steps", 0) or 0) or 10 ** 6
+    order = sorted(range(n), key=lambda r: -len(tracks[r]))
 
-    def _hold(off, gof):
-        out_t, out_u = [], []
-        for r in range(n):
-            h = off * int(gof.get(r, 0))
-            if h:
-                out_t.append(np.vstack([np.repeat(starts[r][None, :], h, axis=0),
-                                        tracks[r]]))
-                out_u.append(np.vstack([np.zeros((h, 2)), ctrls[r]]))
-            else:
-                out_t.append(tracks[r])
-                out_u.append(ctrls[r])
-        H = max(len(t) for t in out_t)
-        return ([np.vstack([t, np.repeat(t[-1][None, :], H - len(t), axis=0)])
-                 if len(t) < H else t for t in out_t],
-                [np.vstack([c, np.zeros((H - len(c), 2))]) if len(c) < H else c
-                 for c in out_u], H)
+    def _clash(a, da, b, db):
+        """Do shifted trajectories a (delayed da) and b (delayed db) ever come too close?"""
+        ta, tb = tracks[a], tracks[b]
+        lo, hi = max(da, db), min(da + len(ta), db + len(tb))
+        if hi <= lo:
+            return False
+        pa = ta[lo - da:hi - da, :2]
+        pb = tb[lo - db:hi - db, :2]
+        near = np.linalg.norm(pa - pb, axis=1) < radii[a] + radii[b] + clearance
+        if not near.any():
+            return False
+        for k in np.flatnonzero(near):
+            qa, qb = ta[lo - da + k], tb[lo - db + k]
+            if collides(env.robots[a].shape, (float(qa[0]), float(qa[1]), float(qa[2])),
+                        env.robots[b].shape, (float(qb[0]), float(qb[1]), float(qb[2]))):
+                return True
+        return False
 
-    edges: set = set()
-    intra = 0
-    best, last = None, {}
-    forced = int(params.get("group_offset", 0))
-    for _ in range(int(params.get("schedule_iters", 5))):
-        adj: dict = {pi: set() for pi in range(groups_n)}
-        for a, b in edges:
-            adj[a].add(b)
-            adj[b].add(a)
-        gcol = _colour(range(groups_n), adj)
-        group_of = {r: gcol.get(pair_of.get(r, -1), 0) for r in range(n)}
-        ngroups = max(gcol.values()) + 1 if gcol else 1
-
-        probe = _traj_conflicts(tracks, radii, clearance)
-        cross = [k for (a, b), k in probe.items()
-                 if pair_of.get(a) is not None and pair_of.get(a) != pair_of.get(b)]
-        hi = forced or (max(cross) + 2 if cross else 0)
-        cands = [hi] if (forced or hi == 0) else sorted(
-            {max(1, hi // 4), max(1, hi // 2), max(1, 3 * hi // 4), hi})
-
-        found = None
-        for off in cands:
-            ct, cu, H = _hold(off, group_of)
-            rep: dict = {}
-            gap = _verify(env, ct, clearance, rep)
-            last = rep
-            if gap is not None:
-                found = (ct, cu, off, gap, H, ngroups)
+    delay: dict = {}
+    placed: list = []
+    ok = True
+    for r in order:
+        d = 0
+        while d + len(tracks[r]) <= horizon_cap:
+            if not any(_clash(r, d, q, delay[q]) for q in placed):
                 break
-            # What is still touching AT THIS TIMING is what the next round must schedule.
-            for (a, b), _k in _traj_conflicts(ct, radii, clearance).items():
-                pa, pb = pair_of.get(a), pair_of.get(b)
-                if pa == pb:
-                    intra += 1
-                else:
-                    edges.add((pa, pb))
-        if found:
-            best = found
+            d += step
+        else:
+            ok = False
             break
+        delay[r] = d
+        placed.append(r)
 
-    if best is None:
+    if not ok:
         if isinstance(params, dict):
-            params.setdefault("_reject", {}).update(last)
+            params.setdefault("_reject", {}).update(
+                {"unschedulable_robot": 1, "placed": len(placed), "n": n})
         return None
-    tracks, ctrls, offset, gap, T, ngroups = best
-    info = {"pairs": len(pairs), "lanes": lanes, "groups": ngroups, "lane_failures": intra,
-            "offset": offset, "steps": T, "min_surface_gap": round(float(gap), 4)}
+
+    T = max(delay[r] + len(tracks[r]) for r in range(n))
+    held = [np.vstack([np.repeat(starts[r][None, :], delay[r], axis=0), tracks[r]])
+            if delay[r] else tracks[r] for r in range(n)]
+    heldu = [np.vstack([np.zeros((delay[r], 2)), ctrls[r]]) if delay[r] else ctrls[r]
+             for r in range(n)]
+    tracks = [np.vstack([t, np.repeat(t[-1][None, :], T - len(t), axis=0)])
+              if len(t) < T else t for t in held]
+    ctrls = [np.vstack([c, np.zeros((T - len(c), 2))]) if len(c) < T else c for c in heldu]
+
+    rep: dict = {}
+    gap = _verify(env, tracks, clearance, rep)
+    if gap is None:
+        if isinstance(params, dict):
+            params.setdefault("_reject", {}).update(rep)
+        return None
+    info = {"pairs": len(pairs), "lanes": lanes, "delayed": sum(1 for d in delay.values() if d),
+            "max_delay": max(delay.values()), "steps": T,
+            "min_surface_gap": round(float(gap), 4)}
     return tracks, ctrls, info
