@@ -229,6 +229,28 @@ approach:
     # through to the ladder above unless the construction VERIFIES against the env's own
     # collision checker, so enabling it can only add solutions, never lose one.
     constructive: false
+    # How a route is DRIVEN once its lane/orbit is decided. 0.0 keeps the rest-to-rest
+    # legs (turn in place, drive straight, stop). Any positive value flies the whole route
+    # as one time-parameterised curve with both controls live, and is read as the blur
+    # length in METRES used to fit that curve -- large enough to keep curvature (and so
+    # the cornering speed cap w_max/kappa) usable, small enough that the curve stays in
+    # its lane. 0.12 keeps the fitted curve within a few cm of the intended geometry.
+    smooth: 0.12
+    # WHEN two robots are judged to conflict. false compares their routes at equal
+    # normalised progress -- a proxy that holds only while robots advance at similar
+    # rates. true compares where they actually ARE at the same instant, which needs a
+    # time parameterisation to exist, so it only takes effect when `smooth` is on.
+    spacetime: false
+    # How far the fitted curve may stray from the route it was given, as a fraction of the
+    # lane pitch. Deviation is what buys speed (it rounds the corners that cap v at
+    # w_max/kappa) and what spends lane separation, since two robots in adjacent lanes
+    # each straying `cap` toward the other close 2*cap of the pitch between them.
+    # 0.5 rather than something tighter because verification, not this number, is what
+    # keeps a plan safe -- and the cap is only felt where routes actually curve. On the
+    # straight-route scenarios it changes nothing (open_cross_32 is 332 steps either way);
+    # on the curved ones it is most of the benefit (circular_cross_16 is 454 steps at 0.5
+    # against 740 at 0.25, versus 836 for stop-and-go).
+    blur_cap: 0.5
     veer_margin: 0.2     # extra centre separation beyond (lateral extent + clearance)
     # Which coordination device a conflict cluster gets is read off its own geometry:
     # scattered pairwise crossings get lanes, a cluster whose encounters all land on one

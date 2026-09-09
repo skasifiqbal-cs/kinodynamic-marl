@@ -26,47 +26,9 @@ from __future__ import annotations
 
 import numpy as np
 
+from src.approach.planning import flat
+from src.approach.planning.flat import profile as _profile
 from src.collision.shapes import collides, shape_distance
-
-
-def _profile(delta, dt, acc_max, vel_max):
-    """Accelerate/cruise/decelerate covering exactly `delta`, ending at rest.
-
-    Solved on the semi-implicit Euler the env actually integrates with, so a leg LANDS on
-    its target rather than near it. n steps at +a then n at -a advance a*dt^2*n^2; adding
-    m cruise steps at the peak makes it a*dt^2*n*(n+m).
-
-    The cruise phase is not a refinement, it is most of the horizon. Without it a long leg
-    has to keep accelerating to its midpoint, so the velocity cap alone forces
-    n = d/(dt*v_max) steps each way -- 600 steps for the 15 m traverse here against 320
-    for the same motion at the same limits. Triangular profiles were costing 1.9x the
-    budget on every robot, which is what put the cluttered plans over the horizon.
-    """
-    d = abs(float(delta))
-    if d < 1e-12:
-        return []
-    sign = float(np.sign(delta))
-
-    # Triangular: fastest when the leg is too short to reach the speed cap.
-    n = max(1, int(np.ceil(np.sqrt(d / (dt * dt * acc_max)))))
-    while True:
-        a = d / (dt * dt * n * n)
-        if a <= acc_max + 1e-12 and n * a * dt <= vel_max + 1e-12:
-            break
-        n += 1
-    best = [a] * n + [-a] * n
-
-    # Trapezoidal: reach the cap in `nu` steps, then hold it for the rest of the distance.
-    nu = max(1, int(np.ceil(vel_max / (acc_max * dt))))
-    if dt * dt * acc_max * nu * nu < d:
-        m = int(np.ceil(d / (dt * dt * acc_max * nu) - nu))
-        if m > 0:
-            a2 = d / (dt * dt * nu * (nu + m))
-            if a2 <= acc_max + 1e-12 and nu * a2 * dt <= vel_max + 1e-12:
-                trap = [a2] * nu + [0.0] * m + [-a2] * nu
-                if len(trap) < len(best):
-                    best = trap
-    return [x * sign for x in best]
 
 
 def _turn_then_go(robot, state, target, dt):
@@ -221,10 +183,20 @@ def _offset_path(pts, dy, lo, hi, taper, axis):
 
     `axis` is a fixed world-frame direction shared by everyone in the conflict, so opposite
     lane signs put robots on genuinely opposite sides whatever their headings. Outside the
-    ramp the route is untouched, which keeps start and goal exact.
+    ramp the route is untouched, which keeps start and goal exact -- but only if the ramp
+    has room to close, so the window is held back from both ends by one taper. Without that
+    clamp a window padded out to [0, 1] leaves the displacement at FULL value on the last
+    sample, so the route ends half a lane to the side of the goal and the goal has to be
+    reached by an extra jog. Stop-and-go absorbs that jog as one cheap leg; a smooth curve
+    cannot, because the jog is a hairpin -- measured on cluttered_cross_16, |kappa| 17.3
+    (a 5.8 cm turning radius) on the last sample of an 18 m route, which caps that robot at
+    0.03 m/s and stretched its traverse to 1483 steps, past the horizon.
     """
     pts = np.asarray(pts, float)
     m = len(pts)
+    lo, hi = max(float(lo), taper), min(float(hi), 1.0 - taper)
+    if hi < lo:
+        lo = hi = 0.5 * (lo + hi)
     f = np.linspace(0.0, 1.0, m)
     ramp = np.clip(np.minimum((f - (lo - taper)) / taper,
                               ((hi + taper) - f) / taper), 0.0, 1.0)
@@ -291,6 +263,62 @@ def _orbit(ref, centre, radius):
     dy = radius - float(np.dot(ref[k] - centre, axis))
     f = k / m
     return axis, dy, (max(0.0, f - 0.25), min(1.0, f + 0.25))
+
+
+def _timed(env, refs, dt, smooth):
+    """Where each robot IS at each instant, on its own undisplaced route.
+
+    This exists to replace a proxy. Comparing routes at equal NORMALISED PROGRESS asks
+    "are these two robots the same fraction of the way through their own journeys, and
+    close when they are?" -- which is a statement about progress, not about time, and is a
+    good stand-in for a conflict only while every robot advances at a comparable rate. It
+    stops being one as soon as the rates differ: a robot that must turn around first, or
+    one throttled to 0.15 m/s through a bend while its partner cruises at 0.5, is nowhere
+    near the same clock time as its equal-progress partner. The grid then both invents
+    conflicts that never happen and misses ones that do.
+
+    Once a route can be given a time parameterisation (`flat.reference`) that proxy is not
+    needed. Index k here is a real instant -- k*dt seconds after a common start -- so the
+    conflict test below is an ordinary space-time test and the normalisation disappears.
+    Robots that finish early are held at their goal, which is where they actually are.
+
+    Returns (positions padded to a common horizon, per-robot cumulative arclength).
+    """
+    pos, arc = [], []
+    for i, r in enumerate(refs):
+        ref = flat.reference(r, env.robots[i], dt, smooth=smooth)
+        if ref is None:
+            return None
+        p = np.column_stack([ref["x"], ref["y"]])
+        if len(p) < 2:
+            return None
+        pos.append(p)
+        arc.append(np.concatenate(
+            [[0.0], np.cumsum(np.linalg.norm(np.diff(p, axis=0), axis=1))]))
+    T = max(len(p) for p in pos)
+    held = [np.vstack([p, np.repeat(p[-1:], T - len(p), axis=0)]) if len(p) < T else p
+            for p in pos]
+    return held, arc
+
+
+def _window_timed(pos, arc, i, partners, sep):
+    """Where along i's route it is close IN TIME to something it contends with.
+
+    The answer has to come back as a fraction of ARCLENGTH, not of time, because that is
+    what the lane displacement is applied over -- the manoeuvre is a piece of road, not a
+    piece of clock. So the contested instants are found in time and then converted through
+    the route's own cumulative arclength.
+    """
+    near = np.zeros(len(pos[i]), dtype=bool)
+    for j in partners:
+        near |= np.linalg.norm(pos[i] - pos[j], axis=1) < sep
+    idx = np.flatnonzero(near)
+    total = float(arc[i][-1])
+    if len(idx) == 0 or total < 1e-9:
+        return None
+    m = len(arc[i]) - 1
+    k0, k1 = int(min(idx[0], m)), int(min(idx[-1], m))
+    return float(arc[i][k0] / total), float(arc[i][k1] / total)
 
 
 def _conflict_pairs(refs, sep):
@@ -490,6 +518,32 @@ def _hits_obstacle(env, i, pts):
     return False
 
 
+def _fit_blur(env, i, route, target, base, cap):
+    """The largest blur this route can take while still being the route that was planned.
+
+    Blur is not a cosmetic setting, it is the speed knob. Curvature caps speed through
+    w = kappa*v, so a sharp corner inherited from the guide throttles the whole bend --
+    measured on cluttered_cross_16, blur 0.12 leaves a robot crawling at 0.245 m/s and its
+    traverse 952 steps long, over the horizon once a delay is added, while blur 0.60 gets
+    the same robot to 0.401 m/s and 513 steps. Rounding the corner IS the speed-up.
+
+    What stops it being free is that a blurred curve cuts the corner, and a route that has
+    been displaced into a lane must stay in that lane or the displacement meant nothing.
+    So take the largest blur whose curve stays within `cap` of the intended route and
+    clear of the obstacles, and only then hand it to the profiler.
+    """
+    for mult in (8.0, 4.0, 2.0, 1.0):
+        got = flat._curve(route, base * mult)
+        if got is None:
+            continue
+        pts = got[0]
+        dev = float(np.linalg.norm(pts[:, None, :] - target[None, :, :],
+                                   axis=2).min(axis=1).max())
+        if dev <= cap and not _hits_obstacle(env, i, pts):
+            return base * mult
+    return base
+
+
 def _legs(env, i, route, dt):
     """Drive a route as a sequence of rest-to-rest legs. Returns (states, controls)."""
     st = np.asarray(env._states[i], float).copy()
@@ -508,6 +562,31 @@ def _legs(env, i, route, dt):
 
 def plan(env, params, clearance=0.05, guides=None):
     """A verified coordinated plan, or None. Returns (tracks, controls, info).
+
+    Smooth first, stop-and-go as the fallback. The two constructions fail on DIFFERENT
+    scenarios, and nothing is committed that has not passed `_verify`, so trying the fast
+    one and keeping the reliable one costs a rejected construction and buys the union of
+    what either can do. Measured: smooth cuts open_cross_32 from 633 to 332 steps,
+    circular_cross_16 from 836 to 454 and circular_cross_32 from 1212 to 730, while
+    cluttered_cross_16 seats only 14 of 16 robots under smooth and 16 of 16 under legs.
+    """
+    if float(params.get("smooth", 0.0)) > 0.0:
+        out = _build(env, params, clearance, guides)
+        if out is not None:
+            return out
+        fallback = dict(params)
+        fallback["smooth"] = 0.0
+        out = _build(env, fallback, clearance, guides)
+        if out is not None:
+            out[2]["drive"] = "legs"
+        elif isinstance(params, dict):
+            params.setdefault("_reject", {}).update(fallback.get("_reject", {}))
+        return out
+    return _build(env, params, clearance, guides)
+
+
+def _build(env, params, clearance=0.05, guides=None):
+    """One construction at the drive mode `params` asks for. Returns (tracks, controls, info).
 
     ``tracks[i]`` is (T, 5) states and ``controls[i]`` is (T, 2), padded to a common
     horizon with a rest hold so index k is the same instant for every robot.
@@ -542,7 +621,17 @@ def plan(env, params, clearance=0.05, guides=None):
     # Two BOXES can touch with their centres a body diagonal apart, not a lateral extent
     # apart, and a route pair missed here is a pair that never gets a lane.
     diag = float(np.hypot(float(getattr(sh, "width", 2 * radii[0])), lat))
-    pairs = _conflict_pairs(refs, diag + clearance)
+    # WHEN conflicts are measured. The progress grid is the one discrete approximation
+    # left in an otherwise continuous pipeline; `spacetime` replaces it with the real
+    # thing, at the cost of needing a time parameterisation to exist -- so it rides with
+    # smooth mode, which is where one does.
+    smooth = float(params.get("smooth", 0.0))
+    timed = None
+    if smooth > 0.0 and bool(params.get("spacetime", False)):
+        timed = _timed(env, refs, dt, smooth)
+    field = timed[0] if timed is not None else refs
+
+    pairs = _conflict_pairs(field, diag + clearance)
     if not pairs:
         return None
     side = _sides(n, pairs)
@@ -555,7 +644,11 @@ def plan(env, params, clearance=0.05, guides=None):
     # One lane axis per CONFLICT CLUSTER, in the world frame. Everyone involved in the
     # same encounter is spread along the same direction, which is what makes opposite lane
     # signs mean opposite sides regardless of who is heading which way.
-    windows = {i: _window(refs, i, partners[i], lane_w) for i in range(n)}
+    if timed is not None:
+        windows = {i: _window_timed(timed[0], timed[1], i, partners[i], lane_w)
+                   for i in range(n)}
+    else:
+        windows = {i: _window(refs, i, partners[i], lane_w) for i in range(n)}
     axis_of: dict = {}
     orbit_of: dict = {}
     hubs: list = []
@@ -660,9 +753,26 @@ def plan(env, params, clearance=0.05, guides=None):
                 # centre line and the conflict is left entirely to the schedule -- which is
                 # the expensive resolution, so it is worth counting rather than silent.
                 dropped += 1
-        route = _simplify(route, float(params.get("simplify_tol", 0.05)))
-        route = np.vstack([route, goals[i][:2]])
-        built = _legs(env, i, np.vstack([starts[i][:2], route]), dt)
+        # How the route is DRIVEN. Stop-and-go turns the route into a polyline and takes
+        # it one rest-to-rest leg at a time, which never fires both controls at once and
+        # pays a full stop per waypoint. Smooth mode flies the whole route as one
+        # time-parameterised curve (`flat`), so linear and angular acceleration act
+        # together and the intermediate waypoints stop being events at all -- which is
+        # also why `_simplify` is skipped there: Douglas-Peucker exists to delete stops,
+        # and in smooth mode there are none to delete.
+        if smooth > 0.0:
+            full = np.vstack([starts[i][:2], route, goals[i][:2]])
+            # Room to round corners in. The budget is a fraction of the LANE PITCH
+            # because that is what the deviation spends: two robots in adjacent lanes
+            # each straying `cap` toward the other close 2*cap of the pitch that was
+            # separating them, so the fraction has to leave the lane meaning something.
+            cap = float(params.get("blur_cap", 0.5)) * (pitch if pitch > 1e-9 else lane_w)
+            built = flat.trajectory(env.robots[i], env._states[i], full, dt,
+                                    smooth=_fit_blur(env, i, full, route, smooth, cap))
+        else:
+            route = _simplify(route, float(params.get("simplify_tol", 0.05)))
+            route = np.vstack([route, goals[i][:2]])
+            built = _legs(env, i, np.vstack([starts[i][:2], route]), dt)
         if built is None:
             return None
         routes.append(route)
@@ -859,6 +969,7 @@ def plan(env, params, clearance=0.05, guides=None):
             "hubs": len(hubs), "offset_dropped": dropped,
             "orbiting": len(orbit_of),
             "hub_radius": round(max([h[1] for h in hubs], default=0.0), 3),
+            "drive": "smooth" if smooth > 0.0 else "legs",
             "delayed": sum(1 for d in delay.values() if d),
             "max_delay": max(delay.values()), "steps": T,
             "min_surface_gap": round(float(gap), 4)}

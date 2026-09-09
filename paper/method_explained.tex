@@ -770,47 +770,241 @@ $\Delta\theta = \pi$, $\bar{a} = \alpha_{\max} = 0.25$, $\bar{v} = \omega_{\max}
 gives $20 + 43 + 20 = \textbf{83 steps}$ ($8.3$\,s), integrating to exactly $180.0000^\circ$.
 A robot that starts facing away from its goal spends $8.3$ seconds just turning round.
 
-\subsection{Why the two phases are separated --- and what it costs}
+\subsection{What the two phases cost}
 
-Splitting each leg into turn-then-drive has two justifications.
+Splitting each leg into turn-then-drive makes the closed form possible: during the turn
+$v = 0$, so position does not change; during the drive $\omega = 0$, so heading does not
+change. The two one-dimensional profiles are completely decoupled and each is exactly
+solvable.
 
-First, it makes the closed form possible. During the turn $v = 0$, so position does not
-change; during the drive $\omega = 0$, so heading does not change. The two one-dimensional
-profiles are therefore completely decoupled, and each is exactly solvable. If both
-accelerations fire together, the equations couple --- the heading changes while the robot
-translates, so the traversed path curves --- and hitting an exact waypoint becomes a
-\defn{two-point boundary value problem}, which is precisely the kind of thing a numerical
-optimiser is needed for. Avoiding that call is the entire point of the method.
+The cost is real and measurable. Across our scenarios, \emph{zero} control steps out of
+tens of thousands have both $a \ne 0$ and $\alpha \ne 0$; robots stop dead several times
+per route; and the resulting horizon is $1.7$--$2.1\times$ a cruise-limited bound for the
+same path. Coming to a complete stop to rotate by seven degrees --- and in one scenario the
+median turn really is $6.7^\circ$ --- is plainly wasteful.
 
-Second, it guarantees that the path actually driven \emph{is} the polyline on which all the
-lane and clearance reasoning was done. If the robot arcs through corners it leaves its lane,
-and the clearance argument no longer applies to the thing being executed.
+The rest of this section builds the alternative, in which both controls act at once and the
+waypoints stop being events at all.
 
-The cost is real and we measure it: across our scenarios, \emph{zero} control steps out of
-tens of thousands have both $a \ne 0$ and $\alpha \ne 0$; $21$--$33\%$ of moving steps are
-spent turning in place; robots come to a full stop $3$--$6$ times mid-route; and the
-resulting horizon is $1.70$--$2.08\times$ a cruise-limited lower bound for the same path.
+\section{Step 6b: Driving the route as one smooth trajectory}
+\label{sec:flat}
 
-\subsection{Could both fire at once? Yes --- but the robot fights back}
+\subsection{The key property: differential flatness}
 
-Nothing in \eqref{eq:dyn} forbids simultaneous $a$ and $\alpha$. The obstacle is the
-turning-radius coupling from Part~I: cornering on radius $\rho$ requires
-$v \le \omega_{\max}\rho$. Our lanes are $0.35$--$0.50$\,m wide, so cornering \emph{inside a
-lane} demands
+A system is \defn{differentially flat} if there is a choice of outputs --- called the
+\defn{flat outputs} --- such that every state and every control can be written as an
+algebraic function of those outputs and finitely many of their derivatives, with no
+integration and no equation-solving required.
+
+Our unicycle is flat, and its flat outputs are simply the position $(x, y)$. Given a
+sufficiently smooth planar curve traced out over time, every remaining quantity follows by
+differentiation:
+\begin{align}
+\theta &= \operatorname{atan2}(\dot{y},\, \dot{x}),
+&v &= \sqrt{\dot{x}^2 + \dot{y}^2}, \label{eq:flat1}\\
+\omega &= \kappa\, v,
+&a &= \dot{v}, \qquad \alpha \;=\; \dot{\omega}. \label{eq:flat2}
+\end{align}
+
+\begin{keypoint}
+Flatness means: \emph{pick the path through space and the timing along it, and the robot's
+heading, speed, and both accelerations are already determined.} There is nothing left to
+solve. The curve \emph{is} the trajectory.
+\end{keypoint}
+
+This is why the stop-and-go restriction was never a requirement of the physics. Equations
+\eqref{eq:flat1}--\eqref{eq:flat2} put no obstacle in the way of $\kappa \ne 0$ and
+$\dot{v} \ne 0$ holding at the same instant --- which is exactly ``turning while
+accelerating''. Under the old construction that never happened because each leg was
+\emph{built} with one control at a time.
+
+\subsection{Curvature, defined}
+
+\defn{Curvature} $\kappa$ measures how sharply a curve bends at a point. Its definition is
+the reciprocal of the radius of the \defn{osculating circle} --- the circle that best
+matches the curve there:
 \[
-v \;\le\; 0.5 \times 0.35 \;=\; 0.175\ \text{m/s},
+\kappa \;=\; \frac{1}{\rho}, \qquad
+\kappa \;=\; \frac{\dot{x}\ddot{y} - \dot{y}\ddot{x}}{(\dot{x}^2+\dot{y}^2)^{3/2}} .
 \]
-about a third of top speed. A robot simply cannot corner at speed within its own lane; it
-must slow down substantially either way.
+A straight line has $\kappa = 0$ (infinite radius). A circle of radius $2$\,m has
+$\kappa = 0.5$ everywhere. Tighter bend, larger $\kappa$.
 
-There is nonetheless clear headroom at the small end. Many turns are not real corners at
-all but artefacts of route simplification --- in one scenario the median turn is
-$6.7^\circ$, and $62\%$ of turns are under $30^\circ$. Coming to a complete stop to rotate
-by seven degrees is plainly wasteful. Steering through small turns while driving, and
-keeping stop-and-go for genuine corners, would recover much of the penalty: the lateral
-deviation from the chord for a turn $\delta$ over a leg of length $L$ is roughly $L\delta/8$
---- about $0.05$\,m for $7^\circ$ over $5$\,m, comfortably inside a lane, so the clearance
-argument survives. This is the clearest improvement available and is not yet implemented.
+The relation $\omega = \kappa v$ in \eqref{eq:flat2} is then just the turning-radius
+coupling from Part~I read the other way round: $\rho = v/\omega$.
+
+\subsection{Flatness does not give you the bounds}
+
+What \eqref{eq:flat1}--\eqref{eq:flat2} produce is the controls a given curve
+\emph{requires}. Nothing forces those to be controls the robot \emph{has}. Feed it a curve
+that whips round a corner and it will faithfully report that you need $\alpha = 40$, which
+the motor cannot deliver. Respecting the bounds is a separate step, and it is done by
+choosing how fast to travel along the curve --- the \defn{speed profile}.
+
+Two of the four bounds act \emph{pointwise}, meaning they constrain the speed at each
+location independently:
+\[
+v(s) \;\le\; v_{\max}
+\qquad\text{and}\qquad
+v(s) \;\le\; \frac{\omega_{\max}}{|\kappa(s)|},
+\]
+where $s$ is arclength. The second is the cornering limit, and it is the turning-radius
+coupling appearing as a hard constraint rather than as advice: \emph{to hold a tight curve
+the robot must go slowly}.
+
+The acceleration bound is not pointwise --- how fast you may be going here depends on where
+you were going a moment ago --- so it is imposed by two sweeps along the curve:
+\begin{itemize}[nosep]
+\item a \textbf{forward} sweep, $v_{k+1} \leftarrow \min\bigl(v_{k+1},
+      \sqrt{v_k^2 + 2 a_{\max}\,\Delta s}\bigr)$: you cannot arrive somewhere faster than
+      you could have accelerated to;
+\item a \textbf{backward} sweep, the same rule run in reverse: you cannot carry more speed
+      into a corner than you could brake off before reaching it.
+\end{itemize}
+Both sweeps only ever \emph{lower} the profile, so whatever survives satisfies all three
+constraints at once. Start and end are pinned to $v = 0$.
+
+\subsection{Clearing the last bound by slowing down}
+
+One bound is left over. Angular acceleration
+$\alpha = \dot{\omega} = \frac{d}{dt}(\kappa v)$ couples how fast the curvature changes to
+how fast the robot is going, so folding it into the sweeps would make them implicit.
+
+Instead it is cleared afterwards by uniformly slowing the whole trajectory. Under a
+\defn{time scaling} $t \mapsto \lambda t$ with $\lambda > 1$ (everything happens
+$\lambda$ times slower), the derivatives scale as
+\[
+v \mapsto v/\lambda, \quad \omega \mapsto \omega/\lambda, \quad
+a \mapsto a/\lambda^2, \quad \alpha \mapsto \alpha/\lambda^2 .
+\]
+Both accelerations fall as $\lambda^2$ while both velocities fall as $\lambda$, so if the
+worst violation is a factor $R > 1$, choosing $\lambda = \sqrt{R}$ brings it exactly to the
+bound and cannot break the velocity bounds, which only improve. Iterating converges from
+above.
+
+\subsection{Feedforward is not enough}
+
+Equations \eqref{eq:flat1}--\eqref{eq:flat2} invert the \emph{continuous} dynamics, while
+the simulator integrates in finite steps. Controls computed purely from the curve --- called
+\defn{feedforward}, because they are computed in advance from the plan rather than from
+what the robot is doing --- therefore drift.
+
+That matters here more than it usually would, because the states this module returns are
+what the verifier checks. A reference the robot does not actually track would verify a
+trajectory nobody drives. So the emitted controls are feedforward \emph{plus} a
+proportional \defn{feedback} correction on heading and speed --- a term proportional to the
+error between where the robot should be and where it is --- and the returned states are
+obtained by rolling the combined control through the environment's own integrator. What is
+verified is then, by construction, what the robot does.
+
+\subsection{Rounding the corners: the blur, and why it is the speed knob}
+
+One practical problem remains. The route handed to this stage is a 128-point polyline whose
+lane displacement was applied sample by sample, so it carries small kinks; and the guides it
+came from have sharp corners. Differentiating a kink twice produces a curvature spike, and
+curvature caps speed. A single spurious spike throttles an entire traverse.
+
+So the polyline is smoothed --- \defn{blurred} --- before it is differentiated: each
+coordinate is averaged against its neighbours with a bell-shaped (Gaussian) weighting whose
+width is set in metres. The padding at the two ends is by \emph{linear extrapolation} rather
+than by repeating the edge value, because repeating the edge drags the first and last
+samples inward, and those two samples are the robot's start pose and its goal. Smoothing
+must not quietly move the goal.
+
+The blur width is not cosmetic --- it is the speed knob, and the trade is sharp. On
+\texttt{cluttered\_cross\_16}, measured:
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+blur (m) & slowest robot (steps) & its top speed (m/s) & max deviation (m) \\
+\midrule
+0.12 & 952 & 0.245 & 0.080 \\
+0.25 & 771 & 0.294 & 0.106 \\
+0.40 & 658 & 0.324 & 0.170 \\
+0.60 & 513 & 0.401 & 0.242 \\
+0.90 & 462 & 0.492 & 0.370 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+More blur rounds the corners, which raises the cornering speed cap, which shortens the
+traverse. What stops it being free is the last column: a blurred curve \emph{cuts} the
+corner, and a route that was displaced into a lane must stay in that lane or the
+displacement meant nothing. Worse, the deviation is spent twice --- two robots in adjacent
+lanes each straying $c$ toward the other close $2c$ of the pitch that separated them. So
+the blur is chosen adaptively per robot: the largest value whose curve stays within a
+fixed fraction of the lane pitch and clear of every obstacle. At $0.90$ the curve already
+puts a body through a pillar, which is why the choice is checked rather than tuned.
+
+\subsection{One bug worth keeping in view}
+
+The lane displacement is ramped in and out across a window, and the ramp only returns the
+route to its centre line if it has room to close. A window padded out to the full route left
+the displacement at \emph{full value on the last sample} --- so the route ended half a lane
+to the side of the goal, and the goal had to be reached by a jog.
+
+Stop-and-go absorbed that jog as one cheap extra leg and nobody noticed. A smooth curve
+cannot: the jog is a hairpin. Measured on \texttt{cluttered\_cross\_16}, it produced
+$|\kappa| = 17.3$ --- a $5.8$\,cm turning radius --- on the final sample of an $18$\,m
+route, which capped that robot at $0.03$\,m/s and stretched its traverse from a few hundred
+steps to $1483$, past the $1300$-step horizon. Holding the window back from both ends by
+one taper width fixed it, and that one change took the same robot to $759$ steps.
+
+The general lesson is worth stating: \emph{a smooth construction is less forgiving than a
+stop-and-go one, and that is a feature.} Stop-and-go can absorb an inconsistency in the
+geometry by stopping and rotating, which hides it. The smooth construction turns the same
+inconsistency into an unmissable curvature spike.
+
+\subsection{What it buys}
+
+Both constructions verify against the same checker, so they can be tried in turn --- smooth
+first, stop-and-go as the fallback --- and the planner keeps whichever passes. Measured
+makespans, in steps:
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+scenario & stop-and-go & smooth & speed-up \\
+\midrule
+\texttt{open\_cross\_32}    & 633  & 332 & $1.91\times$ \\
+\texttt{circular\_cross\_16} & 836  & 454 & $1.84\times$ \\
+\texttt{circular\_cross\_32} & 1212 & 730 & $1.66\times$ \\
+\texttt{cluttered\_cross\_16} & 966 & \multicolumn{2}{l}{falls back to stop-and-go} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The failure is as informative as the successes. On \texttt{cluttered\_cross\_16} the smooth
+construction seats only $14$ of $16$ robots, and that number does not move under \emph{any}
+setting of the blur budget or the scheduling granularity --- six combinations, all $14$. The
+cause is not the trajectories at all. It is that the scheduler's only instrument is delay,
+and a robot \emph{waiting at its start} is itself an obstacle: delaying it makes it sit in
+the way for longer. Smooth trajectories are shorter, so more robots reach the contested
+ground at once, which makes that pre-existing limitation bite. The fix belongs in the
+scheduler, not in the trajectory generator.
+
+\section{Step 6c: When conflicts are measured}
+\label{sec:spacetime}
+
+Once routes can be given a time parameterisation, the progress grid of Part~II is no longer
+forced on us. Conflicts can be found where they actually are: build each robot's nominal
+timed trajectory, and compare robots at the \emph{same instant} rather than at the same
+fraction of their own journeys. Index $k$ then means $k \cdot dt$ seconds after a common
+start, robots that finish early are held at their goals --- which is where they really are
+--- and the normalisation disappears entirely.
+
+The one conversion needed is at the output: the contested \emph{instants} must be handed
+back as a span of \emph{arclength}, because a lane displacement is applied to a piece of
+road, not to a piece of clock. That is done through the route's own cumulative arclength.
+
+Honesty about the result: this is implemented and available, and on our scenarios it
+currently changes nothing where the plan succeeds (identical makespans on all three smooth
+successes) and is mildly worse on the scenario that fails anyway. It removes an
+approximation that was genuinely unsound in principle, but the benchmarks here are not the
+ones that expose it --- they are layouts where every robot really does advance at a
+comparable rate, which is precisely the regime in which the progress grid was a fair proxy.
+It should be expected to matter on scenarios with strongly unequal traversal rates.
 
 \section{Step 7: Scheduling departures}
 \label{sec:sched}
@@ -911,18 +1105,50 @@ to bolt onto an existing planner.
 \section*{Known weaknesses, stated plainly}
 
 \begin{itemize}
-\item \textbf{The progress grid is discrete and approximate.} Conflicts are found by
-comparing robots at equal \emph{progress}, which assumes comparable rates of advance.
-Replacing it with a continuous space-time conflict test is the most valuable single
-improvement available.
-\item \textbf{Controls are interleaved.} Linear and angular acceleration never fire
-together, costing $1.70$--$2.08\times$ the cruise-limited bound. The fix for small turns is
-identified and unimplemented; large turns are genuinely constrained by the robot's
-turning-radius coupling.
-\item \textbf{The scheduler is greedy and incomplete.}
-\item \textbf{Only two devices exist.} A component whose lane demand exceeds its corridor
-capacity has no device that fits, and we have one benchmark scenario in exactly that
-position.
+\item \textbf{The scheduler is greedy, incomplete, and is now the binding constraint.}
+Its only instrument is delay, and delay is the wrong instrument for a swap: a robot waiting
+at its start is itself an obstacle, so making it wait longer makes things worse. This is
+what stops \texttt{cluttered\_cross\_16} under the smooth construction ($14$ of $16$ robots
+seated, unmoved across six settings of two different knobs), and it is where both remaining
+failures live. It is also the most natural place to put a real solver: assigning $n$ integer
+departure times subject to pairwise separation is a small combinatorial problem of exactly
+the kind a MILP or CP solver handles well, and unlike trajectory generation it has not been
+eliminated by better mathematics.
+
+\item \textbf{Only two coordination devices exist.} A cluster whose lane demand exceeds its
+corridor capacity has no device that fits, and \texttt{cluttered\_cross\_32} is exactly
+that: a $20$-robot component wanting four lanes in a corridor that holds three.
+
+\item \textbf{The blur width trades makespan against fidelity to the planned route.} It is
+chosen adaptively and every result is verified, so the trade is safe --- but it is a trade,
+and the right budget is scenario-dependent rather than derived.
+
+\item \textbf{Turning still costs, and always will.} Smooth driving removes the
+\emph{artificial} cost --- stopping dead to rotate seven degrees --- but not the real one.
+Cornering on radius $\rho$ requires $v \le \omega_{\max}\rho$, so inside a lane a third of a
+metre wide the robot is limited to roughly $0.175$\,m/s whatever the algorithm does. That is
+a property of the robot, not of the method.
 \end{itemize}
+
+\section*{What changed, and what it cost}
+
+Two things in this document were, until recently, listed as weaknesses and are now
+mechanisms.
+
+\emph{Controls no longer fire one at a time.} Differential flatness
+(\S\ref{sec:flat}) makes a smooth curve the trajectory, so linear and angular acceleration
+act together by default. The gain is roughly a halving of the makespan
+($1.7$--$1.9\times$) and the near-elimination of rotating on the spot --- on
+\texttt{open\_cross\_32}, from $28\%$ of all steps to $3\%$.
+
+\emph{Conflicts can be measured in space and time} (\S\ref{sec:spacetime}) rather than at
+equal normalised progress. This removes an approximation that was unsound in principle. It
+should be reported plainly that on these particular benchmarks it changes nothing, because
+they are layouts in which every robot advances at a comparable rate --- which is exactly the
+regime where the discarded proxy was already fair.
+
+The honest summary is that the first change bought a large, measured improvement; the second
+bought correctness rather than performance; and the work that remains has moved from the
+trajectories to the schedule.
 
 \end{document}
