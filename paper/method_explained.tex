@@ -1,0 +1,928 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=1.1in]{geometry}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+
+\newcommand{\defn}[1]{\textbf{\textit{#1}}}
+\newenvironment{keypoint}
+  {\begin{quote}\small\noindent\textbf{In plain words.}\ }
+  {\end{quote}}
+
+\title{\bfseries Coordination Before Trajectories\\[0.3em]
+\large A Ground-Up Explanation of the Problem and the Method}
+\author{Working note --- not a submission draft}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+This is a teaching document, not a paper. It explains the problem we are solving and the
+method we built, from the ground up, defining every term the first time it is used. There
+are no experiments here: the goal is that a reader who has never seen a motion-planning
+paper can follow the whole construction and say precisely where they disagree. Worked
+numerical examples use the real robot parameters and have been checked against the
+implementation, so every number below is one the code actually produces.
+\end{abstract}
+
+\tableofcontents
+
+\bigskip\hrule\bigskip
+
+\part*{Part I --- What Kind of Problem This Is}
+\addcontentsline{toc}{part}{Part I --- What Kind of Problem This Is}
+
+\section{Paths, trajectories, and why the difference matters}
+
+A \defn{path} is a curve through space. It says \emph{where} a robot goes and nothing about
+\emph{when}. ``Drive from the door to the window along this line'' is a path.
+
+A \defn{trajectory} is a path with timing attached. It says where the robot is at every
+instant: at $t = 3.2$\,s it is at $(4.1, 2.7)$ facing north-east and moving at
+$0.3$\,m/s. ``Leave at noon, arrive in eight seconds, reaching top speed halfway'' is a
+trajectory.
+
+The distinction is the whole difficulty of this subject. Two robots whose \emph{paths} cross
+do not necessarily collide --- if one passes the crossing point before the other arrives,
+nothing happens. Two robots whose paths never cross can still collide, if their bodies are
+wide and the paths run close together. Collision is a property of trajectories, not paths.
+
+\begin{keypoint}
+Path = the line on the floor. Trajectory = the line plus a timetable. Robots crash because
+of timetables, not lines.
+\end{keypoint}
+
+\section{Kinematic versus kinodynamic}
+
+A \defn{kinematic} model of a robot describes what shapes it can move along, ignoring
+inertia. A common kinematic model says: this robot can drive forwards and turn, but cannot
+slide sideways. Under such a model you may assume the robot can start, stop, and change
+direction instantly.
+
+A \defn{kinodynamic} model adds the dynamics: mass, momentum, and bounded actuation. Now
+the robot has a \emph{velocity} that is part of its state, it cannot change that velocity
+faster than its motors allow, and it therefore cannot stop instantly or turn on the spot
+while moving.
+
+The word ``kinodynamic'' in this work means specifically that:
+\begin{itemize}[nosep]
+\item velocity is part of the robot's state, not something we choose freely at each moment;
+\item we choose \emph{accelerations}, and velocity is the accumulated result;
+\item accelerations and velocities are both bounded.
+\end{itemize}
+
+\begin{keypoint}
+Kinematic: ``the robot is here now, put it there next.'' Kinodynamic: ``the robot is here
+moving at this speed; I can push the pedal this hard, and it will take a while to stop.''
+\end{keypoint}
+
+Why it matters for coordination: a classical multi-robot path-finding method may resolve a
+conflict by telling a robot to \emph{wait one step}. A kinodynamic robot moving at
+$0.5$\,m/s cannot wait. It must decelerate, which takes time and, crucially, covers
+distance. With our parameters that stopping distance is
+\[
+d_{\mathrm{brake}} \;=\; \frac{v_{\max}^2}{2 a_{\max}}
+\;=\; \frac{0.5^2}{2 \times 0.25} \;=\; 0.50\ \text{m},
+\]
+which is twice the radius of the goal region the robot is trying to stop inside. This robot
+is firmly in the regime where ``just stop'' is not an available move.
+
+\section{Describing one robot}
+
+\subsection{State}
+
+The \defn{state} of a system is the smallest collection of numbers that, together with the
+future control inputs, determines the future completely. For our robot the state is five
+numbers:
+\[
+\mathbf{x} \;=\; \begin{bmatrix} x & y & \theta & v & \omega \end{bmatrix}^{\!\top}
+\]
+where $(x,y)$ is the position of the body centre in metres, $\theta$ is the
+\defn{heading} (the direction the robot faces, in radians, measured anticlockwise from the
+$+x$ axis), $v$ is the forward speed in m/s, and $\omega$ is the \defn{yaw rate} --- how
+fast the heading is changing, in rad/s.
+
+Position and heading alone would be a kinematic description. Including $v$ and $\omega$ is
+what makes it kinodynamic: the robot ``remembers'' how fast it is going.
+
+\subsection{Control}
+
+The \defn{control} is what we get to choose at each instant:
+\[
+\mathbf{u} \;=\; \begin{bmatrix} a & \alpha \end{bmatrix}^{\!\top}
+\]
+where $a$ is \defn{linear acceleration} (how hard we push the speed up or down, in
+m/s$^2$) and $\alpha$ is \defn{angular acceleration} (how hard we push the yaw rate up or
+down, in rad/s$^2$). We do \emph{not} choose position or speed directly. We choose the two
+accelerations, and everything else follows.
+
+\subsection{The equations of motion}
+
+The model is the \defn{second-order unicycle}. ``Unicycle'' because it rolls forward along
+its own heading and cannot slide sideways; ``second-order'' because we command
+accelerations (second derivatives of position) rather than velocities.
+
+\begin{equation}
+\underbrace{
+\begin{bmatrix}\dot{x}\\ \dot{y}\\ \dot{\theta}\\ \dot{v}\\ \dot{\omega}\end{bmatrix}
+}_{\text{rate of change of state}}
+=
+\begin{bmatrix}
+v\cos\theta \\ v\sin\theta \\ \omega \\ a \\ \alpha
+\end{bmatrix}
+\label{eq:dyn}
+\end{equation}
+
+Reading it line by line. A dot over a symbol means ``rate of change of'':
+\begin{itemize}[nosep]
+\item $\dot{x} = v\cos\theta$ and $\dot{y} = v\sin\theta$: the robot moves at speed $v$ in
+      the direction it is facing. If it faces east ($\theta = 0$) then $\cos\theta = 1$,
+      $\sin\theta = 0$, and all the motion is in $x$. \emph{This pair of equations is the
+      no-sideways-sliding constraint};
+\item $\dot{\theta} = \omega$: the heading changes at the yaw rate, by definition;
+\item $\dot{v} = a$ and $\dot{\omega} = \alpha$: our two controls are exactly the rates of
+      change of the two velocities.
+\end{itemize}
+
+Note what \eqref{eq:dyn} does \emph{not} say: it does not forbid $a$ and $\alpha$ from being
+non-zero at the same time. A robot may accelerate and turn simultaneously. We will return
+to this, because our method chooses not to, and that choice has a measurable cost.
+
+\subsection{Bounds}
+
+Real motors saturate. Four bounds apply at every instant:
+\[
+|v| \le v_{\max}, \qquad |\omega| \le \omega_{\max}, \qquad
+|a| \le a_{\max}, \qquad |\alpha| \le \alpha_{\max}.
+\]
+Our values, taken from a published benchmark model so that results are comparable with the
+literature, are
+\[
+v_{\max} = 0.5\ \mathrm{m/s},\quad
+\omega_{\max} = 0.5\ \mathrm{rad/s},\quad
+a_{\max} = 0.25\ \mathrm{m/s^2},\quad
+\alpha_{\max} = 0.25\ \mathrm{rad/s^2}.
+\]
+
+Two consequences are worth committing to memory, because they explain most of the method's
+awkwardness.
+
+\paragraph{Braking distance.} $d_{\mathrm{brake}} = v_{\max}^2/(2a_{\max}) = 0.50$\,m, as
+computed above.
+
+\paragraph{Minimum turning radius.} If a robot moves at speed $v$ while turning at yaw rate
+$\omega$, it sweeps a circle of radius $\rho = v/\omega$. To turn tightly you must go
+slowly. At full speed the tightest possible circle is
+\[
+\rho_{\min} \;=\; \frac{v_{\max}}{\omega_{\max}} \;=\; \frac{0.5}{0.5} \;=\; 1.00\ \text{m}.
+\]
+This number will matter enormously later: the corridors this robot must coordinate inside
+are narrower than $1$\,m, so \emph{it cannot corner at full speed inside its own lane}.
+Turning radius and speed are not independent, and that coupling is a property of the robot,
+not of our algorithm.
+
+\subsection{Time steps and integration}
+
+Equation \eqref{eq:dyn} is continuous. A computer advances it in small steps of
+$dt = 0.1$\,s. Taking a continuous equation and stepping it forward numerically is called
+\defn{integration}, and the recipe used is the \defn{integrator}.
+
+The simplest integrator, \defn{semi-implicit Euler}, updates velocity first and then uses
+the \emph{new} velocity to update position:
+\begin{align}
+v_{k+1} &= v_k + a_k\, dt, \label{eq:euler-v}\\
+x_{k+1} &= x_k + v_{k+1} \cos\theta_{k+1}\, dt. \label{eq:euler-x}
+\end{align}
+We will use this form for hand calculations because it is exact and easy to reason about.
+The simulator itself uses a more accurate recipe (\defn{RK4}, a four-stage
+Runge--Kutta method that samples the rate of change at four points within the step and
+averages them). The distinction matters only for numerical fidelity, not for understanding.
+
+\begin{keypoint}
+A \emph{step} is $0.1$ seconds. A trajectory of ``633 steps'' lasts $63.3$ seconds. When
+we say a plan must fit in $1300$ steps, we mean $130$ seconds.
+\end{keypoint}
+
+\section{Describing the body and what counts as a crash}
+
+\subsection{The body}
+
+The robot is not a point. It is a \defn{rigid body} --- a shape that moves without
+deforming --- and here it is a rectangle of
+\[
+\text{forward extent } w = 0.5\ \text{m}, \qquad
+\text{lateral extent } \ell = 0.25\ \text{m},
+\]
+meaning $0.5$\,m long in the direction it faces and $0.25$\,m wide across.
+
+\begin{keypoint}
+Beware the naming: in the configuration file the field called \texttt{width} is the
+\emph{forward} extent and the field called \texttt{length} is the \emph{lateral} extent.
+This is inherited from the benchmark and is the reverse of most people's intuition.
+\end{keypoint}
+
+\subsection{Two derived numbers}
+
+\paragraph{Bounding radius.} The \defn{bounding radius} is the radius of the smallest circle
+centred on the body that contains it --- half the diagonal:
+\[
+r_{\mathrm{bound}} \;=\; \tfrac{1}{2}\sqrt{w^2 + \ell^2}
+\;=\; \tfrac{1}{2}\sqrt{0.5^2 + 0.25^2} \;=\; 0.2795\ \text{m}.
+\]
+Its use is as a cheap conservative filter. If two body centres are more than
+$2 r_{\mathrm{bound}}$ apart, the bodies certainly do not touch, and we can skip the
+expensive exact test. If they are closer, we must do the exact test --- they \emph{might}
+touch.
+
+\paragraph{Body diagonal.} The \defn{body diagonal} is
+\[
+d_{\mathrm{diag}} \;=\; \sqrt{w^2 + \ell^2} \;=\; \sqrt{0.5^2 + 0.25^2} \;=\; 0.5590\ \text{m},
+\]
+which is the largest centre-to-centre distance at which two of these bodies can still touch,
+achieved when both are oriented along the line joining their centres. This is the number to
+use when asking ``could these two ever conflict, whatever their headings?''
+
+Using the lateral extent $\ell = 0.25$ instead would be a serious error: it is the right
+number only for two robots passing side by side, and would declare safe a pair that is
+about to collide corner-to-corner.
+
+\subsection{Overlap versus clearance}
+
+Two bodies \defn{overlap} (collide) if they share any point. The
+\defn{surface-to-surface distance} between two non-overlapping bodies is the shortest
+distance between any point of one and any point of the other; it is $0$ when they touch.
+
+We do not merely require no overlap. We require a \defn{clearance}: the
+surface-to-surface distance must stay above $\varepsilon = 0.05$\,m at all times. This is
+strictly stronger than non-overlap, and it is the standard the method must meet. A plan that
+brings two robots within $0.0122$\,m of each other is rejected even though nothing
+technically collides.
+
+\begin{keypoint}
+``No overlap'' means the boxes do not intersect. ``Clearance $0.05$'' means there is always
+at least a $5$\,cm gap of air between them. We demand the second.
+\end{keypoint}
+
+\section{The team problem}
+
+We have $n$ robots (in our scenarios $n \in \{16, 32\}$) in a square workspace $17 \times
+17$\,m containing fixed obstacles. Robot $i$ starts at a given state and must reach a goal
+position $\mathbf{g}_i$.
+
+Our scenarios are all \defn{permutation swaps}: every robot's goal is some other robot's
+start. This is not incidental --- it makes the problem hard in a specific way. In a swap the
+place robot $A$ is trying to reach is currently occupied by robot $B$, so $B$ must leave
+before $A$ arrives. Coordination is not optional; it is the entire problem.
+
+A \defn{solution} is a set of control sequences $\mathbf{u}_i(\cdot)$ such that
+\begin{enumerate}[nosep]
+\item every robot ends within the \defn{goal radius} $r_{\mathrm{goal}} = 0.2$\,m of its
+      goal;
+\item no robot ever overlaps an obstacle;
+\item no two robots are ever closer than the clearance $\varepsilon = 0.05$\,m;
+\item the whole thing finishes within the \defn{horizon} $T_{\max} = 1300$ steps ($130$\,s).
+\end{enumerate}
+
+The \defn{makespan} is the time at which the last robot arrives --- the length of the whole
+team's plan. A plan that is collision-free but takes $2000$ steps is not a solution here,
+because the episode ends at $1300$.
+
+\bigskip\hrule\bigskip
+
+\part*{Part II --- The Geometric Vocabulary}
+\addcontentsline{toc}{part}{Part II --- The Geometric Vocabulary}
+
+This part defines the geometry the method reasons with. None of it is deep, but all of it is
+used constantly, and the terms are the ones a reader unfamiliar with the area is most likely
+to bounce off.
+
+\section{Routes, polylines, and arclength}
+
+\subsection{Polyline}
+
+A \defn{polyline} is a curve made of straight segments joined end to end, specified by its
+list of corner points (\defn{vertices}). Every route in this work is a polyline. It is a
+\emph{path}, not a trajectory: no timing yet.
+
+\subsection{Arclength}
+
+\defn{Arclength} is distance measured \emph{along the curve}, as a piece of string laid on
+it would measure --- not straight-line distance between endpoints.
+
+For a polyline with vertices $\mathbf{p}_0, \dots, \mathbf{p}_M$, the arclength from the
+start to vertex $k$ is the sum of the segment lengths up to that point:
+\[
+L_k \;=\; \sum_{j=1}^{k} \|\mathbf{p}_j - \mathbf{p}_{j-1}\|,
+\qquad L_{\mathrm{total}} = L_M .
+\]
+
+\paragraph{Worked example.} Take the polyline $(0,0) \to (3,0) \to (3,4)$. The first
+segment has length $3$, the second has length $4$, so $L_{\mathrm{total}} = 7$. The
+straight-line distance from start to end is only $\sqrt{3^2+4^2} = 5$. Arclength is $7$; the
+robot really does drive $7$\,m.
+
+\subsection{Sampling by arclength, and why not by index}
+
+To \defn{sample} a route means to pick a finite set of points along it. We sample each route
+at $m = 64$ points spaced \emph{equally by arclength}: consecutive samples are
+$L_{\mathrm{total}}/63$ apart as measured along the curve.
+
+The alternative --- taking the vertices themselves, or spacing samples equally in the
+vertex index --- is wrong for our purpose, and the example above shows why. That polyline
+has three vertices. Its middle \emph{vertex} is $(3,0)$, sitting at arclength $3$ out of
+$7$, which is $43\%$ of the way along. But the true halfway point by distance is at
+arclength $3.5$, which is $(3, 0.5)$ --- half a metre up the second segment. If one route
+is described with many vertices and another with few, index-based comparison compares
+points that are nowhere near equally far along. Arclength sampling removes that
+distortion.
+
+\subsection{Normalised progress}
+
+Having sampled by arclength, we label sample $k$ with the \defn{normalised progress}
+\[
+s_k \;=\; \frac{k}{m-1} \;\in\; [0, 1],
+\]
+so $s = 0$ is the start of the route, $s = 1$ is the goal, and $s = 0.5$ is the halfway
+point \emph{by distance travelled}. ``Normalised'' here just means rescaled to run from $0$
+to $1$ regardless of how long the route actually is.
+
+This lets us compare robots with routes of different lengths on a common footing: at the
+same $s$, each robot is the same \emph{fraction} of the way through its own journey.
+
+\subsection{What normalised progress assumes --- read this carefully}
+
+The whole point of the common $s$-grid is that we can ask ``are robots $i$ and $j$ close at
+the same $s$?'' and treat the answer as a conflict.
+
+That question is about \emph{progress}, not about \emph{time}. Two robots at the same $s$
+are equally far along their own routes, but they are not necessarily there at the same
+moment. Treating same-$s$ proximity as a conflict silently assumes that all robots advance
+along their routes at roughly comparable rates. Where that holds, the conflict set computed
+this way is a good stand-in for the true set of space-time conflicts. Where it fails --- a
+robot that must turn around first and loses $200$ steps to the turn, for instance --- the
+proxy both misses real conflicts and invents false ones.
+
+Two things keep this honest. First, the sampled route is never executed; it exists only to
+decide \emph{who contends with whom, and where}. The trajectories are continuous-time
+integrations of \eqref{eq:dyn}. Second, the finished plan is checked by simulating it, so a
+bad conflict set can produce a bad \emph{assignment}, which verification then rejects --- it
+cannot produce an unsafe accepted plan.
+
+\begin{keypoint}
+The progress grid is the one genuinely discrete, genuinely approximate step in an otherwise
+continuous pipeline. It is a conflict-detection heuristic, not the trajectory
+representation. Replacing it with a continuous space-time conflict test is the single most
+valuable improvement available.
+\end{keypoint}
+
+\section{Tangents and normals}
+
+The \defn{tangent} at a point on a curve is the unit vector pointing along the direction of
+travel. On a polyline segment from $\mathbf{p}_k$ to $\mathbf{p}_{k+1}$ it is
+\[
+\mathbf{t} \;=\; \frac{\mathbf{p}_{k+1} - \mathbf{p}_k}{\|\mathbf{p}_{k+1} - \mathbf{p}_k\|}.
+\]
+Dividing by the length makes it a \defn{unit vector} (length exactly $1$), so it carries
+direction only.
+
+A \defn{normal} is a unit vector perpendicular to the tangent. In two dimensions there are
+exactly two, pointing to either side. Writing $\mathbf{t} = (t_x, t_y)$:
+\[
+\mathbf{n}_{\mathrm{left}} = (-t_y,\ t_x),
+\qquad
+\mathbf{n}_{\mathrm{right}} = (t_y,\ -t_x).
+\]
+
+\paragraph{Worked example.} A robot heading east has $\mathbf{t} = (1,0)$. Its right-hand
+normal is $(0,-1)$, which points south. Displacing it ``to its right'' moves it south ---
+correct, since south is on the right of someone facing east. A robot heading north has
+$\mathbf{t} = (0,1)$ and right-hand normal $(1,0)$, pointing east. Both robots, pushed to
+their own right, end up circulating the same way around a point between them. This
+observation is the entire roundabout device of Section~\ref{sec:orbit}.
+
+\paragraph{World frame versus body frame.} A \defn{world-frame} direction is fixed relative
+to the map (``north''). A \defn{body-frame} direction is relative to the robot (``the
+robot's left''). Two robots facing opposite ways have opposite body-frame lefts but the same
+world-frame north. Getting this wrong is a real and easy bug: displacing two head-on robots
+each ``to its own left'' pushes them both to the \emph{same} side of the road, into each
+other.
+
+\section{Graphs}
+
+A \defn{graph} is a set of \defn{nodes} with \defn{edges} joining some pairs. Here nodes are
+robots and an edge means ``these two contend for space''; the result is the
+\defn{conflict graph}.
+
+A \defn{connected component} is a maximal group of nodes reachable from one another by
+following edges. Robots in different components never interact, so each component is
+coordinated independently. Note that components grow by \emph{transitivity}: if $A$
+conflicts with $B$ and $B$ with $C$, then $A$, $B$, $C$ are one component even if $A$ and
+$C$ never come near each other. This will matter.
+
+A \defn{graph colouring} assigns a label (``colour'') to each node such that no edge joins
+two nodes of the same colour. We use \defn{greedy colouring}: process nodes in order of
+decreasing \defn{degree} (number of edges), giving each the lowest-numbered colour not
+already used by a neighbour. It is fast and gives no guarantee of using the fewest possible
+colours --- adequate here, because a colour is a lane and we merely need conflicting robots
+in different lanes.
+
+\bigskip\hrule\bigskip
+
+\part*{Part III --- The Method}
+\addcontentsline{toc}{part}{Part III --- The Method}
+
+\section{The idea, and why it is different}
+
+The standard approach to multi-robot planning with dynamics is: plan each robot separately;
+check for conflicts; where two trajectories conflict, add a constraint and \emph{ask a
+planner for a new trajectory}. The planner might be a trajectory optimiser (a numerical
+solver that adjusts a whole trajectory to minimise a cost subject to constraints), a
+sampling-based planner (which grows a random tree of reachable states), or a joint solve
+over several robots at once. Methods differ in which planner and which constraints, but the
+unit of work is always ``find me a trajectory''.
+
+That question is expensive, and the number of times it is asked grows with the number of
+conflicts, which grows with density. In our own reimplementation of a state-of-the-art
+ladder of such methods, a $32$-robot instance consumed over $300$ solver calls and a
+$1800$-second budget and still returned nothing.
+
+Our claim is that at high density the cheaper question is \emph{``what is the
+coordination?''} --- and that the answer is already visible in the shape of the conflict
+graph.
+
+\paragraph{The traffic analogy.} A traffic engineer facing a two-way street does not compute
+a trajectory per car. They paint a line and assign a side. Facing a junction where many
+roads meet at one point, they do not resolve crossings pairwise; they build a roundabout and
+impose one circulation direction. Both are \emph{conventions} fixed before anyone moves, and
+each exploits a structural fact: in the first case the conflict is a two-sided encounter, in
+the second many routes converge on one place.
+
+Our method reads which of these two situations each conflict component is in, applies the
+matching convention, and derives the trajectories analytically.
+
+\section{Overview of the pipeline}
+
+\begin{algorithm}[h]
+\caption{Conflict-derived constructive planning}
+\begin{algorithmic}[1]
+\State Build a \textbf{reference route} per robot; sample it by arclength (Sec.~\ref{sec:refs})
+\State Build the \textbf{conflict graph} from route proximity (Sec.~\ref{sec:cgraph})
+\ForAll{connected components $C$}
+  \If{$C$ is a \textbf{junction}} \Comment{Sec.~\ref{sec:device}}
+    \State give every member a right-hand \textbf{orbit} \Comment{Sec.~\ref{sec:orbit}}
+  \Else
+    \State give every member a \textbf{lane} \Comment{Sec.~\ref{sec:lane}}
+  \EndIf
+\EndFor
+\State Displace and simplify routes (Sec.~\ref{sec:simplify})
+\State Turn each route into a \textbf{trajectory} of rest-to-rest legs (Sec.~\ref{sec:legs})
+\State Choose a \textbf{departure delay} per robot by insertion (Sec.~\ref{sec:sched})
+\State \textbf{Verify} by simulation; commit only if it passes (Sec.~\ref{sec:verify})
+\end{algorithmic}
+\end{algorithm}
+
+No step calls an optimiser or a sampling planner. Steps 1--8 are geometry, graph algorithms,
+and closed-form profiles.
+
+\section{Step 1: Reference routes}
+\label{sec:refs}
+
+Each robot gets a \defn{reference route}: a rough polyline from its start to its goal,
+sampled at $64$ points by arclength as in Part II.
+
+If an obstacle-free kinematic path is available we use it. Otherwise the reference is simply
+the straight segment from start to goal. In an empty workspace these coincide, since the
+straight line \emph{is} the best route.
+
+The reference is not a plan and is never driven. Its only job is to answer: which robots
+contend, and at what progress along each route does the contention happen?
+
+\section{Step 2: The conflict graph}
+\label{sec:cgraph}
+
+Robots $i$ and $j$ get an edge when their references come within
+$d_{\mathrm{diag}} + \varepsilon = 0.559 + 0.05 = 0.609$\,m at the same normalised progress:
+\[
+\min_{k} \ \bigl\| \mathbf{r}_i(s_k) - \mathbf{r}_j(s_k) \bigr\| \;<\; d_{\mathrm{diag}} + \varepsilon .
+\]
+
+The threshold is the body diagonal, not the lateral extent, for the reason given in
+Part~I: two rectangles can touch with centres a diagonal apart. A pair missed here never
+receives any coordination assignment at all, so this test must be conservative.
+
+\section{Step 3: Choosing the device}
+\label{sec:device}
+
+Here is the central mechanism. For each connected component $C$ with at least three
+members, collect the \defn{closest-approach midpoint} of every conflicting pair inside it:
+for pair $(i,j)$, find the progress index $k$ at which the two routes are nearest, and take
+the midpoint of the two route points there. Call this set $H(C)$.
+
+Now ask: \emph{do all these meeting points sit in essentially one place?} Formally, with
+$\bar{h}$ the mean of $H(C)$,
+\begin{equation}
+C \text{ is a \defn{junction}} \iff
+\max_{h \in H(C)} \|h - \bar{h}\| \;<\; d_{\mathrm{diag}} + \varepsilon .
+\label{eq:hub}
+\end{equation}
+
+\begin{itemize}
+\item \textbf{Spread out} $\Rightarrow$ the component is several distinct crossings that
+merely happen to be linked through shared members. Give it \textbf{lanes}.
+\item \textbf{All in one place} $\Rightarrow$ the component is a junction: every route
+passes through one point. Give it a \textbf{roundabout}.
+\end{itemize}
+
+Components of size two are never junctions --- a lane already separates two robots.
+
+\paragraph{Why a lane cannot do a junction's job.} A lane is a \emph{two-sided} device. It
+resolves an encounter by putting one robot on each side of it. There are exactly two sides.
+If thirty-two routes pass through one point, no assignment of two sides separates them; it
+is not a matter of choosing better sides. Before the junction device existed, our scheduler
+could seat only $1$ of $32$ robots on such a scenario, and no amount of scheduling could
+have fixed it.
+
+\begin{keypoint}
+Two robots crossing: paint a line, one each side. Thirty-two routes through one point:
+build a roundabout. The test in \eqref{eq:hub} is just ``are all the meeting points on top
+of each other?''
+\end{keypoint}
+
+\section{Step 4a: The lane device}
+\label{sec:lane}
+
+\subsection{Which side: colouring}
+
+Greedy-colour the conflict graph so conflicting robots get different colours. Colour index
+$c \in \{0, \dots, L-1\}$ becomes a signed offset about the route centre line:
+\[
+\Delta_c \;=\; \Bigl(c - \tfrac{L-1}{2}\Bigr)\, p ,
+\]
+where $p$ is the \defn{lane pitch} (centre-to-centre spacing between adjacent lanes). With
+$L=2$ and $p=0.5$ the offsets are $-0.25$ and $+0.25$: one robot a quarter-metre left of
+the centre line, the other a quarter-metre right.
+
+\subsection{Which direction is ``sideways'': the lane axis}
+
+An offset needs a direction. We compute one \defn{lane axis} shared by everyone in the
+group, in the \emph{world frame}.
+
+Collect the tangents $\mathbf{t}_1, \dots, \mathbf{t}_K$ of the group's members at their
+contested stretches, and form the $2\times2$ matrix
+\[
+\mathbf{M} \;=\; \sum_{k} \mathbf{t}_k \mathbf{t}_k^{\!\top}.
+\]
+This is a \defn{covariance-like scatter matrix}: it summarises which direction the tangents
+mostly point along. Its \defn{eigenvectors} are the two perpendicular directions in which
+this scatter is purely stretched, and the \defn{eigenvalue} attached to each says how much
+scatter lies along it. Taking the eigenvector with the \emph{largest} eigenvalue gives the
+dominant direction of travel $\mathbf{d}$; the lane axis is its normal $(-d_y, d_x)$.
+
+\begin{keypoint}
+``Eigendecomposition of the tangent scatter'' means: look at all the directions these robots
+are travelling, and find the single line that best represents them. Sideways is
+perpendicular to that line.
+\end{keypoint}
+
+Two robots meeting head-on have tangents differing by $180^\circ$. The matrix
+$\mathbf{t}\mathbf{t}^{\!\top}$ is unchanged if $\mathbf{t}$ is negated, so both contribute
+the same thing and the axis comes out along the road --- which is what we want. Using each
+robot's own body-frame normal instead would flip with heading and push both robots to the
+same side; we made exactly that mistake, and it produced $944$ collisions.
+
+\subsection{Splitting a component by direction}
+
+One axis per connected component is right when the component \emph{is} one encounter. It
+stops being right when the component has grown by transitivity into a group of robots
+travelling in unrelated directions --- then the ``dominant direction'' is an average of
+things that should not be averaged, and displacing everyone along its normal separates
+nobody.
+
+So we split a component into groups of similar heading before computing an axis. Orientation
+is taken \defn{modulo $\pi$} --- that is, directions $180^\circ$ apart are treated as the
+same orientation --- so a head-on pair stays together and keeps the shared axis its opposite
+lane signs depend on, while genuinely perpendicular encounters are separated.
+
+\subsection{How many lanes actually fit}
+
+The colouring can ask for more lanes than the map holds, and this is a real failure mode
+rather than a hypothetical one.
+
+Let $\rho$ be the closest a robot's route comes to a route it does \emph{not} contend with
+--- typically the neighbouring corridor. The room available for sideways displacement is
+\[
+\rho' \;=\; \rho - (\ell + \varepsilon),
+\]
+subtracting the body width plus clearance that must remain free. We then cap the number of
+lanes and compress the pitch only when the nominal width does not fit:
+\[
+L \;=\; \min\!\Bigl(L_{\mathrm{colour}},\ \Bigl\lfloor \tfrac{\rho'}{\ell + \varepsilon} \Bigr\rfloor + 1 \Bigr),
+\qquad
+p \;=\; \min\!\Bigl(p_{\mathrm{nominal}},\ \tfrac{\rho'}{L-1}\Bigr).
+\]
+
+\paragraph{Worked example.} Rows $1.0$\,m apart, body lateral extent $0.25$, clearance
+$0.05$. Then $\rho' = 1.0 - 0.30 = 0.70$\,m of room, and at most
+$\lfloor 0.70/0.30 \rfloor + 1 = 3$ lanes fit. If the colouring demands $4$ lanes at the
+nominal pitch $0.5$\,m, the outermost offsets would be $\pm 0.75$\,m --- spanning $1.5$\,m
+inside a $1.0$\,m corridor. Those robots would be pushed into the neighbouring row, and the
+device would \emph{manufacture} conflicts rather than resolve them. Capping to $3$ lanes at
+pitch $0.35$\,m keeps the span at $0.70$\,m, exactly the room available.
+
+\subsection{Applying the offset}
+
+The displacement is applied over the stretch of route where the robot is contended, ramped
+in and out (\defn{tapered}) so that the start and goal points are untouched. The window is
+padded generously: two robots traverse their routes at different rates, so a narrow bulge
+can be entered at different times by the two partners, leaving both back on the centre line
+when they actually meet. We observed exactly this --- a correct $\pm 0.25$\,m lane
+assignment and a dead-centre collision anyway.
+
+If the assigned lane is blocked by an obstacle, the robot \defn{changes lane}: every lane
+position is tried, nearest to the assigned one first. The tempting alternative --- widening
+the blocked offset --- searches in the wrong direction, since blocked robots are usually in
+the outermost lane already and the free space is inboard. Falling back to the centre line is
+worse still: that is where the head-on partner is, and it converts a spatial problem into a
+timing problem, which is the expensive kind.
+
+\section{Step 4b: The roundabout device}
+\label{sec:orbit}
+
+For a junction component with centre $\bar{h}$, \emph{every member is displaced to its own
+right}, onto a ring of radius
+\begin{equation}
+\rho_{\mathrm{ring}} \;=\; \frac{|C| \, (d_{\mathrm{diag}} + \varepsilon)}{2\pi}.
+\label{eq:ring}
+\end{equation}
+
+\paragraph{Where \eqref{eq:ring} comes from.} In the worst case all $|C|$ robots are on the
+ring simultaneously. They sit on a circle of circumference $2\pi\rho$, and each needs
+$d_{\mathrm{diag}} + \varepsilon$ of arc to itself. Requiring
+$2\pi\rho \ge |C|(d_{\mathrm{diag}} + \varepsilon)$ and solving for $\rho$ gives
+\eqref{eq:ring}. It is the smallest ring on which the whole component fits.
+
+\paragraph{Worked example.} With $d_{\mathrm{diag}} + \varepsilon = 0.609$\,m:
+\[
+|C| = 16 \Rightarrow \rho_{\mathrm{ring}} = \frac{16 \times 0.609}{2\pi} = 1.551\ \text{m},
+\qquad
+|C| = 32 \Rightarrow \rho_{\mathrm{ring}} = \frac{32 \times 0.609}{2\pi} = 3.102\ \text{m}.
+\]
+
+\paragraph{Why ``own right'' and not a shared axis.} This is the exact opposite of the lane
+case, and the contrast is the heart of the method. For a lane, a \emph{shared} axis is
+essential: it is what makes ``opposite signs'' mean ``opposite sides of the road''. For a
+junction, a shared axis is meaningless, because ``the same side'' of a point is a different
+direction depending on which way you approach it. As computed in Part~II, a robot heading
+east displaced to its right goes south of the centre; a robot heading north displaced to its
+right goes east of it. Follow that rule for every robot and the whole component circulates
+the same way --- a roundabout emerges, without anyone being told which way to go round.
+
+Because the circulation is collective, mirroring is available to a lane as a fallback but
+never to an orbit: sending one member the other way round puts it head-on into the entire
+circulation.
+
+\paragraph{A counter-intuitive fact.} One might size the ring generously for safety. Doing
+so makes matters \emph{worse}: at scale $1.0$ (the geometric minimum) all $32$ robots can be
+scheduled, while at $1.3$ only $21$ can and at $2.0$ only $18$. A wider ring is a longer
+detour through the same congested annulus, so the extra room costs more time in the
+contested region than the separation buys. The minimum is also the optimum.
+
+\section{Step 5: Simplifying the route}
+\label{sec:simplify}
+
+The displaced route has $64$ closely spaced points. Driving it literally would mean $64$
+tiny legs. We reduce it to its essential corners with the \defn{Douglas--Peucker}
+algorithm: draw a chord from the first point to the last; find the point furthest from that
+chord; if that distance exceeds a tolerance, keep the point and recurse on the two halves;
+otherwise discard everything between. What survives is the set of points needed to represent
+the curve to within the tolerance.
+
+The obvious alternative --- delete any point whose turn angle is below a threshold --- is
+unusable here, and instructively so. A lane displacement is \emph{gradual} by construction:
+spread over dozens of samples, its per-step turn is tiny everywhere. An angle threshold
+therefore deletes the entire lane bulge and puts the robot back on the collision course the
+lane was created to avoid. Douglas--Peucker measures deviation from the chord, which is
+exactly the quantity a lane is made of, so it preserves it.
+
+\section{Step 6: From route to trajectory}
+\label{sec:legs}
+
+Now we attach timing, and this is where the dynamics finally enter.
+
+Each remaining waypoint is reached by one \defn{leg} in two phases:
+\begin{enumerate}[nosep]
+\item \textbf{turn in place} to face the next waypoint, starting and ending at rest;
+\item \textbf{drive straight} to it, starting and ending at rest.
+\end{enumerate}
+This is called \defn{rest-to-rest}: every phase begins and ends stationary.
+
+\subsection{The trapezoidal profile}
+
+Each phase is one-dimensional: rotate through angle $\Delta\theta$, or translate through
+distance $d$, starting and ending at rest, respecting an acceleration bound $\bar{a}$ and a
+velocity bound $\bar{v}$.
+
+\paragraph{Triangular case.} Accelerate at $a$ for $n$ steps, then decelerate at $-a$ for
+$n$ steps. Under semi-implicit Euler \eqref{eq:euler-v}--\eqref{eq:euler-x}, the distance
+covered while accelerating from rest is
+\[
+\sum_{k=1}^{n} (k\,a\,dt)\,dt \;=\; a\,dt^2\,\frac{n(n+1)}{2},
+\]
+and while decelerating symmetrically it is $a\,dt^2\,\frac{n(n-1)}{2}$. Adding them, the
+cross terms cancel neatly:
+\begin{equation}
+d \;=\; a\,dt^2\,n^2 .
+\label{eq:tri}
+\end{equation}
+So the smallest feasible $n$ is $\lceil \sqrt{d/(dt^2\bar{a})}\,\rceil$, and $a$ follows from
+\eqref{eq:tri}. Peak speed is $n\,a\,dt$; if that exceeds $\bar{v}$ we need the next case.
+
+\paragraph{Trapezoidal case.} Accelerate for $n_u$ steps to exactly $\bar{v}$, \defn{cruise}
+at constant speed for $m$ steps, then decelerate for $n_u$ steps. Here
+$n_u = \lceil \bar{v}/(\bar{a}\,dt) \rceil$ and the same bookkeeping gives
+\begin{equation}
+d \;=\; a\,dt^2\,n_u\,(n_u + m).
+\label{eq:trap}
+\end{equation}
+Solving for $m$ gives the cruise length. The name is from the velocity-versus-time plot:
+up, flat, down --- a trapezoid. Omitting the cruise phase, as our first implementation did,
+forces the whole distance into a triangle and is dramatically slower.
+
+\paragraph{Worked example: driving $15$\,m.} With $dt = 0.1$, $\bar{a} = 0.25$,
+$\bar{v} = 0.5$. The triangular solution needs $n = \lceil\sqrt{15/0.0025}\,\rceil = 78$
+steps, giving peak speed $78 \times 0.2465 \times 0.1 = 1.92$\,m/s --- far over the
+$0.5$ bound, so it is infeasible. The trapezoid uses
+$n_u = \lceil 0.5/0.025 \rceil = 20$ steps to reach $0.5$\,m/s, then from \eqref{eq:trap}
+$m = 280$ cruise steps, then $20$ to stop: \textbf{$320$ steps} ($32$\,s) at exactly
+$a = 0.25$ and peak speed exactly $0.5$. Integrating the resulting control sequence gives
+$15.000000$\,m and a final speed of $-2.8\times10^{-17}$, i.e.\ exactly at rest.
+
+\paragraph{Worked example: turning $180^\circ$.} Same arithmetic with
+$\Delta\theta = \pi$, $\bar{a} = \alpha_{\max} = 0.25$, $\bar{v} = \omega_{\max} = 0.5$
+gives $20 + 43 + 20 = \textbf{83 steps}$ ($8.3$\,s), integrating to exactly $180.0000^\circ$.
+A robot that starts facing away from its goal spends $8.3$ seconds just turning round.
+
+\subsection{Why the two phases are separated --- and what it costs}
+
+Splitting each leg into turn-then-drive has two justifications.
+
+First, it makes the closed form possible. During the turn $v = 0$, so position does not
+change; during the drive $\omega = 0$, so heading does not change. The two one-dimensional
+profiles are therefore completely decoupled, and each is exactly solvable. If both
+accelerations fire together, the equations couple --- the heading changes while the robot
+translates, so the traversed path curves --- and hitting an exact waypoint becomes a
+\defn{two-point boundary value problem}, which is precisely the kind of thing a numerical
+optimiser is needed for. Avoiding that call is the entire point of the method.
+
+Second, it guarantees that the path actually driven \emph{is} the polyline on which all the
+lane and clearance reasoning was done. If the robot arcs through corners it leaves its lane,
+and the clearance argument no longer applies to the thing being executed.
+
+The cost is real and we measure it: across our scenarios, \emph{zero} control steps out of
+tens of thousands have both $a \ne 0$ and $\alpha \ne 0$; $21$--$33\%$ of moving steps are
+spent turning in place; robots come to a full stop $3$--$6$ times mid-route; and the
+resulting horizon is $1.70$--$2.08\times$ a cruise-limited lower bound for the same path.
+
+\subsection{Could both fire at once? Yes --- but the robot fights back}
+
+Nothing in \eqref{eq:dyn} forbids simultaneous $a$ and $\alpha$. The obstacle is the
+turning-radius coupling from Part~I: cornering on radius $\rho$ requires
+$v \le \omega_{\max}\rho$. Our lanes are $0.35$--$0.50$\,m wide, so cornering \emph{inside a
+lane} demands
+\[
+v \;\le\; 0.5 \times 0.35 \;=\; 0.175\ \text{m/s},
+\]
+about a third of top speed. A robot simply cannot corner at speed within its own lane; it
+must slow down substantially either way.
+
+There is nonetheless clear headroom at the small end. Many turns are not real corners at
+all but artefacts of route simplification --- in one scenario the median turn is
+$6.7^\circ$, and $62\%$ of turns are under $30^\circ$. Coming to a complete stop to rotate
+by seven degrees is plainly wasteful. Steering through small turns while driving, and
+keeping stop-and-go for genuine corners, would recover much of the penalty: the lateral
+deviation from the chord for a turn $\delta$ over a leg of length $L$ is roughly $L\delta/8$
+--- about $0.05$\,m for $7^\circ$ over $5$\,m, comfortably inside a lane, so the clearance
+argument survives. This is the clearest improvement available and is not yet implemented.
+
+\section{Step 7: Scheduling departures}
+\label{sec:sched}
+
+Lanes are spatial and can be decided from routes alone. \emph{When} each robot sets off
+cannot: two robots share a place only if they are there at the same time, and how long a leg
+takes is known only once the leg is built. So scheduling happens last, on the finished
+trajectories.
+
+Each robot gets a \defn{departure delay} $\delta_i$ --- it sits still at its start for
+$\delta_i$ steps, then executes its trajectory.
+
+\subsection{Insertion}
+
+We place robots one at a time. For each, we try delays $0, 5, 10, \dots$ and take the
+\emph{smallest} that keeps it clear of every robot already placed. Because we only ever test
+against already-committed trajectories, the schedule is correct \emph{by construction}; we
+never need to re-detect conflicts and patch them, an approach we tried and abandoned
+because applying a shift changes who meets whom, invalidating the very detection that
+prompted it.
+
+\paragraph{Occupancy includes standing still.} When testing two robots we compare their
+positions over the whole span, treating a robot as sitting at its start before it departs
+and at its goal forever after it arrives. Omitting the tail permits a plan in which a robot
+parks precisely where a later robot needs to drive; we observed $79$ such collisions before
+fixing this.
+
+\subsection{Why greedy insertion gets stuck}
+
+Insertion's only lever is delay --- it can make a robot go \emph{later}, never earlier. In a
+permutation swap this is sometimes exactly backwards: robot $A$'s goal is robot $B$'s start,
+so $B$ must be \emph{gone before} $A$ arrives. If $B$ is placed late in the order and all
+small delays are taken, its only available move --- waiting longer --- makes things worse,
+and the run dead-ends with no way back.
+
+Two targeted repairs address this. Both are held back rather than applied first, for a
+reason worth stating: each widens the set of feasible schedules, and so changes which
+schedule the procedure returns first --- and the rescued schedule is not necessarily the
+better one. We observed a repair ``fix'' a scenario by returning a plan using the entire
+$1300$-step budget where the unrepaired procedure had been finding one of $1212$ steps. So:
+try everything without repairs first, then allow repairs.
+
+\paragraph{Repair 1: precedence from resting places.} Robot $r$ is ordered before $q$ if
+$q$'s goal lies on $r$'s route (so $q$, once parked, would block $r$), or if $r$'s start lies
+on $q$'s route (so $r$ must clear out before $q$ arrives). Swaps produce two-cycles --- each
+partner's goal is the other's start --- which is not a contradiction, since both simply
+leave early; cycles are broken by route length, and mutual partners kept adjacent in the
+order.
+
+\paragraph{Repair 2: single-blocker eviction.} If a robot cannot be seated at any delay, find
+the delay at which it is \emph{least} obstructed. If exactly one already-placed robot stands
+in the way there, evict that robot, seat the stranded one, and re-queue the evicted robot.
+Each robot may be evicted a bounded number of times, which keeps the procedure finite. This
+is one level of backtracking, aimed at a specific measured failure, not a general search.
+
+\subsection{Honest status}
+
+Insertion scheduling is \defn{greedy} --- it commits to each decision without reconsidering
+--- and offers no \defn{completeness} guarantee: it may fail on instances that do have
+solutions. The repairs narrow the gap; they do not close it.
+
+\section{Step 8: Verification, and the safety contract}
+\label{sec:verify}
+
+The assembled plan is checked by the simulator's own collision routines, not by the
+planner's internal model: every pair of robots at every shared time index, every robot
+against every obstacle, every final position against the true goal radius, and the total
+length against the horizon. If anything fails, the construction returns nothing, along with
+a machine-readable reason.
+
+This gives a useful contract. Because nothing is committed that has not passed the real
+checker, the construction can be installed \emph{ahead} of a conventional solver ladder as a
+zeroth rung. If it succeeds, the expensive machinery is never entered. If it fails, the
+ladder runs exactly as it would have. It can add solutions; it cannot remove one. A wrong
+coordination guess costs one construction and nothing else.
+
+\section{Summary of the argument}
+
+\begin{enumerate}
+\item Collision is a property of trajectories, not paths, and a robot with bounded
+acceleration cannot stop or turn freely --- so coordination cannot be an afterthought.
+\item Conventional methods resolve each conflict by asking a planner for a new trajectory.
+That question is expensive and is asked once per conflict, so the cost grows with density.
+\item The shape of the conflict graph already says what kind of coordination is needed.
+Scattered crossings want lanes; routes converging on a point want a roundabout. The test is
+just whether the pairwise meeting points are on top of one another.
+\item These two devices are not interchangeable, and their rules are opposites: a lane needs
+one \emph{shared} axis for the whole group; a roundabout needs each robot displaced along its
+\emph{own} right-hand normal.
+\item Once the device is chosen, trajectories follow in closed form --- trapezoidal profiles
+under the true bounds --- with no solver.
+\item Timing is settled last, by inserting robots one at a time at the least delay that
+keeps them clear.
+\item Everything is checked by simulation before it is believed, so the construction is safe
+to bolt onto an existing planner.
+\end{enumerate}
+
+\section*{Known weaknesses, stated plainly}
+
+\begin{itemize}
+\item \textbf{The progress grid is discrete and approximate.} Conflicts are found by
+comparing robots at equal \emph{progress}, which assumes comparable rates of advance.
+Replacing it with a continuous space-time conflict test is the most valuable single
+improvement available.
+\item \textbf{Controls are interleaved.} Linear and angular acceleration never fire
+together, costing $1.70$--$2.08\times$ the cruise-limited bound. The fix for small turns is
+identified and unimplemented; large turns are genuinely constrained by the robot's
+turning-radius coupling.
+\item \textbf{The scheduler is greedy and incomplete.}
+\item \textbf{Only two devices exist.} A component whose lane demand exceeds its corridor
+capacity has no device that fits, and we have one benchmark scenario in exactly that
+position.
+\end{itemize}
+
+\end{document}
