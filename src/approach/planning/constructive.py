@@ -450,71 +450,87 @@ def plan(env, params, clearance=0.05, guides=None):
     tracks = [b[0] for b in base]
     ctrls = [b[1] for b in base]
 
-    # --- GROUPS: temporal, from the constructed trajectories -----------------------------
-    # Scheduling is over CONFLICTS, not over robots. The two robots of a swap must move at
-    # the same time -- one's goal is the other's start, so holding one of them parks it
-    # exactly where its partner is heading. Lanes are what separate partners; groups are
-    # what separate one conflict from another. Colouring robots individually reintroduces
-    # the collision it was meant to remove (176 robot hits on open_cross_32).
-    left = _traj_conflicts(tracks, radii, clearance)
+    # --- GROUPS: temporal, and iterated to a fixed point -------------------------------
+    # Scheduling is over CONFLICTS, not robots: the two robots of a swap must move at the
+    # same time, since one's goal is the other's start and holding one parks it exactly
+    # where its partner is heading. Lanes separate partners; groups separate one conflict
+    # from another.
+    #
+    # The subtlety is that shifting a group CHANGES which robots meet. Detecting conflicts
+    # once on the unheld trajectories and then applying holds invalidates the very
+    # detection the holds were derived from -- measured on cluttered_cross_16 as 280
+    # collisions between robots that are both MOVING (none parked), surviving even the
+    # largest offset. So re-detect at the shifted timing and accumulate: the conflict graph
+    # only grows, so this terminates.
     pair_of: dict = {}
     for pi, (i, j) in enumerate(pairs):
-        pair_of[i] = pair_of.get(i, pi)
-        pair_of[j] = pair_of.get(j, pi)
-    adj: dict = {pi: set() for pi in range(len(pairs))}
-    intra = 0
-    for (i, j), _k in left.items():
-        pi, pj = pair_of.get(i), pair_of.get(j)
-        if pi is None or pj is None or pi == pj:
-            intra += 1          # partners still touching: the LANE failed, not the schedule
-            continue
-        adj[pi].add(pj)
-        adj[pj].add(pi)
-    gcol = _colour(range(len(pairs)), adj)
-    group_of = {i: gcol.get(pair_of.get(i, -1), 0) for i in range(n)}
-    ngroups = max(gcol.values()) + 1 if gcol else 1
-    # How far apart to stagger the groups. The last contested index is an upper bound,
-    # not the answer: on the open cross it derives 456 where 220 already separates
-    # everyone, and those 236 extra steps are horizon the budget cannot spare. Serialising
-    # is exactly what is being bought here, so buy the least of it that works -- try
-    # increasing offsets and keep the first that verifies.
-    cross = [k for (i, j), k in left.items()
-             if pair_of.get(i) is not None and pair_of.get(i) != pair_of.get(j)]
-    forced = int(params.get("group_offset", 0))
-    hi = forced or (max(cross) + 2 if cross else 0)
-    cands = [hi] if (forced or hi == 0) else sorted(
-        {max(1, hi // 4), max(1, hi // 2), max(1, 3 * hi // 4), hi})
+        pair_of.setdefault(i, pi)
+        pair_of.setdefault(j, pi)
 
-    best, last = None, {}
-    for off in cands:
-        held, held_u = [], []
-        for i in range(n):
-            hold = off * int(group_of.get(i, 0))
-            if hold:
-                held.append(np.vstack([np.repeat(starts[i][None, :], hold, axis=0),
-                                       tracks[i]]))
-                held_u.append(np.vstack([np.zeros((hold, 2)), ctrls[i]]))
+    def _hold(off, gof):
+        out_t, out_u = [], []
+        for r in range(n):
+            h = off * int(gof.get(r, 0))
+            if h:
+                out_t.append(np.vstack([np.repeat(starts[r][None, :], h, axis=0),
+                                        tracks[r]]))
+                out_u.append(np.vstack([np.zeros((h, 2)), ctrls[r]]))
             else:
-                held.append(tracks[i])
-                held_u.append(ctrls[i])
-        T = max(len(t) for t in held)
-        ct = [np.vstack([t, np.repeat(t[-1][None, :], T - len(t), axis=0)])
-              if len(t) < T else t for t in held]
-        cu = [np.vstack([c, np.zeros((T - len(c), 2))]) if len(c) < T else c
-              for c in held_u]
-        rep: dict = {}
-        gap = _verify(env, ct, clearance, rep)
-        last = rep
-        if gap is not None:
-            best = (ct, cu, off, gap, T)
+                out_t.append(tracks[r])
+                out_u.append(ctrls[r])
+        H = max(len(t) for t in out_t)
+        return ([np.vstack([t, np.repeat(t[-1][None, :], H - len(t), axis=0)])
+                 if len(t) < H else t for t in out_t],
+                [np.vstack([c, np.zeros((H - len(c), 2))]) if len(c) < H else c
+                 for c in out_u], H)
+
+    edges: set = set()
+    intra = 0
+    best, last = None, {}
+    forced = int(params.get("group_offset", 0))
+    for _ in range(int(params.get("schedule_iters", 5))):
+        adj: dict = {pi: set() for pi in range(len(pairs))}
+        for a, b in edges:
+            adj[a].add(b)
+            adj[b].add(a)
+        gcol = _colour(range(len(pairs)), adj)
+        group_of = {r: gcol.get(pair_of.get(r, -1), 0) for r in range(n)}
+        ngroups = max(gcol.values()) + 1 if gcol else 1
+
+        probe = _traj_conflicts(tracks, radii, clearance)
+        cross = [k for (a, b), k in probe.items()
+                 if pair_of.get(a) is not None and pair_of.get(a) != pair_of.get(b)]
+        hi = forced or (max(cross) + 2 if cross else 0)
+        cands = [hi] if (forced or hi == 0) else sorted(
+            {max(1, hi // 4), max(1, hi // 2), max(1, 3 * hi // 4), hi})
+
+        found = None
+        for off in cands:
+            ct, cu, H = _hold(off, group_of)
+            rep: dict = {}
+            gap = _verify(env, ct, clearance, rep)
+            last = rep
+            if gap is not None:
+                found = (ct, cu, off, gap, H, ngroups)
+                break
+            # What is still touching AT THIS TIMING is what the next round must schedule.
+            for (a, b), _k in _traj_conflicts(ct, radii, clearance).items():
+                pa, pb = pair_of.get(a), pair_of.get(b)
+                if pa is None or pb is None:
+                    continue
+                if pa == pb:
+                    intra += 1
+                else:
+                    edges.add((pa, pb))
+        if found:
+            best = found
             break
 
     if best is None:
         if isinstance(params, dict):
             params.setdefault("_reject", {}).update(last)
         return None
-    tracks, ctrls, offset, gap, T = best
+    tracks, ctrls, offset, gap, T, ngroups = best
     info = {"pairs": len(pairs), "lanes": lanes, "groups": ngroups, "lane_failures": intra,
-            "offset": offset, "tried": len(cands), "steps": T,
-            "min_surface_gap": round(float(gap), 4)}
+            "offset": offset, "steps": T, "min_surface_gap": round(float(gap), 4)}
     return tracks, ctrls, info
