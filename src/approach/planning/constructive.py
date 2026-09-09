@@ -383,7 +383,10 @@ def plan(env, params, clearance=0.05, guides=None):
 
     # --- LANES: spatial, from the routes ------------------------------------------------
     refs = _references(starts, goals, guides)
-    pairs = _conflict_pairs(refs, lat + clearance)
+    # Two BOXES can touch with their centres a body diagonal apart, not a lateral extent
+    # apart, and a route pair missed here is a pair that never gets a lane.
+    diag = float(np.hypot(float(getattr(sh, "width", 2 * radii[0])), lat))
+    pairs = _conflict_pairs(refs, diag + clearance)
     if not pairs:
         return None
     side = _sides(n, pairs)
@@ -462,10 +465,20 @@ def plan(env, params, clearance=0.05, guides=None):
     # collisions between robots that are both MOVING (none parked), surviving even the
     # largest offset. So re-detect at the shifted timing and accumulate: the conflict graph
     # only grows, so this terminates.
+    # Every robot needs a schedulable identity, not just those in a route pair. A robot
+    # whose route never came within the pairing radius can still COLLIDE -- guides bend
+    # around obstacles, so paths that look clear on the reference can meet in time -- and
+    # with no pair id it was dropped from the conflict graph entirely and could never be
+    # scheduled away. Singletons close that hole; they carry no lane, only a slot.
     pair_of: dict = {}
     for pi, (i, j) in enumerate(pairs):
         pair_of.setdefault(i, pi)
         pair_of.setdefault(j, pi)
+    groups_n = len(pairs)
+    for r in range(n):
+        if r not in pair_of:
+            pair_of[r] = groups_n
+            groups_n += 1
 
     def _hold(off, gof):
         out_t, out_u = [], []
@@ -489,11 +502,11 @@ def plan(env, params, clearance=0.05, guides=None):
     best, last = None, {}
     forced = int(params.get("group_offset", 0))
     for _ in range(int(params.get("schedule_iters", 5))):
-        adj: dict = {pi: set() for pi in range(len(pairs))}
+        adj: dict = {pi: set() for pi in range(groups_n)}
         for a, b in edges:
             adj[a].add(b)
             adj[b].add(a)
-        gcol = _colour(range(len(pairs)), adj)
+        gcol = _colour(range(groups_n), adj)
         group_of = {r: gcol.get(pair_of.get(r, -1), 0) for r in range(n)}
         ngroups = max(gcol.values()) + 1 if gcol else 1
 
@@ -516,8 +529,6 @@ def plan(env, params, clearance=0.05, guides=None):
             # What is still touching AT THIS TIMING is what the next round must schedule.
             for (a, b), _k in _traj_conflicts(ct, radii, clearance).items():
                 pa, pb = pair_of.get(a), pair_of.get(b)
-                if pa is None or pb is None:
-                    continue
                 if pa == pb:
                     intra += 1
                 else:
