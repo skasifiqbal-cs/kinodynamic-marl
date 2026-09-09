@@ -536,3 +536,152 @@ read or a closed-form calculation would have answered the question.
 (§V), the pairwise-vs-joint measurement (§VII), the geometry table (§III.B, as a statement about
 lane-preserving solutions), and the feasibility certificates (§VI) — the last being a
 constructive proof that does not depend on our planner at all.
+
+---
+
+## XII. Generalising the Constructive Rung: One Device per Conflict Cluster
+
+Session of 2026-09-09 (continued). Four of the five cross scenarios now go through the
+constructive rung with **zero solver calls** — no trajectory optimisation, no RRT rung, no
+conflict loop. Every row is verified by re-rolling the plan through the env's own collision
+checker, which is where `goals` and `collisions` come from.
+
+| scenario | solves | goals | collisions | steps / budget | min surface gap | device | delayed | solver calls | wall |
+|---|---|---|---|---|---|---|---|---|---|
+| `open_cross_32` | yes | 32 | 0 | 633 / 1300 | 0.2493 m | 2 lanes | 0 (max 0) | 0 | 23 s |
+| `cluttered_cross_16` | yes | 16 | 0 | 931 / 1300 | 0.0656 m | 3 lanes | 5 (max 435) | 0 | 8 s |
+| `cluttered_cross_32` | **no** | 0 | 0 | — | — | — | — | 91 | 301 s |
+| `circular_cross_16` | yes | 16 | 0 | 836 / 1300 | 0.0856 m | orbit, R=1.551 m | 9 (max 255) | 0 | 8 s |
+| `circular_cross_32` | yes | 32 | 0 | 1212 / 1300 | 0.0503 m | orbit, R=3.102 m | 23 (max 475) | 0 | 51 s |
+
+`cluttered_cross_32` is the exception and §XII.C is the diagnosis; it falls through to the
+full ladder, spends 91 solver calls and 301 s, and still fails.
+
+
+### XII.A The circular layout is not the open cross bent into a circle
+
+The first attempt treated it as the same problem and failed at a level that no amount of
+scheduling could repair: greedy insertion seated **1 of 32** robots. The reason is visible
+in one measurement — the spread of the encounter midpoints, i.e. where along the map the
+pairwise conflicts actually happen:
+
+| scenario | encounter-midpoint spread (std, m) | conflict structure |
+|---|---|---|
+| `open_cross_32` | `[0.00, 4.61]` | 16 independent 2-robot crossings, spread along y |
+| `cluttered_cross_16` | `[0.00, 4.91]` | 8 crossings, spread |
+| `circular_cross_16` | **`[0.00, 0.00]`** | every route is a diameter — one hub |
+| `circular_cross_32` | **`[0.00, 0.00]`** | every route is a diameter — one hub |
+
+A lane is a two-sided device: it resolves a crossing by putting one robot on each side of
+it. That is exactly right for a handful of separate encounters, and it is structurally
+incapable of separating 32 routes that meet at a single point — there are only two sides.
+
+So the cluster now chooses its own device from its own geometry. `_hub` reports a cluster
+whose pairwise closest-approach points all sit inside a body-sized ball; such a cluster gets
+a **roundabout** instead of lanes: every member is displaced to its *own right* by a ring
+radius, which is one shared circulation sense. A shared lane axis cannot express this,
+because "the same side" of a hub is a different direction for each approach — the +x robot
+must pass below it and the +y robot to its right, and only a per-robot right-hand normal
+makes those agree.
+
+Ring radius is the geometric minimum, `|cluster| * (body diagonal + clearance) / 2π`.
+Sizing it *larger* is worse, which was not the expected result:
+
+| `hub_pack` | ring radius (m) | robots seated on `circular_cross_32` |
+|---|---|---|
+| **1.0** | 3.102 | **32 of 32** |
+| 1.3 | 4.03 | 21 of 32 |
+| 1.6 | 4.96 | 18 of 32 |
+| 2.0 | 6.20 | 18 of 32 |
+
+A wider ring is a longer detour through the same congested annulus: the extra room costs
+more time in the contested region than the separation buys. The minimum is the optimum.
+
+### XII.B Insertion can only delay, and delaying is sometimes exactly wrong
+
+Greedy insertion seats each robot at the least delay that clears everyone already placed.
+Its blind spot is that *delay is its only lever*. In a swap, one robot's goal is another's
+start, so a robot that must be **gone before** a partner arrives cannot be helped by waiting
+— waiting is the failure. Placed in an unlucky order the run dead-ends with no way back.
+
+Three repairs were measured, and they are worth separating because two of them worked for
+different reasons and one did not work at all:
+
+1. **Retry under several orders** (longest-first, shortest-first, seeded shuffles). Helped
+   partially and then saturated: on `cluttered_cross_32`, 8 orders seated 21 of 32 and
+   **250 orders seated 26** — a good order is not simply waiting to be sampled.
+2. **A precedence order derived from the geometry** — edge *r → q* when q's goal lies on r's
+   route (q parks in r's way) or r's start lies on q's route (r must clear out first).
+   This did not help on its own here, and leading with it *cost* makespan where greed
+   already worked: `circular_cross_32` went 1212 → 1300 steps, its entire budget. It is
+   therefore kept as a fallback order, not the first one tried.
+3. **Single-blocker eviction.** The diagnostic reported that the stranded robot had
+   *exactly one* blocker at every candidate delay. Evicting that one blocker, seating the
+   stranded robot, and re-seating the blocker afterwards lifted `cluttered_cross_32` from
+   **21 to 28 of 32**. Raising the eviction budget from 1 to 3 changed nothing, so what
+   remains is structural rather than greed.
+
+Both repairs had to be held *back* rather than led with, and for the same reason: each one
+rescues an order that plain greed could not seat, and the rescued schedule is not
+necessarily a good one. Eviction let the first-tried order succeed on `circular_cross_32` at
+1300 steps — its entire budget — where an order further down the list had been winning at
+1212. So every order is swept with zero evictions first, and the repair is a second pass.
+The lesson generalises past this code: a repair that widens the feasible set also changes
+which solution the search returns first, and "feasible" is not the same as "the one we
+were getting".
+
+### XII.C `cluttered_cross_32` does not generalise, and the reason is measured
+
+It is the one scenario of the five that the constructive rung still rejects. Three
+hypotheses were tested and two are excluded outright:
+
+* **Not the time budget.** Quadrupling the horizon (1300 → 2600 → 5200 steps) changes
+  nothing: same stranded robot, same single blocker, same 28 seated.
+* **Not the lane width**, though the lane *is* mis-sized. All 16 encounters in
+  `open_cross_32` are exactly 180° head-on, where only lateral extents face each other
+  (0.25 + 0.25 m) and `lane_w = 0.5` is correctly sized — hence its comfortable 0.2493 m
+  gap. `cluttered_cross_32` has only 26 of 52 head-on, with 19 near-parallel and 7 crossing
+  at 30–150°; near 45° two boxes project ~0.53 m of half-extent onto the lane normal, more
+  than the lane provides. Widening it helps a little and then reverses (lane 0.50 → 16
+  seated, 0.61 → 18, 0.75 → 21, 0.90 → 11) because wide offsets start colliding with the
+  pillars and fall back to no offset at all.
+* **What it actually is.** Robots 28 and 29 are swap partners whose goals lie at distance
+  **0.000 m** from each other's routes — each one's goal is literally on the other's path,
+  because each one's goal *is* the other's start. Whichever arrives first parks in the
+  other's way permanently, and a robot that has arrived never moves again. This is true of
+  every swap scenario, including the ones that solve; it is harmless only when the partners
+  travel at similar times. Across the whole scenario, **40 route/goal incursions** affect
+  **all 32 robots**. Seated 22nd, robot 29 finds every small delay taken and its partner
+  long since parked — so no delay exists, in any horizon.
+
+The honest reading: the construction assumes a robot's resting place is free real estate,
+and in a dense swap it is not. The fix is a design change, not a knob — later routes must be
+planned against the *parked poses* of robots already scheduled, rather than only against
+their moving trajectories. That is the next mechanism, and it is not built.
+
+### XII.D Two flagged suspicions, checked
+
+Both were raised as things not to be trusted, and both were measured rather than argued.
+
+**The RRT shortcut collapsing guides to straight lines.** It does not. Shortcutting cuts
+waypoints from ~35 to 3, but the guide still bends a median **1.17 m** off the straight
+chord (max 5.25 m) and clips a pillar in **0 of 16** and **0 of 32** cases — the shortcut is
+collision-checked. It produces a straight line only in the obstacle-free scenarios, where a
+straight line *is* the correct route. The un-shortcut RRT's extra 3.09 m of median wander is
+sampling noise, not information.
+
+| | waypoints | median deviation from chord | guides clipping a pillar |
+|---|---|---|---|
+| `cluttered_16`, shortcut on | 3 | 1.17 m | 0 / 16 |
+| `cluttered_16`, shortcut off | 36 | 3.09 m | 0 / 16 |
+| `cluttered_32`, shortcut on | 3 | 1.21 m | 0 / 32 |
+| `cluttered_32`, shortcut off | 34 | 3.14 m | 0 / 32 |
+
+**Segment-wise goal tolerance.** It is not in play for any of these results. The relaxed
+per-milestone region (`milestone_region: 0.6`) belongs to the trajectory-optimisation
+segmentation, and the constructive rung bypasses segmentation entirely — every solved run
+reports `rounds=0` and `solver_calls=0`. The rung's own acceptance test uses the env's real
+criterion with the env's own strict inequality (`_verify` counts a robot as having missed
+whenever `‖p_T − g‖ >= env.goal_radius`), and every accepted plan is then re-rolled through
+the env, which is where `plan_goals_reached` comes from. The suspicion was reasonable; it
+does not bear on these numbers.
