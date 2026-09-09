@@ -705,6 +705,11 @@ chord; if that distance exceeds a tolerance, keep the point and recurse on the t
 otherwise discard everything between. What survives is the set of points needed to represent
 the curve to within the tolerance.
 
+This step exists only because stops are expensive. Under the smooth construction of
+\S\ref{sec:flat} the waypoints are not events at all --- nothing stops at them --- so there
+is nothing to delete, and the simplification is skipped entirely: the curve is fitted to
+the full dense route instead.
+
 The obvious alternative --- delete any point whose turn angle is below a threshold --- is
 unusable here, and instructively so. A lane displacement is \emph{gradual} by construction:
 spread over dozens of samples, its per-step turn is tiny everywhere. An angle threshold
@@ -1094,8 +1099,10 @@ just whether the pairwise meeting points are on top of one another.
 \item These two devices are not interchangeable, and their rules are opposites: a lane needs
 one \emph{shared} axis for the whole group; a roundabout needs each robot displaced along its
 \emph{own} right-hand normal.
-\item Once the device is chosen, trajectories follow in closed form --- trapezoidal profiles
-under the true bounds --- with no solver.
+\item Once the device is chosen, trajectories follow in closed form, with no solver. Either
+construction will do it: stop-and-go from trapezoidal profiles, or --- because the robot is
+differentially flat --- a single smooth curve whose timing is fixed by a speed profile along
+it, which is both faster and able to use both controls at once.
 \item Timing is settled last, by inserting robots one at a time at the least delay that
 keeps them clear.
 \item Everything is checked by simulation before it is believed, so the construction is safe
