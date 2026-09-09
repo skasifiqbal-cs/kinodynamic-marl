@@ -28,9 +28,12 @@ resolvability does not imply joint resolvability**: at N=32, 19 of 19 detected c
 individually resolvable by a single robot waiting, yet no plan is found — K-ARC's per-pair
 subproblem decomposition (Alg. 2) cannot represent the interaction. Third, and most
 consequentially, we construct **verified feasibility certificates** proving that Open Cross at
-N=4, 16 and 32 is *solvable*, so the observed failure at N=32 is algorithmic rather than a
-property of the instance; this contradicts a density/geometry explanation we ourselves
-advanced earlier. We additionally report four negative results on conflict-resolution
+N=4, 16 and 32 is solvable, and — via a two-time-group construction derived from the
+benchmark's own row-adjacency structure — solvable **within K-ARC's own planning horizon**
+(886 of 1300 steps, 32 robots moving simultaneously, minimum surface clearance 0.25 m against
+a 0.05 m requirement). The failure at N=32 is therefore algorithmic: neither instance
+infeasibility nor an insufficient horizon accounts for it. This contradicts a density/geometry
+explanation we ourselves advanced earlier. We additionally report four negative results on conflict-resolution
 mechanisms, each with a diagnosed cause, because each rules out a plausible line of attack.
 
 ---
@@ -262,12 +265,33 @@ is algorithmic.** This retracts the density/geometry explanation of §III.B as a
 *infeasibility*; §III.B remains valid as an account of why *lane-preserving* resolution is
 impossible at N=32, which is a narrower and still useful statement.
 
-### D. The essential qualifier
+### D. Solvable *within K-ARC's own horizon* [P]
 
-`budget = 1300` steps; the N=32 witness needs **30568 steps ≈ 23× K-ARC's horizon**. So what is
-proven is **solvable**, *not* **solvable within the allotted horizon**. These are different
-claims and must not be conflated. The witness is deliberately slow (robots move one at a time),
-so its makespan is an upper bound, never an estimate.
+The sequential witness needs 30568 steps against a 1300-step budget (23×), leaving open the
+sharper question: is the instance solvable in the time K-ARC is actually given? It is, and the
+structure of the benchmark supplies the construction with no search and no solver.
+
+Each row is a head-on swap with no lateral room at N=32, so its two robots must separate to
+pass: one veers +0.5 m, the other −0.5 m, giving 1.0 m of centre separation. A veering robot
+sits at `y_k ± 0.5`, exactly where the **neighbouring** row's veering robot goes — and since
+only adjacent rows interact (the `n ± 2` coupling of §VII.B), the conflict graph over rows is a
+path, so **two time groups suffice**: even rows manoeuvre while odd rows hold, then swap.
+Veers are shallow diagonals rather than right angles, because `alpha_max` is 0.25 rad/s² with
+`omega_max` 0.5 and four 90° turns per robot would spend the budget on rotation alone.
+
+```
+open_cross_8    SOLVABLE_IN_BUDGET   8/8   goals  0 hits  witness 886 steps / budget 1300
+open_cross_16   SOLVABLE_IN_BUDGET   16/16 goals  0 hits  witness 886 steps / budget 1300
+open_cross_32   SOLVABLE_IN_BUDGET   32/32 goals  0 hits  witness 886 steps / budget 1300
+                min surface gap, all pairs, all times: 0.2500 m  (5x the 0.05 m required)
+```
+
+All robots move **simultaneously**, so verification checks every pair at every one of the 886
+time indices with the env's own collision code, and every trajectory is produced by the env's
+integrator under the real acceleration bounds. Reproduce with `+witness=coordinated`.
+
+**Consequence.** K-ARC's failure at N=32 is algorithmic: neither instance infeasibility nor an
+insufficient horizon can account for it. Both escape hatches are closed by construction.
 
 ### E. Soundness limits
 
@@ -424,15 +448,25 @@ composite_rrt]` **and** a budget large enough to complete a round (§VIII.C).
 
 Ordered by information gained per unit of compute.
 
-1. **Bounded-horizon unsolvability [O].** §VI proves solvable-in-principle but leaves
-   *solvable within H = 1300 steps* open — and that is the question that actually explains
-   K-ARC's failure. Encode a sound **over-approximation** (robots strictly more capable: no
-   acceleration limits, free waiting, `v_max` motion in any direction; keep only inviolable
-   constraints — body non-overlap, obstacles, start/goal) at fixed horizon H and solve with a
-   complete solver (`python-sat` or `z3`; network access confirmed available). **UNSAT ⇒ no
-   method solves open_cross_32 in K-ARC's budget, and our failure is correct behaviour. SAT ⇒
-   the gap is ours.** Both outcomes are publishable and neither depends on a mechanism working.
-   This is the highest-value remaining item and it was the project lead's proposal.
+1. **Bounded-horizon unsolvability — ANSWERED, and not via SAT [P].** The question was
+   whether open_cross_32 is unsolvable inside the budget. It is not (§VI.D): a verified witness
+   fits in 886 of 1300 steps with 5× the required clearance. A SAT UNSAT proof was scoped first
+   and abandoned on its own arithmetic, recorded here because the obstruction is structural
+   rather than a matter of effort. Two real boxes can sit 0.25 m apart centre-to-centre, so
+   forbidding two robots per cell is sound only when the cell **diagonal** is under 0.25 m:
+
+   | cell | τ | vars | collision clauses | co-occupancy soundly forbiddable? |
+   |---|---|---|---|---|
+   | 0.15 m | 0.1 s | 534 M | 8.3 **billion** | yes |
+   | 1.00 m | 1.0 s | 1.2 M | 18.6 M | no |
+   | 1.00 m | 5.0 s | 0.24 M | 3.7 M | no |
+
+   Any tractable encoding must permit ~8 robots per cell to stay a sound over-approximation,
+   and a relaxation that loose returns SAT for almost anything; the sound-and-tight encoding is
+   not buildable. Note also that SAT decides a **horizon**, not a solver wall-clock — an
+   "1800 s budget" is not a property a SAT instance can express. **Do not revisit unless the
+   abstraction changes fundamentally.**
+
 2. **Certificate-derived guides [O].** §V shows guide quality dominates; §VI produces verified
    discrete plans. Using a certificate witness to seed guides connects the strongest result to
    a mechanism. Untested.
