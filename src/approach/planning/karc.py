@@ -46,7 +46,7 @@ from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 
-from src.approach.planning import geometric_rrt, krrt
+from src.approach.planning import constructive, geometric_rrt, krrt
 from src.approach.planning.base import BasePlanner
 from src.approach.planning.trajopt import (
     solve_group,
@@ -293,6 +293,43 @@ class KARCPlanner(BasePlanner):
         self._controls = {a: [] for a in agents}
         self._solved = {a: True for a in agents}
         state = [env._states[i].copy() for i in range(env._n)]
+
+        # RUNG 0 -- CONSTRUCT, don't search. Every K-ARC rung answers "find me a
+        # trajectory"; at density the cheaper question is "what is the coordination", and
+        # once that is decided the trajectories follow analytically. `constructive.plan`
+        # derives the pairing, the side each robot goes round, and the manoeuvre schedule
+        # from the conflict graph, builds rest-to-rest legs under the real acceleration
+        # bounds, and VERIFIES the result with the environment's own collision checker.
+        # Nothing is committed that does not verify, so a wrong assignment costs one
+        # construction and the ladder below runs exactly as it would have.
+        if bool(k_cfg.get("constructive", False)):
+            built = constructive.plan(env, k_cfg, clearance, guides=ref_paths)
+            self.stats["constructive_attempts"] = 1
+            if built is not None:
+                tracks, ctrls, info = built
+                self.stats["constructive_solved"] = 1
+                self.stats.update({f"constructive_{k}": v for k, v in info.items()})
+                for i, a in enumerate(agents):
+                    self._controls[a] = [np.asarray(u, float) for u in ctrls[i]]
+                    self._traj[i].extend(np.asarray(tracks[i], float))
+                self._plan_time = len(tracks[0]) * env.dt
+                self.stats.pop("subproblem_sizes", None)
+                self.stats["subproblem_max"] = 0
+                self.stats["subproblem_mean"] = 0.0
+                self.stats["conflicts_remaining"] = 0
+                self.stats["wall_time"] = time.perf_counter() - t0
+                self.stats["path_cost"] = round(self._plan_time * env._n, 4)
+                self.stats["makespan"] = round(self._plan_time, 4)
+                # The construction is verified inside `constructive.plan`, but re-run the
+                # planner's OWN acceptance check on it so a constructive plan is held to
+                # exactly the standard every other rung's output is held to.
+                self._check_plan(env, radii, d_min, clearance, shapes)
+                if self._pool is not None:
+                    self._pool.shutdown(wait=True)
+                    self._pool = None
+                self._plan = self._controls
+                return
+            self.stats["constructive_solved"] = 0
 
         # Every intermediate stage of Alg. 1/2 is computed below and then overwritten.
         # With trace on they are kept, so the planning PROCESS can be drawn rather than

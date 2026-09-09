@@ -222,6 +222,17 @@ approach:
     #                    flattening every trajectory into a static wall makes the workspace
     #                    impassable at N=32.
     ladder: [prioritized, decoupled_rrt, composite_rrt]
+
+    # RUNG 0: construct a coordinated plan and verify it, before any search runs. Derives
+    # the pairing, the side each robot goes round, and the manoeuvre schedule from the
+    # conflict graph; builds rest-to-rest legs under the real acceleration bounds. Falls
+    # through to the ladder above unless the construction VERIFIES against the env's own
+    # collision checker, so enabling it can only add solutions, never lose one.
+    constructive: false
+    veer_margin: 0.2     # extra centre separation beyond (lateral extent + clearance)
+    group_offset: 220    # env steps between manoeuvre groups
+    lead: 5.5            # metres run straight before the veer begins
+    span: 2.0            # metres held at the veered offset across the crossing
     # Sampling-rung knobs, shared by both RRT rungs.
     rrt_seed: 0          # tree growth is randomised, so a run is only reproducible per-seed.
     rrt_iters: 3000      # extension attempts before giving up and failing the rung.
