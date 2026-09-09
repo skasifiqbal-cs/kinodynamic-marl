@@ -245,6 +245,11 @@ approach:
     # shuffles) and keep the first that seats everyone.
     order_tries: 6
     order_seed: 0
+    # Greedy insertion strands a robot when a single already-seated robot blocks it at
+    # every delay. Evict that one blocker, seat the stuck robot, re-seat the blocker after.
+    # On cluttered_cross_32 this lifts placement from 21 of 32 to 28 of 32; raising the
+    # budget above 1 buys nothing there, so the remaining block is structural, not greed.
+    evictions: 3
     # 0 = derive it from the plan: the last index at which anything is still
     # contested. A constant is only ever right for one scenario -- 220 suits the
     # open cross and is ~4x too small for the cluttered cross, whose trajectory

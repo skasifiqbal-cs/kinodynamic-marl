@@ -257,6 +257,77 @@ def _conflict_pairs(refs, sep):
     return out
 
 
+def _goal_order(refs, starts, goals, sep):
+    """An insertion order that respects where robots come to REST.
+
+    A robot that has arrived never moves again. If q's goal sits on r's route, then q
+    parked there blocks r at every delay -- and delaying r, the only lever insertion has,
+    makes the block more certain rather than less. Measured on cluttered_cross_32: the
+    robot that could not be seated had exactly one blocker, parked on its goal at every
+    one of its candidate delays, and 250 random orders never cleared it.
+
+    So the constraint is read off the geometry instead of searched for: edge r -> q when
+    q's goal lies within `sep` of r's route means "r goes first". Swaps make 2-cycles (each
+    one's goal is the other's start), which is not a contradiction -- both simply leave
+    early -- so cycles are broken by longest trajectory first and the rest of the order
+    still holds. Returns a topological order over as much of the graph as is acyclic.
+    """
+    n = len(refs)
+    goals = [np.asarray(g, float)[:2] for g in goals]
+    starts = [np.asarray(s, float)[:2] for s in starts]
+    after: dict = {r: set() for r in range(n)}     # r must precede everything in after[r]
+
+    def _on(route, pt):
+        return float(np.linalg.norm(route - pt[None, :], axis=1).min()) < sep
+
+    for r in range(n):
+        for q in range(n):
+            if q == r:
+                continue
+            # q parks on r's route, so r must be through before q arrives.
+            # r waits on q's route, so r must leave before q gets there -- and delaying r
+            # only keeps it sitting there longer, which is the same trap seen from the
+            # other end. Both say the same thing: r goes first.
+            if _on(refs[r], goals[q]) or _on(refs[q], starts[r]):
+                after[r].add(q)
+    indeg = {q: 0 for q in range(n)}
+    for r in range(n):
+        for q in after[r]:
+            indeg[q] += 1
+    # A swap makes the constraint MUTUAL: each partner's goal lies exactly on the other's
+    # route, so whichever arrives first parks in the other's way. That is harmless when the
+    # two go at similar times -- they cross in the middle and trade places -- and fatal when
+    # they do not. On cluttered_cross_32 robot 29 was seated 22nd, by which point every
+    # small delay was taken and its partner had long since parked, so no delay existed.
+    # Partners are therefore kept ADJACENT in the order rather than merely ranked.
+    mate = {}
+    for r in range(n):
+        for q in after[r]:
+            if r in after[q] and r not in mate and q not in mate:
+                mate[r] = q
+                mate[q] = r
+
+    order, left = [], set(range(n))
+    while left:
+        ready = [q for q in left if indeg[q] == 0]
+        if not ready:                               # a cycle: release the longest route
+            ready = [max(left, key=lambda q: len(refs[q]))]
+        ready.sort(key=lambda q: -len(after[q]))
+        for q in ready:
+            if q not in left:
+                continue
+            for t in (q, mate.get(q)):
+                if t is None or t not in left:
+                    continue
+                order.append(t)
+                left.discard(t)
+                for u in after[t]:
+                    if u in left:
+                        indeg[u] -= 1
+                indeg[t] = 0
+    return order
+
+
 def _colour(nodes, adj):
     """Greedy colouring, highest degree first. Returns {node: colour}."""
     colour: dict = {}
@@ -578,18 +649,84 @@ def plan(env, params, clearance=0.05, guides=None):
                 return True
         return False
 
-    def _place(order):
-        """Insert in this order, each robot delayed the least that clears those before it."""
+    def _blockers(r, got):
+        """Who stopped `r` from fitting, and were they parked or driving when they did?
+
+        A robot that has ARRIVED never moves again, so if it sits on `r`'s route no delay
+        can ever help -- pushing `r` later only makes the block more certain. That is a
+        different failure from a congested crossing, and it wants a different fix, so the
+        rejection says which one it was instead of only reporting a count.
+        """
+        blame: dict = {}
+        d = 0
+        while d + len(tracks[r]) <= horizon_cap:
+            for q in got:
+                if _clash(r, d, q, got[q]):
+                    arrived = got[q] + len(tracks[q])
+                    parked = d + len(tracks[r]) > arrived
+                    hit = blame.setdefault(q, [0, 0])
+                    hit[0] += 1
+                    hit[1] += int(parked)
+            d += step
+        n_try = max(1, len(range(0, horizon_cap - len(tracks[r]) + 1, step)))
+        always = [q for q, (c, _) in blame.items() if c >= n_try]
+        parked = [q for q in always if blame[q][1] >= n_try]
+        return {"blocked_robot": int(r), "blockers_at_every_delay": len(always),
+                "of_those_parked_on_goal": len(parked)}
+
+    def _fit(r, got, skip=None):
+        """Least delay at which r clears everything in `got`, or None."""
+        d = 0
+        while d + len(tracks[r]) <= horizon_cap:
+            if not any(_clash(r, d, q, got[q]) for q in got if q != skip):
+                return d
+            d += step
+        return None
+
+    def _place(order, why=None, budget=None):
+        """Insert in this order, each robot delayed the least that clears those before it.
+
+        Insertion is greedy and has no backtracking, so one badly-seated robot can leave a
+        later one with no delay at all. Measured on cluttered_cross_32, that later robot had
+        exactly ONE blocker -- so allow a bounded repair: evict the single blocker, seat the
+        robot that could not fit, and re-seat the blocker afterwards. Each robot may be
+        evicted `evictions` times, which bounds the work and keeps the loop finite. Measured
+        on cluttered_cross_32: no repair seats 21 of 32, one eviction each seats 28.
+        """
         got: dict = {}
-        for r in order:
+        evicted: dict = {}
+        if budget is None:
+            budget = int(params.get("evictions", 3))
+        queue = list(order)
+        while queue:
+            r = queue.pop(0)
+            d = _fit(r, got)
+            if d is not None:
+                got[r] = d
+                continue
+            # Who blocks r at every delay? Take the delay where r is least obstructed: if
+            # exactly one robot stands in the way there, that one is the repairable blocker.
+            # (Scanning delays once beats testing every placed robot for removability --
+            # the latter is O(placed^2 * delays) and does not finish.)
+            best_at, fewest = None, None
             d = 0
             while d + len(tracks[r]) <= horizon_cap:
-                if not any(_clash(r, d, q, got[q]) for q in got):
-                    break
+                hit = [q for q in got if _clash(r, d, q, got[q])]
+                if fewest is None or len(hit) < len(fewest):
+                    best_at, fewest = d, hit
+                    if len(hit) == 1:
+                        break
                 d += step
-            else:
-                return None, len(got)
-            got[r] = d
+            if fewest is not None and len(fewest) == 1 and evicted.get(fewest[0], 0) < budget:
+                q = fewest[0]
+                evicted[q] = evicted.get(q, 0) + 1
+                del got[q]
+                got[r] = best_at
+                queue.append(q)
+                continue
+            if why is not None:
+                why.update(_blockers(r, got))
+            return None, len(got)
         return got, len(got)
 
     # Insertion can only ever DELAY, and delaying is the wrong move when a robot has to go
@@ -600,20 +737,34 @@ def plan(env, params, clearance=0.05, guides=None):
     # the two structured guesses; the rest are seeded shuffles, so this is reproducible.
     rng = np.random.default_rng(int(params.get("order_seed", 0)))
     by_len = sorted(range(n), key=lambda r: -len(tracks[r]))
-    orders = [by_len, by_len[::-1]]
+    # Longest-first stays the FIRST order tried: the goal-precedence order is a repair for
+    # scenarios greed strands, and leading with it costs makespan where greed already works
+    # -- circular_cross_32 went 1212 -> 1300 steps (its whole budget) when it led.
+    orders = [by_len, _goal_order(refs, starts, goals, radii[0] * 2 + clearance),
+              by_len[::-1]]
     orders += [list(rng.permutation(n)) for _ in range(int(params.get("order_tries", 6)))]
 
-    delay, best = None, 0
-    for od in orders:
-        delay, got = _place([int(r) for r in od])
-        best = max(best, got)
+    # Eviction rescues orders that greed alone cannot seat, but the schedule it rescues is
+    # not necessarily good: on circular_cross_32 it let the FIRST order succeed at 1300
+    # steps -- the entire budget -- where an order further down the list had been winning at
+    # 1212. So sweep every order with no evictions first, and only fall back to the repair
+    # for scenarios where nothing seats without it.
+    delay, best, why = None, 0, {}
+    for allowance in (0, int(params.get("evictions", 3))):
+        for od in orders:
+            probe: dict = {}
+            delay, got = _place([int(r) for r in od], probe, budget=allowance)
+            if got > best:
+                best, why = got, probe
+            if delay is not None:
+                break
         if delay is not None:
             break
     if delay is None:
         if isinstance(params, dict):
             params.setdefault("_reject", {}).update(
                 {"unschedulable_robot": 1, "orders_tried": len(orders),
-                 "best_placed": best, "n": n})
+                 "best_placed": best, "n": n, **why})
         return None
 
     T = max(delay[r] + len(tracks[r]) for r in range(n))
