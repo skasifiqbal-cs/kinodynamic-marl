@@ -8,6 +8,8 @@ from hydra.core.global_hydra import GlobalHydra
 
 pytest.importorskip("casadi", reason='needs the planning extra: pip install -e ".[planning]"')
 
+from src.approach.planning import constructive
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -875,3 +877,41 @@ def test_multi_disc_cover_contains_the_body_and_shrinks_the_constraint():
     assert pair[0] == pytest.approx(0.609, abs=0.002)
     assert pair[1] == pytest.approx(0.404, abs=0.002)
     assert all(p > W + clearance for p in pair), "the cover is conservative, never optimistic"
+
+
+# --- constructive: which device a conflict cluster gets --------------------------------
+
+def _ray(a, b, m=64):
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    t = np.linspace(0.0, 1.0, m)[:, None]
+    return a[None, :] + t * (b - a)[None, :]
+
+
+def test_hub_detects_a_pile_up_and_ignores_scattered_crossings():
+    """Lanes vs roundabout is decided by whether a cluster's encounters share a point."""
+    # Four diameters of a circle: every pairwise closest approach is the origin.
+    spokes = [_ray((-5 * np.cos(t), -5 * np.sin(t)), (5 * np.cos(t), 5 * np.sin(t)))
+              for t in np.linspace(0.0, np.pi, 4, endpoint=False)]
+    centre = constructive._hub(spokes, list(range(4)), 0.61)
+    assert centre is not None
+    assert np.linalg.norm(centre) < 0.16   # one 64-sample step over a 10 m route
+
+    # Two crossings 8 m apart: same number of routes, no single meeting point.
+    far = [_ray((-5, 0), (5, 0)), _ray((0, -5), (0, 5)),
+           _ray((-5, 8), (5, 8)), _ray((0, 3), (0, 13))]
+    assert constructive._hub(far, list(range(4)), 0.61) is None
+
+    # A cluster of two is a crossing, never a hub -- lanes already separate two robots.
+    assert constructive._hub(spokes[:2], [0, 1], 0.61) is None
+
+
+def test_orbit_sends_every_member_the_same_way_round():
+    """Each robot offsets to its OWN right, which is one shared circulation sense."""
+    centre = np.zeros(2)
+    east = _ray((-5, 0), (5, 0))        # heading +x
+    north = _ray((0, -5), (0, 5))       # heading +y
+    ax_e, dy_e, _ = constructive._orbit(east, centre, 2.0)
+    ax_n, dy_n, _ = constructive._orbit(north, centre, 2.0)
+    # +x robot passes below the hub, +y robot passes to its right: both clockwise.
+    assert np.allclose(ax_e * dy_e, [0.0, -2.0], atol=1e-6)
+    assert np.allclose(ax_n * dy_n, [2.0, 0.0], atol=1e-6)

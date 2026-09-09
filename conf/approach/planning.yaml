@@ -230,6 +230,21 @@ approach:
     # collision checker, so enabling it can only add solutions, never lose one.
     constructive: false
     veer_margin: 0.2     # extra centre separation beyond (lateral extent + clearance)
+    # Which coordination device a conflict cluster gets is read off its own geometry:
+    # scattered pairwise crossings get lanes, a cluster whose encounters all land on one
+    # point gets a roundabout of radius hub_pack * |cluster| * (body diag + clearance)/2pi.
+    # 1.0 is the geometric minimum AND the best measured value -- on circular_cross_32 it
+    # seats all 32 robots, 1.3 seats 21, 2.0 seats 18: a wider ring is a longer detour
+    # through the same congested annulus.
+    hub_pack: 1.0
+    # Delay granularity for insertion scheduling, in env steps. 5 rather than 10 because
+    # circular_cross_32 needs the finer packing: at 10 it strands 2 of 32 robots.
+    delay_step: 5
+    # Insertion can only DELAY, so a bad order dead-ends with no way back. Retry the same
+    # greedy insertion under several orders (longest-first, shortest-first, then seeded
+    # shuffles) and keep the first that seats everyone.
+    order_tries: 6
+    order_seed: 0
     # 0 = derive it from the plan: the last index at which anything is still
     # contested. A constant is only ever right for one scenario -- 220 suits the
     # open cross and is ~4x too small for the cluttered cross, whose trajectory

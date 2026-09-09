@@ -187,6 +187,66 @@ def _offset_path(pts, dy, lo, hi, taper, axis):
     return pts + axis[None, :] * (dy * ramp)[:, None]
 
 
+def _hub(refs, comp, sep):
+    """A conflict cluster whose encounters all pile onto ONE point, or None.
+
+    Lanes are a two-sided device: they separate the two robots of a crossing by putting
+    one on each side of it. That is the right tool when a cluster is a handful of distinct
+    encounters spread through space, and the wrong one when every route in the cluster
+    passes through the same place -- no number of sides separates n routes at a point.
+    Measured: open_cross_32 and cluttered_cross_16 have encounter midpoints spread over
+    ~4.6 m of y (independent pairwise crossings), while circular_cross_16/32 have a
+    midpoint spread of exactly 0.000 -- all 32 routes are diameters of one circle.
+
+    Returns (centre, members) when the pairwise closest-approach points of the cluster sit
+    inside a body-sized ball, which is what "one point" means for a robot of this size.
+    """
+    if len(comp) < 3:
+        return None
+    hits = []
+    for a in range(len(comp)):
+        for b in range(a + 1, len(comp)):
+            i, j = comp[a], comp[b]
+            k = int(np.argmin(np.linalg.norm(refs[i] - refs[j], axis=1)))
+            hits.append(0.5 * (refs[i][k] + refs[j][k]))
+    if not hits:
+        return None
+    hits = np.asarray(hits)
+    centre = hits.mean(0)
+    if float(np.linalg.norm(hits - centre, axis=1).max()) > sep:
+        return None
+    return centre
+
+
+def _orbit(ref, centre, radius):
+    """Right-hand offset that carries `ref` around `centre` instead of through it.
+
+    Every member of a hub is displaced to its OWN right, so they all circulate the hub the
+    same way -- a robot heading +x passes below it, one heading +y passes to its right, and
+    those two senses agree. That is what makes the displacement collective: a shared axis
+    cannot do it, because "the same side" of a hub is a different direction for each
+    approach. Returns (axis, dy, window) for `_offset_path`, or None if `ref` misses the
+    hub anyway.
+    """
+    d = np.linalg.norm(ref - centre[None, :], axis=1)
+    k = int(np.argmin(d))
+    m = len(ref) - 1
+    if m < 1 or d[k] > radius + 1e-9 and k in (0, m):
+        return None
+    a = max(k - 1, 0)
+    b = min(k + 1, m)
+    t = ref[b] - ref[a]
+    ln = float(np.linalg.norm(t))
+    if ln < 1e-9:
+        return None
+    t = t / ln
+    axis = np.array([t[1], -t[0]])          # right-hand normal
+    # Already past the hub on the correct side? Then only top it up to the ring.
+    dy = radius - float(np.dot(ref[k] - centre, axis))
+    f = k / m
+    return axis, dy, (max(0.0, f - 0.25), min(1.0, f + 0.25))
+
+
 def _conflict_pairs(refs, sep):
     """Robots whose routes come within `sep` at the same normalised progress."""
     out = []
@@ -401,6 +461,8 @@ def plan(env, params, clearance=0.05, guides=None):
     # signs mean opposite sides regardless of who is heading which way.
     windows = {i: _window(refs, i, partners[i], lane_w) for i in range(n)}
     axis_of: dict = {}
+    orbit_of: dict = {}
+    hubs: list = []
     seen: set = set()
     for i in range(n):
         if i in seen or not partners[i]:
@@ -413,6 +475,24 @@ def plan(env, params, clearance=0.05, guides=None):
             seen.add(u)
             comp.append(u)
             stack += [v for v in partners[u] if v not in seen]
+        # Which device this cluster gets is read off the cluster's own geometry: a handful
+        # of separate crossings gets lanes, a pile-up on one point gets a roundabout.
+        centre = _hub(refs, comp, diag + clearance)
+        if centre is not None:
+            # Size the ring so the whole cluster would fit around it even if every member
+            # arrived at once: |comp| bodies at (diag + clearance) of arc.
+            # pack=1.0 (the geometric minimum) is also the best measured setting: on
+            # circular_cross_32 it seats all 32, while 1.3 seats 21 and 2.0 seats 18. A
+            # wider ring is a longer detour through the same congested annulus, so the
+            # extra room costs more than it buys.
+            pack = float(params.get("hub_pack", 1.0))
+            R = max(lane_w, pack * len(comp) * (diag + clearance) / (2.0 * np.pi))
+            for u in comp:
+                orb = _orbit(refs[u], centre, R)
+                if orb is not None:
+                    axis_of[u], orbit_of[u] = orb[0], (orb[1], orb[2])
+            hubs.append((centre, R, len(comp)))
+            continue
         ax = _lane_axis(refs, comp, windows)
         for u in comp:
             axis_of[u] = ax
@@ -429,14 +509,19 @@ def plan(env, params, clearance=0.05, guides=None):
         if win:
             pad = float(params.get("window_pad", 0.35))
             win = (max(0.0, win[0] - pad), min(1.0, win[1] + pad))
-        dy = (side.get(i, 0) - (lanes - 1) / 2.0) * lane_w if win else 0.0
+        if i in orbit_of:
+            dy, win = orbit_of[i]
+        else:
+            dy = (side.get(i, 0) - (lanes - 1) / 2.0) * lane_w if win else 0.0
         dense = _resample(refs[i], 128)
         route = dense
         if win and abs(dy) > 1e-9:
             # A lane is only available if it is free. Try the assigned side, then its
             # mirror, then give up on displacement and let the schedule do the work --
             # rather than pushing the body through a pillar to honour a colouring.
-            for cand in (dy, -dy):
+            # Mirroring is a lane's fallback, not a roundabout's: sending one member the
+            # other way round the hub puts it head-on into the whole circulation.
+            for cand in ((dy,) if i in orbit_of else (dy, -dy)):
                 trial = _offset_path(dense, cand, win[0], win[1], taper,
                                      axis_of.get(i, (0.0, 1.0)))
                 if not _hits_obstacle(env, i, trial):
@@ -465,19 +550,17 @@ def plan(env, params, clearance=0.05, guides=None):
     # so the schedule is correct by construction rather than by re-detection; the robots
     # that need no delay get none. Longest trajectory first, because the hardest robot to
     # fit should choose while the space is still empty.
-    step = max(1, int(params.get("delay_step", 10)))
+    step = max(1, int(params.get("delay_step", 5)))
     horizon_cap = int(getattr(env, "max_steps", 0) or 0) or 10 ** 6
-    order = sorted(range(n), key=lambda r: -len(tracks[r]))
 
     def _clash(a, da, b, db):
-        """Do a (delayed da) and b (delayed db) ever come within `clearance` of each other?
+        """Do a (delayed da) and b (delayed db) ever come within `clearance`?
 
-        Compared over the WHOLE span, not just the window where both are driving. A robot
-        exists before its delay (parked at its start) and after it arrives (parked at its
-        goal), and the plan is padded that way, so the verifier sees those stretches even
-        though `_clash` used to skip them. That is a robot standing on its goal being driven
-        through by a later arrival -- 79 such hits on circular_cross_32, invisible to
-        insertion and fatal at verification. Index clamping makes the two agree.
+        Compared over the FULL span, clamped at both ends: before its delay a robot sits
+        at its start, and after arrival it sits at its goal. Both are real occupancy --
+        skipping the tail let a robot park on a spot a later robot drives through (79 hits
+        on circular_cross_32). Cheap centre-distance pre-filter, exact shape test only on
+        the steps that survive it.
         """
         ta, tb = tracks[a], tracks[b]
         span = max(da + len(ta), db + len(tb))
@@ -489,36 +572,48 @@ def plan(env, params, clearance=0.05, guides=None):
             return False
         for k in np.flatnonzero(near):
             qa, qb = pa[k], pb[k]
-            # Must be the SAME predicate `_verify` applies, or insertion accepts placements
-            # the verifier then rejects. `collides` is overlap; the requirement is a
-            # clearance. cluttered_cross_16 came back collision-free, in budget, and was
-            # refused anyway on a 0.0122 m gap against the 0.05 m it must keep.
-            if shape_distance(env.robots[a].shape,
-                              (float(qa[0]), float(qa[1]), float(qa[2])),
-                              env.robots[b].shape,
-                              (float(qb[0]), float(qb[1]), float(qb[2]))) < clearance:
+            if shape_distance(env.robots[a].shape, (float(qa[0]), float(qa[1]), float(qa[2])),
+                              env.robots[b].shape, (float(qb[0]), float(qb[1]), float(qb[2]))
+                              ) < clearance:
                 return True
         return False
 
-    delay: dict = {}
-    placed: list = []
-    ok = True
-    for r in order:
-        d = 0
-        while d + len(tracks[r]) <= horizon_cap:
-            if not any(_clash(r, d, q, delay[q]) for q in placed):
-                break
-            d += step
-        else:
-            ok = False
-            break
-        delay[r] = d
-        placed.append(r)
+    def _place(order):
+        """Insert in this order, each robot delayed the least that clears those before it."""
+        got: dict = {}
+        for r in order:
+            d = 0
+            while d + len(tracks[r]) <= horizon_cap:
+                if not any(_clash(r, d, q, got[q]) for q in got):
+                    break
+                d += step
+            else:
+                return None, len(got)
+            got[r] = d
+        return got, len(got)
 
-    if not ok:
+    # Insertion can only ever DELAY, and delaying is the wrong move when a robot has to go
+    # EARLY: in a swap, A's goal is B's start, so B must be gone before A arrives. Placed in
+    # an unlucky order, B's only lever makes things worse and the greedy run dead-ends --
+    # circular_cross_32 placed 1 of 32. Order is a heuristic, not a commitment, so try
+    # several and keep the first that seats everyone. Longest-first and shortest-first are
+    # the two structured guesses; the rest are seeded shuffles, so this is reproducible.
+    rng = np.random.default_rng(int(params.get("order_seed", 0)))
+    by_len = sorted(range(n), key=lambda r: -len(tracks[r]))
+    orders = [by_len, by_len[::-1]]
+    orders += [list(rng.permutation(n)) for _ in range(int(params.get("order_tries", 6)))]
+
+    delay, best = None, 0
+    for od in orders:
+        delay, got = _place([int(r) for r in od])
+        best = max(best, got)
+        if delay is not None:
+            break
+    if delay is None:
         if isinstance(params, dict):
             params.setdefault("_reject", {}).update(
-                {"unschedulable_robot": 1, "placed": len(placed), "n": n})
+                {"unschedulable_robot": 1, "orders_tried": len(orders),
+                 "best_placed": best, "n": n})
         return None
 
     T = max(delay[r] + len(tracks[r]) for r in range(n))
@@ -536,7 +631,10 @@ def plan(env, params, clearance=0.05, guides=None):
         if isinstance(params, dict):
             params.setdefault("_reject", {}).update(rep)
         return None
-    info = {"pairs": len(pairs), "lanes": lanes, "delayed": sum(1 for d in delay.values() if d),
+    info = {"pairs": len(pairs), "lanes": lanes, "hubs": len(hubs),
+            "orbiting": len(orbit_of),
+            "hub_radius": round(max([h[1] for h in hubs], default=0.0), 3),
+            "delayed": sum(1 for d in delay.values() if d),
             "max_delay": max(delay.values()), "steps": T,
             "min_surface_gap": round(float(gap), 4)}
     return tracks, ctrls, info
