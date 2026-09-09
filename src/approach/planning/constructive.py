@@ -229,9 +229,16 @@ def _verify(env, tracks, clearance, report=None):
         float(np.linalg.norm(tracks[i][-1][:2] - goals[i][:2])) >= env.goal_radius
         for i in range(n))
     rep["min_gap"] = round(float(worst), 4)
+    # A plan longer than the horizon is not a plan: the episode ends before the robots
+    # arrive, so "collision-free and reaches every goal" is true only of a trajectory that
+    # never finishes being executed. Serialising groups trades collisions for length, so
+    # this is the constraint that keeps that trade honest.
+    budget = int(getattr(env, "max_steps", 0) or 0)
+    rep["over_budget"] = int(bool(budget and T > budget))
     if report is not None:
         report.update(rep)
-    if rep["obstacle_hits"] or rep["robot_hits"] or rep["missed_goals"]:
+    if (rep["obstacle_hits"] or rep["robot_hits"] or rep["missed_goals"]
+            or rep["over_budget"]):
         return None
     return worst if worst >= clearance else None
 
@@ -446,34 +453,48 @@ def plan(env, params, clearance=0.05, guides=None):
     gcol = _colour(range(len(pairs)), adj)
     group_of = {i: gcol.get(pair_of.get(i, -1), 0) for i in range(n)}
     ngroups = max(gcol.values()) + 1 if gcol else 1
-    # Long enough that a group has cleared its last contested index before the next starts.
+    # How far apart to stagger the groups. The last contested index is an upper bound,
+    # not the answer: on the open cross it derives 456 where 220 already separates
+    # everyone, and those 236 extra steps are horizon the budget cannot spare. Serialising
+    # is exactly what is being bought here, so buy the least of it that works -- try
+    # increasing offsets and keep the first that verifies.
     cross = [k for (i, j), k in left.items()
              if pair_of.get(i) is not None and pair_of.get(i) != pair_of.get(j)]
-    offset = int(params.get("group_offset", 0)) or (max(cross) + 2 if cross else 0)
+    forced = int(params.get("group_offset", 0))
+    hi = forced or (max(cross) + 2 if cross else 0)
+    cands = [hi] if (forced or hi == 0) else sorted(
+        {max(1, hi // 4), max(1, hi // 2), max(1, 3 * hi // 4), hi})
 
-    held, held_u = [], []
-    for i in range(n):
-        hold = offset * int(group_of.get(i, 0))
-        if hold:
-            held.append(np.vstack([np.repeat(starts[i][None, :], hold, axis=0), tracks[i]]))
-            held_u.append(np.vstack([np.zeros((hold, 2)), ctrls[i]]))
-        else:
-            held.append(tracks[i])
-            held_u.append(ctrls[i])
-    tracks, ctrls = held, held_u
+    best, last = None, {}
+    for off in cands:
+        held, held_u = [], []
+        for i in range(n):
+            hold = off * int(group_of.get(i, 0))
+            if hold:
+                held.append(np.vstack([np.repeat(starts[i][None, :], hold, axis=0),
+                                       tracks[i]]))
+                held_u.append(np.vstack([np.zeros((hold, 2)), ctrls[i]]))
+            else:
+                held.append(tracks[i])
+                held_u.append(ctrls[i])
+        T = max(len(t) for t in held)
+        ct = [np.vstack([t, np.repeat(t[-1][None, :], T - len(t), axis=0)])
+              if len(t) < T else t for t in held]
+        cu = [np.vstack([c, np.zeros((T - len(c), 2))]) if len(c) < T else c
+              for c in held_u]
+        rep: dict = {}
+        gap = _verify(env, ct, clearance, rep)
+        last = rep
+        if gap is not None:
+            best = (ct, cu, off, gap, T)
+            break
 
-    T = max(len(t) for t in tracks)
-    tracks = [np.vstack([t, np.repeat(t[-1][None, :], T - len(t), axis=0)])
-              if len(t) < T else t for t in tracks]
-    ctrls = [np.vstack([c, np.zeros((T - len(c), 2))]) if len(c) < T else c
-             for c in ctrls]
-
-    rep: dict = {}
-    gap = _verify(env, tracks, clearance, rep)
-    if gap is None:
+    if best is None:
         if isinstance(params, dict):
-            params.setdefault("_reject", {}).update(rep)
+            params.setdefault("_reject", {}).update(last)
         return None
+    tracks, ctrls, offset, gap, T = best
     info = {"pairs": len(pairs), "lanes": lanes, "groups": ngroups, "lane_failures": intra,
-            "offset": offset, "steps": T, "min_surface_gap": round(float(gap), 4)}
+            "offset": offset, "tried": len(cands), "steps": T,
+            "min_surface_gap": round(float(gap), 4)}
     return tracks, ctrls, info

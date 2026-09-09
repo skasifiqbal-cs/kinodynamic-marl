@@ -230,7 +230,11 @@ approach:
     # collision checker, so enabling it can only add solutions, never lose one.
     constructive: false
     veer_margin: 0.2     # extra centre separation beyond (lateral extent + clearance)
-    group_offset: 220    # env steps between manoeuvre groups
+    # 0 = derive it from the plan: the last index at which anything is still
+    # contested. A constant is only ever right for one scenario -- 220 suits the
+    # open cross and is ~4x too small for the cluttered cross, whose trajectory
+    # lengths spread over 848 steps.
+    group_offset: 0      # env steps between manoeuvre groups; 0 = derived
     lead: 5.5            # metres run straight before the veer begins
     span: 2.0            # metres held at the veered offset across the crossing
     # Sampling-rung knobs, shared by both RRT rungs.
