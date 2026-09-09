@@ -287,12 +287,21 @@ approach:
     # them per-robot. The mechanism's purpose -- room to manoeuvre that the window did not
     # previously contain -- is served by re-opening committed motion.
     adapt_max: 1
-    # Planning time budget in seconds for the WHOLE instance, matching K-ARC's experimental
-    # setup (SS V), which gives every method 600 s. Checked between rungs, rounds and
-    # segments, so the overshoot is one solver call. On expiry every robot brakes to rest and
-    # the run reports `timed_out=1` with the remaining segments counted unsolved -- a timeout
-    # is a FAILURE, not a slow success, and must be reported as one. null disables it.
-    timeout: 600.0
+    # Planning time budget in seconds for the WHOLE instance. Checked between rungs, rounds
+    # and segments, so the overshoot is one solver call. On expiry every robot brakes to rest
+    # and the run reports `timed_out=1` with the remaining segments counted unsolved -- a
+    # timeout is a FAILURE, not a slow success, and must be reported as one. null disables it.
+    #
+    # K-ARC's own setup (SS V) gives every method 600 s, but that is C++ in the Parasol
+    # Planning Library on a 32-core machine; this is Python driving IPOPT through CasADi, so
+    # 600 s here buys a small fraction of the same search and is not the same experiment.
+    # Holding to it was actively misleading: at N=32 EVERY arm we ran -- baseline, detune,
+    # speed assignment, multi-disc -- ended with rounds=1, meaning none of them completed a
+    # single resolution round, so `conflicts_remaining` measured how far each got before the
+    # clock stopped rather than how well it resolved, and no two arms were comparable.
+    # 1800 s is the working budget: enough to finish a round at N=32, and still a bound.
+    # Wall times remain incomparable to the paper's either way; correctness first.
+    timeout: 1800.0
     # What to do when a segment's subproblem is never resolved (or the budget expires).
     #   return_empty - K-ARC's Alg. 1 lines 26-27: `return ∅`. The WHOLE instance fails and
     #                  no plan is emitted, so nothing moves. K-ARC never returns a plan with
