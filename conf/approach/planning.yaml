@@ -215,6 +215,46 @@ approach:
     # Sampling-rung knobs, shared by both RRT rungs.
     rrt_seed: 0          # tree growth is randomised, so a run is only reproducible per-seed.
     rrt_iters: 3000      # extension attempts before giving up and failing the rung.
+    # Slot assignment for the `wait` rung. NOVELTY -- not K-ARC. Subproblems that compete
+    # for the same space get different colours, so their resolutions do not all happen at
+    # once. On open_cross_32, 19 of 19 conflicts are individually resolvable by waiting and
+    # the plan still fails: pairwise resolvability is not joint resolvability, and K-ARC's
+    # per-pair decomposition cannot see the difference.
+    # Robots are not manufactured identical, and Open Cross assumes they are: identical
+    # bodies, evenly spaced identical rows, simultaneous starts. Every subproblem then finds
+    # the same locally-cheapest resolution and they all bid for the same space at the same
+    # instant -- which is why 19 of 19 conflicts at N=32 are individually resolvable and none
+    # of them jointly. `detune` scales each robot's acceleration bounds by a factor drawn
+    # once from [1-detune, 1]. DOWNWARD only, so a plan stays executable on the real robot.
+    # 0.0 is the faithful K-ARC baseline: exactly homogeneous.
+    detune: 0.0
+    # Directed speed assignment (NOVELTY -- not K-ARC). Random detuning makes robots differ
+    # but not the RIGHT ones; a conflict needs an ORIENTATION -- one of the pair goes first.
+    # Orient every conflict, and consistency is exactly acyclicity of the directed conflict
+    # graph; robots on a cycle admit no speed assignment and are handed to the ladder.
+    # Rank comes from a topological order, speed from rank, DOWNWARD only.
+    speed_assignment: false
+    speed_step: 0.15     # authority given up per rank.
+    # HOW rank is spent. `offset` leaves every bound alone and buys a later START, so the
+    # optimizer keeps full authority to meet it -- the per-robot objective (N*dt + effort,
+    # trajopt.py) rewards going flat out, so a robot never staggers on its own however much
+    # room it has; the schedule is what has to change, not the capability. `clamp` scales
+    # the bounds instead, which removes the authority to dodge as well, and is kept only as
+    # the ablation arm showing why that is the wrong lever.
+    speed_mode: offset   # offset | clamp
+    # HOW rank is derived. `colour` separates: conflicting robots get different ranks, using
+    # the fewest ranks that achieves it, so no robot is asked for a long delay. `chain`
+    # ORDERS instead (topological rank over "who reaches the crossing first"), and is kept
+    # only as the ablation showing why ordering is the wrong structure here: Open Cross is
+    # exactly symmetric, so every tie breaks by robot index, the order runs deep enough that
+    # 25 of 32 robots hit `speed_floor`, and the resulting collapse hands 38 conflicting
+    # PAIRS the same rank -- destroying the very separation the offsets depend on.
+    speed_rank: colour   # colour | chain
+    colour_restarts: 8   # random greedy orders tried; the fewest-rank colouring wins.
+    offset_steps: 8      # env steps of delay per rank, in `offset` mode.
+    speed_floor: 0.5     # never below half, however deep the order gets.
+    slot_reach: 1.0      # metres of borrowed space a resolution is assumed to need.
+    slot_steps: 8        # extra wait per colour, in env steps.
     repair_rrt_iters: 2000   # guide_repair's 2-D RRT; cheaper per sample than the above.
     repair_stride: 0.25      # corridor blockers are deduped by ARCLENGTH, metres.
     rrt_controls: 10     # controls sampled per extension; the best is kept (best-input RRT).

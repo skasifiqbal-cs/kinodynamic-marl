@@ -39,6 +39,7 @@ paper reports — conflicts found, resolution rounds, solver calls and wall time
 """
 from __future__ import annotations
 
+import copy
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -69,6 +70,149 @@ class KARCPlanner(BasePlanner):
         # Known before reset(), because the runner has to decide whether to roll out at all.
         self._execute = bool((params or {}).get("execute", False))
 
+    @staticmethod
+    def _detuned(env, eps: float, seed: int):
+        """Robots with slightly REDUCED, slightly UNEQUAL acceleration authority.
+
+        Open Cross is exactly symmetric: identical robots, evenly spaced identical rows,
+        simultaneous starts. Every subproblem therefore computes the same locally-cheapest
+        resolution and they all bid for the same space at the same instant, which is why 19
+        of 19 conflicts at N=32 are individually resolvable and none of them jointly. The
+        cascade is a symmetry artifact of the benchmark, not a density limit.
+
+        Real robots are never identical, so the idealisation is what is unusual here, not
+        its removal. Each robot's acceleration bounds are scaled by a factor drawn once from
+        [1-eps, 1]. Only DOWNWARD: a plan plotted with less authority than the robot has
+        stays executable on the real one, so nothing is bought on credit.
+        """
+        if eps <= 0.0:
+            return list(env.robots)
+        rng = np.random.default_rng(seed)
+        out = []
+        for r in env.robots:
+            c = copy.copy(r)
+            f = float(1.0 - eps * rng.random())
+            for attr in ("a_max", "a_min", "alpha_max", "alpha_min"):
+                if hasattr(r, attr):
+                    setattr(c, attr, getattr(r, attr) * f)
+            out.append(c)
+        return out
+
+    def _colour_ranks(self, conflicts, n):
+        """Rank by proper COLOURING of the robot conflict graph, not by precedence.
+
+        Ordering was the wrong structure. A topological rank imposes a total order and so
+        MAXIMISES chain length: Open Cross is exactly symmetric, every tie breaks the same
+        way, and N=32 collapses into one 16-deep chain -- the whole fleet serialised, and
+        the segment worse off than it started. Conflicting robots do not need to be ordered,
+        they need to be SEPARATED, and the fewest ranks that separate neighbours is a proper
+        colouring. The Open Cross graph (rows coupled to their n+-2 neighbours) is a ladder,
+        hence bipartite, hence 2 ranks -- one offset, not fifteen.
+
+        Greedy colouring depends on the order vertices are visited, so the order is drawn
+        from a seeded RNG: it avoids the pathological orders a fixed sweep walks into, and
+        makes trials genuinely independent, which is what a 20-trial table needs.
+        """
+        adj: dict[int, set] = {i: set() for i in range(n)}
+        for a, b, _k in conflicts:
+            adj[a].add(b)
+            adj[b].add(a)
+        rng = np.random.default_rng(int(self.params.get("rrt_seed", 0))
+                                    + 104729 * (self.stats["rounds"] + 1))
+        # Greedy is order-sensitive, so draw several orders and keep the one needing the
+        # fewest ranks. One random sweep gave 4 ranks on a graph that is 2-colourable; a
+        # handful of restarts finds the 2. Every extra rank is another `offset_steps` of
+        # delay charged to real robots, so the restarts pay for themselves immediately.
+        best: dict[int, int] = {}
+        for _ in range(max(1, int(self.params.get("colour_restarts", 8)))):
+            colour: dict[int, int] = {}
+            for i in rng.permutation(n):
+                i = int(i)
+                taken = {colour[j] for j in adj[i] if j in colour}
+                c = 0
+                while c in taken:
+                    c += 1
+                colour[i] = c
+            if not best or max(colour.values()) < max(best.values()):
+                best = colour
+        colour = best
+
+        step = float(self.params.get("speed_step", 0.15))
+        floor = float(self.params.get("speed_floor", 0.5))
+        scale = [max(floor, 1.0 - step * colour.get(i, 0)) for i in range(n)]
+        return scale, set()          # a colouring always exists; nothing is unschedulable
+
+    def _speed_assignment(self, conflicts, segs, goals, n):
+        """Who hurries and who eases off, as one consistent decision over ALL conflicts.
+
+        NOVELTY -- not K-ARC. Detuning robots at random makes them differ; it does not make
+        the RIGHT one differ, which is why an undirected 5% draw moved nothing at N=32. The
+        decision a conflict actually needs is an orientation: for the pair (a, b), one of
+        them goes first. Orient every conflict and the question becomes whether those
+        choices are mutually consistent -- and they are exactly when the directed conflict
+        graph is ACYCLIC. A cycle (a before b before c before a) admits no speed assignment
+        at all, and is precisely the conflict that has to be escalated to geometry instead
+        of schedule. That test is the rung's own stopping condition, computed before solving.
+
+        Rank comes from a topological order of the DAG; speed follows rank. Only DOWNWARD,
+        so nothing is asked of a robot that it cannot deliver: the leader keeps full
+        authority and each later rank eases off by `speed_step`.
+
+        Returns (scale per robot, robots in cycles). Choosing speeds along fixed paths is
+        classic path-velocity decomposition; what is new here is doing it under second-order
+        bounds as a rung of a kinodynamic resolution ladder, with acyclicity as the trigger
+        to escalate.
+        """
+        if str(self.params.get("speed_rank", "colour")) == "colour":
+            return self._colour_ranks(conflicts, n)
+
+        succ = {i: set() for i in range(n)}
+        indeg = dict.fromkeys(range(n), 0)
+        for a, b, k in conflicts:
+            # Whoever has less of its own leg left at the moment of closest approach is the
+            # one already committed to the crossing, so it goes first.
+            k = min(int(k), len(segs[a]) - 1, len(segs[b]) - 1)
+            left_a = float(np.linalg.norm(np.asarray(goals[a])[:2] - segs[a][k][:2]))
+            left_b = float(np.linalg.norm(np.asarray(goals[b])[:2] - segs[b][k][:2]))
+            first, second = (a, b) if left_a <= left_b else (b, a)
+            if second not in succ[first]:
+                succ[first].add(second)
+                indeg[second] += 1
+
+        # Kahn's algorithm. Whatever it cannot place sits on a cycle.
+        rank, ready = {}, sorted(i for i in range(n) if indeg[i] == 0)
+        while ready:
+            i = ready.pop(0)
+            rank[i] = max((rank[p] + 1 for p in range(n) if i in succ[p] and p in rank),
+                          default=0)
+            for j in sorted(succ[i]):
+                indeg[j] -= 1
+                if indeg[j] == 0:
+                    ready.append(j)
+        cyclic = {i for i in range(n) if i not in rank}
+
+        step = float(self.params.get("speed_step", 0.15))
+        floor = float(self.params.get("speed_floor", 0.5))
+        scale = [max(floor, 1.0 - step * rank.get(i, 0)) for i in range(n)]
+        return scale, cyclic
+
+    @staticmethod
+    def _scaled(robots, scale):
+        """Copies with reduced speed authority. Acceleration is the control, so the bound
+        that a slower schedule is realised through is a_max; v_max moves with it so the
+        robot actually cruises slower rather than merely taking longer to get there."""
+        out = []
+        for r, f in zip(robots, scale):
+            if f >= 1.0:
+                out.append(r)
+                continue
+            c = copy.copy(r)
+            for attr in ("a_max", "a_min", "alpha_max", "alpha_min", "v_max"):
+                if hasattr(r, attr):
+                    setattr(c, attr, getattr(r, attr) * f)
+            out.append(c)
+        return out
+
     def reset(self, env) -> None:
         t0 = time.perf_counter()
         t_cfg = self.approach_cfg.get("trajopt", {})
@@ -82,6 +226,8 @@ class KARCPlanner(BasePlanner):
         clearance = float(t_cfg.get("clearance", 0.05))
         on_unsolved = str(k_cfg.get("on_unsolved", "return_empty"))
         budget = k_cfg.get("timeout", 600.0)
+        self._robots = self._detuned(env, float(k_cfg.get("detune", 0.0)),
+                                     int(k_cfg.get("rrt_seed", 0)))
         # A plan is only a plan if it arrives in time. K-ARC's experimental setup gives every
         # method 600 s per instance, so a run that keeps solving past it has not produced a
         # slow success -- it has produced a failure that nobody stopped. Without this the
@@ -103,6 +249,8 @@ class KARCPlanner(BasePlanner):
             # settle, measured on every subproblem regardless of the rung taken.
             "pairs_seen": 0, "pairs_wait_resolvable": 0, "pairs_ics": 0,
             "wait_attempts": 0, "wait_blocked": 0, "wait_solved": 0,
+            "slots_used": 0, "slot_max": 0,
+            "speed_ranks": 0, "speed_cycles": 0, "speed_passes": 0,
             "joint_solves": 0,
             "decoupled_rrt_solves": 0,
             "composite_rrt_solves": 0,
@@ -462,8 +610,7 @@ class KARCPlanner(BasePlanner):
 
     # ── pieces ────────────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _segment_horizon(env, t_cfg, state, goals, total_h, m, guides=None) -> int:
+    def _segment_horizon(self, env, t_cfg, state, goals, total_h, m, guides=None) -> int:
         """Steps allotted to one segment: the slowest robot's bang-bang time over its
         own leg. Capped by the whole-plan budget so a pathological leg cannot eat it.
 
@@ -485,7 +632,7 @@ class KARCPlanner(BasePlanner):
             for i in range(env._n)
         ]
         worst = max(
-            bangbang_time(legs[i], 0.0, env.robots[i].v_max, env.robots[i].a_max)
+            bangbang_time(legs[i], 0.0, self._robots[i].v_max, self._robots[i].a_max)
             for i in range(env._n)
         )
         return int(np.clip(np.ceil(slack * worst / env.dt), 2, total_h))
@@ -550,7 +697,7 @@ class KARCPlanner(BasePlanner):
             max_iter=int(t_cfg.get("max_iters", 500)),
             obstacle_margin=t_cfg.get("obstacle_margin", None),
         )
-        specs = [(env.robots[i], state[i], goals[i], env._obstacles, env._world_size,
+        specs = [(self._robots[i], state[i], goals[i], env._obstacles, env._world_size,
                   dict(base, guides=[guides[i]])) for i in range(env._n)]
         self.stats["min_time_solves"] += len(specs)
         # An infeasible free-dt probe says nothing about duration, so it falls back to the
@@ -592,8 +739,7 @@ class KARCPlanner(BasePlanner):
         pts = np.asarray(path, dtype=float)[:, :2]
         return float(np.sum(np.linalg.norm(np.diff(pts, axis=0), axis=1))) if len(pts) > 1 else 0.0
 
-    @staticmethod
-    def _total_horizon(env, t_cfg, refs=None) -> int:
+    def _total_horizon(self, env, t_cfg, refs=None) -> int:
         """Time budget in env steps. See OptimizationPlanner._auto_horizon.
 
         Measured along the reference paths when they are available, for the same reason
@@ -610,7 +756,7 @@ class KARCPlanner(BasePlanner):
             for i in range(env._n)
         ]
         worst = max(
-            bangbang_time(legs[i], 0.0, env.robots[i].v_max, env.robots[i].a_max)
+            bangbang_time(legs[i], 0.0, self._robots[i].v_max, self._robots[i].a_max)
             for i in range(env._n)
         )
         return min(env.max_steps, max(10, int(np.ceil(slack * worst / env.dt))))
@@ -820,7 +966,7 @@ class KARCPlanner(BasePlanner):
         avoid_radii = tuple(a[1] for a in avoid)
         self.stats["solver_calls"] += 1
         X, _U, _dt, ok = solve_trajectory(
-            env.robots[i], start, goal, env._obstacles, env._world_size,
+            self._robots[i], start, goal, env._obstacles, env._world_size,
             horizon=seg_h,
             effort_weight=float(t_cfg.get("effort_weight", 0.01)),
             dt_fixed=self._dt_seg,
@@ -895,7 +1041,7 @@ class KARCPlanner(BasePlanner):
             max_iter=int(t_cfg.get("max_iters", 500)),
             obstacle_margin=t_cfg.get("obstacle_margin", None),
         )
-        specs = [(env.robots[i], state[i], goals[i], env._obstacles, env._world_size,
+        specs = [(self._robots[i], state[i], goals[i], env._obstacles, env._world_size,
                   dict(base, guides=[guides[i]])) for i in range(env._n)]
         segs, ctrls, oks = [], [], []
         for X, U, _dt, ok in self._solve_many(specs):
@@ -920,6 +1066,63 @@ class KARCPlanner(BasePlanner):
         # subproblem, so gating on `not all(oks)` would re-solve an untouched problem until
         # max_rounds and then adapt -- 6 rounds and 2 adaptations on open_cross_4, which has
         # two independent head-on pairs and needs neither.
+        # Coordination pass: one directed speed assignment over ALL of this segment's
+        # conflicts, before the ladder resolves any of them individually. This is the step
+        # K-ARC has no equivalent of -- its subproblems are decided pairwise and in
+        # isolation, which is why 19 of 19 conflicts at N=32 are individually resolvable and
+        # none of them jointly. Robots on a cycle keep full authority: no speed assignment
+        # can order them, and the ladder below is what they need.
+        if bool(self.params.get("speed_assignment", False)) and conflicts:
+            scale, cyclic = self._speed_assignment(conflicts, segs, goals, env._n)
+            self.stats["speed_cycles"] += len(cyclic)
+            self.stats["speed_ranks"] = max(self.stats["speed_ranks"],
+                                            sum(1 for f in scale if f < 1.0))
+            mode = str(self.params.get("speed_mode", "offset"))
+            if any(f < 1.0 for f in scale):
+                self.stats["speed_passes"] += 1
+                if mode == "clamp":
+                    # Blunt arm, kept for the ablation. Clamping does not add the incentive
+                    # to stagger, it REMOVES the authority to do anything else -- including
+                    # the authority to dodge, which is why it can make a segment worse.
+                    self._robots = self._scaled(self._robots, scale)
+                    heads = [None] * env._n
+                    hs = [seg_h] * env._n
+                else:
+                    # Schedule arm. Bounds are untouched; rank buys a later START, and the
+                    # optimizer spends full authority meeting it. SS IV-D-2 allows exactly
+                    # this: segments "can be of different timesteps between different
+                    # robots", with waiting states for whoever arrives first.
+                    step = int(self.params.get("offset_steps", 8))
+                    ks = [min(int(round((1.0 - f) / max(1e-9, float(
+                        self.params.get("speed_step", 0.15))))) * step, seg_h - 2)
+                        for f in scale]
+                    # (controls, states) for the hold. The prefix is a real brake-to-rest
+                    # under the robot's own bounds, not a row of zeros: a robot entering the
+                    # segment with speed has to decelerate before it can wait.
+                    heads = [None if k <= 0 else
+                             self._brake(env, i, np.asarray(state[i], float), k)
+                             for i, k in enumerate(ks)]
+                    hs = [seg_h - max(0, k) for k in ks]
+                specs = [(self._robots[i],
+                          state[i] if heads[i] is None else heads[i][1],
+                          goals[i], env._obstacles, env._world_size,
+                          dict(base, horizon=hs[i], guides=[guides[i]]))
+                         for i in range(env._n)]
+                segs, ctrls, oks = [], [], []
+                for i, (X, U, _dt, ok) in enumerate(self._solve_many(specs)):
+                    if heads[i] is not None:
+                        hu, _hend, hx = heads[i]
+                        X = np.vstack([hx[:-1], np.asarray(X, float)])
+                        U = np.vstack([np.asarray(hu, float).reshape(len(hu), -1),
+                                       np.asarray(U, float)])
+                    segs.append(X)
+                    ctrls.append(U)
+                    oks.append(ok)
+                conflicts = self._find_conflicts(segs, radii, d_min, clearance, shapes)
+                self._snap(f"{span}: speed assignment "
+                           f"({len(conflicts)} conflict{'' if len(conflicts) == 1 else 's'})",
+                           segs, conflicts)
+
         singles = bool(self.params.get("singleton_subproblems", False))
         rounds = 0
         while (conflicts or (singles and not all(oks))) and rounds < max_rounds \
@@ -992,8 +1195,16 @@ class KARCPlanner(BasePlanner):
             stranded = {i for i, ok in enumerate(oks) if not ok} - set().union(*groups, set())
             groups += [{i} for i in sorted(stranded)]
 
+        # Slot assignment, before any solving: competing subproblems get different colours
+        # so they do not all take their resolution in the same place at the same time.
+        slots = ({} if "wait" not in ladder else self._colour_conflicts(
+            groups, segs, radii, float(self.params.get("slot_reach", 1.0))))
+        if slots:
+            self.stats["slots_used"] += len(set(slots.values()))
+            self.stats["slot_max"] = max(self.stats["slot_max"], max(slots.values()) + 1)
+
         settled: list[set] = []
-        for group in groups:
+        for gi, group in enumerate(groups):
             group = set(group)
             while True:
                 self.stats["subproblems"] += 1
@@ -1019,7 +1230,7 @@ class KARCPlanner(BasePlanner):
                             segs, radii, d_min, clearance, shapes)
                     segs, ctrls, oks = self._resolve(
                         rung, group, segs, ctrls, oks, env, state, goals, seg_h,
-                        t_cfg, radii, last, guides,
+                        t_cfg, radii, last, guides, slot=slots.get(gi, 0),
                     )
                     self.stats["rungs"][rung] = self.stats["rungs"].get(rung, 0) + 1
                     conflicts = self._find_conflicts(segs, radii, d_min, clearance, shapes)
@@ -1164,7 +1375,7 @@ class KARCPlanner(BasePlanner):
         return paths
 
     def _resolve(self, rung, involved, segs, ctrls, oks, env, state, goals, seg_h,
-                 t_cfg, radii, last=True, guides=None):
+                 t_cfg, radii, last=True, guides=None, slot=0):
         """One rung of the solver hierarchy S, applied to ONE subproblem.
 
         `involved` is the subproblem's robot set R', chosen by the caller. Its members are
@@ -1190,7 +1401,7 @@ class KARCPlanner(BasePlanner):
         if rung == "wait":
             return self._wait_rung(
                 involved, segs, ctrls, oks, env, state, goals, seg_h, t_cfg,
-                radii, last, tuple(avoid),
+                radii, last, tuple(avoid), slot,
             )
         if rung == "guide_repair":
             return self._repair_guides(
@@ -1214,6 +1425,56 @@ class KARCPlanner(BasePlanner):
             segs[i], ctrls[i], oks[i] = X, U, ok
             avoid.append((X, radii[i]))
         return segs, ctrls, oks
+
+    @staticmethod
+    def _colour_conflicts(groups, segs, radii, reach):
+        """Give competing subproblems different slots. Greedy colouring of the conflict graph.
+
+        K-ARC builds one subproblem per conflicting pair and resolves each on its own; ARC
+        (SS IV-B) only merges them REACTIVELY, once a resolution has already invalidated
+        another. That is sound when conflicts are independent, and at density they are not:
+        every resolution needs space outside its own pair, each subproblem independently
+        picks the same locally-cheapest place to take it, and the merge cascade follows by
+        construction. Measured on open_cross_32: 19 of 19 pairs are individually resolvable
+        by waiting, and the plan still fails with 3 merges and 4 conflicts left.
+
+        Two subproblems compete if any robot of one comes within `reach` of any robot of the
+        other at a shared index -- the space a resolution would have to borrow. Adjacent
+        subproblems get different colours, so they take their resolutions at different times
+        and never bid for the same space. Greedy colouring is not optimal; it does not have
+        to be, since a wrong slot costs one rung and the ladder still falls through.
+        """
+        groups = [sorted(g) for g in groups]
+        adj: list[set] = [set() for _ in groups]
+        for u in range(len(groups)):
+            for v in range(u + 1, len(groups)):
+                if set(groups[u]) & set(groups[v]):
+                    adj[u].add(v)
+                    adj[v].add(u)
+                    continue
+                near = False
+                for i in groups[u]:
+                    for j in groups[v]:
+                        a, b = np.atleast_2d(segs[i]), np.atleast_2d(segs[j])
+                        n = min(len(a), len(b))
+                        d = np.linalg.norm(a[:n, :2] - b[:n, :2], axis=1).min()
+                        if float(d) < reach + radii[i] + radii[j]:
+                            near = True
+                            break
+                    if near:
+                        break
+                if near:
+                    adj[u].add(v)
+                    adj[v].add(u)
+
+        colour = {}
+        for u in sorted(range(len(groups)), key=lambda x: -len(adj[x])):
+            taken = {colour[v] for v in adj[u] if v in colour}
+            c = 0
+            while c in taken:
+                c += 1
+            colour[u] = c
+        return colour
 
     def _wait_plan(self, env, a, b, segs, radii, clearance):
         """Which robot yields, and for how many steps, or None if waiting cannot fix it.
@@ -1245,7 +1506,7 @@ class KARCPlanner(BasePlanner):
         return best
 
     def _wait_rung(self, involved, segs, ctrls, oks, env, state, goals, seg_h, t_cfg,
-                   radii, last, avoid):
+                   radii, last, avoid, slot=0):
         """Resolve by SCHEDULE alone: one robot brakes to rest, holds until the other has
         passed, then runs its own segment in what time is left.
 
@@ -1277,6 +1538,13 @@ class KARCPlanner(BasePlanner):
             self.stats["wait_blocked"] += 1
             return segs, ctrls, oks
         waiter, k = plan
+        # The slot is what keeps neighbouring subproblems out of each other's way: the
+        # shortest safe wait is the same for all of them, so taking it would send every
+        # resolution into the shared space at once. Colour c waits c further steps.
+        k += slot * int(self.params.get("slot_steps", 8))
+        if not 0 < k < seg_h - 1:
+            self.stats["wait_blocked"] += 1
+            return segs, ctrls, oks
 
         us, st, braked = self._brake(env, waiter, np.asarray(segs[waiter][0], float), k)
         # Avoidance is index-aligned, and the yielder now starts k steps late, so every
@@ -1445,7 +1713,7 @@ class KARCPlanner(BasePlanner):
         if rung == "composite_rrt":
             self.stats["composite_rrt_solves"] += 1
             X, U, ok = krrt.plan(
-                [env.robots[i] for i in involved], [state[i] for i in involved],
+                [self._robots[i] for i in involved], [state[i] for i in involved],
                 [goals[i] for i in involved], env._obstacles, env._world_size,
                 self._dt_seg, seg_h, others=tuple(outside), **kw)
             # One tree, one verdict -- as with the joint program.
@@ -1457,7 +1725,7 @@ class KARCPlanner(BasePlanner):
         avoid = list(outside)
         for i in involved:
             X, U, ok = krrt.plan(
-                [env.robots[i]], [state[i]], [goals[i]], env._obstacles,
+                [self._robots[i]], [state[i]], [goals[i]], env._obstacles,
                 env._world_size, self._dt_seg, seg_h, others=tuple(avoid), **kw)
             segs[i], ctrls[i], oks[i] = X[:, 0], U[:, 0], ok
             avoid.append((segs[i], env.robots[i].shape))
@@ -1485,7 +1753,7 @@ class KARCPlanner(BasePlanner):
         self.stats["joint_solves"] += 1
         self.stats["solver_calls"] += 1
         Xs, Us, _dt, ok = solve_group(
-            [env.robots[i] for i in involved],
+            [self._robots[i] for i in involved],
             [state[i] for i in involved],
             [goals[i] for i in involved],
             env._obstacles, env._world_size,

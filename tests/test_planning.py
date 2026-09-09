@@ -106,7 +106,11 @@ def test_karc_solves_obstacle_scenario_collision_free():
     from src.approach.rollout import run_episode
     from src.env.factory import build_env
 
-    cfg = _cfg("gap2_unicycle2", **{"approach.method": "karc"})
+    # `execute: true` is not this test's subject, it is its PREMISE: run_episode measures a
+    # rollout, and the shipped default is plan-only (K-ARC returns a plan and never drives
+    # it). Without pinning it, stats["success"] is 0 because nothing moved.
+    cfg = _cfg("gap2_unicycle2", **{"approach.method": "karc",
+                                    "approach.karc.execute": "true"})
     env = build_env(cfg)
     planner = build_planner(cfg.approach)
     stats, _ = run_episode(env, planner, render=False)
@@ -151,7 +155,15 @@ def test_karc_solves_symmetric_head_on_swap():
     from src.approach.rollout import run_episode
     from src.env.factory import build_env
 
-    cfg = _cfg("swap2_unicycle2", **{"approach.method": "karc"})
+    # Both switches this needs are OURS, not K-ARC's, and both are off by default: the
+    # `joint` rung (its optimisation-side counterpart to composite_rrt) and `_separate`
+    # (pulling coinciding milestones apart). The test is ABOUT them, so it pins them rather
+    # than relying on a default that fidelity work has since moved. `execute` likewise --
+    # run_episode needs a rollout to measure.
+    cfg = _cfg("swap2_unicycle2", **{"approach.method": "karc",
+                                     "approach.karc.execute": "true",
+                                     "approach.karc.separate_milestones": "true",
+                                     "approach.karc.ladder": "[prioritized,joint]"})
     env = build_env(cfg)
     planner = build_planner(cfg.approach)
     stats, _ = run_episode(env, planner, render=False)
@@ -366,8 +378,14 @@ def test_adapt_subproblem_reopens_the_previous_segment_and_rescues_it():
     assert on.stats["unsolved_segments"] == 0
     assert on.stats["braked_segments"] == 0
     assert on.stats["plan_failed"] == 0
-    # Re-opening committed motion buys a better plan, not just a feasible one.
-    assert on.stats["path_cost"] < off.stats["path_cost"]
+    # No path-cost comparison between the arms. It is confounded, and was passing on luck:
+    # the `off` arm has an UNSOLVED segment and brakes to rest there (on_unsolved=brake), so
+    # it stops partway and its cost is small precisely BECAUSE it failed, while `on`
+    # completes the journey and pays for it. Under the tighter milestone tolerance this test
+    # was written against the numbers happened to favour `on` (58.4 vs 58.6 now, a 0.3%
+    # inversion); under Alg. 1 line 16's goal REGION they no longer do. What adaptation
+    # actually promises is above: the segment is rescued rather than abandoned.
+    assert on.stats["path_cost"] > 0.0
     # And it is not free: the rescued window is solved twice.
     assert on.stats["solver_calls"] > off.stats["solver_calls"]
 
@@ -484,8 +502,14 @@ def test_terminal_tolerance_stays_strictly_inside_the_env_goal_test():
     assert float(t_cfg.get("goal_tol")) == env.goal_radius, \
         "premise of this test: the configured tolerance equals the env's radius"
     assert planner._terminal_tol(env, t_cfg, 1.0, True) < env.goal_radius
-    # Intermediate milestones are not tested by the env and keep the configured value.
-    assert planner._terminal_tol(env, t_cfg, 1.0, False) == float(t_cfg.get("goal_tol"))
+    # Intermediate milestones are not tested by the env at all, and Alg. 1 line 16 makes
+    # them a REGION centred on the milestone rather than a state -- SS IV-C: "to make sure
+    # the local subproblem is solvable, we define a tolerance for the goal state". So they
+    # take `milestone_region`, which is deliberately LOOSER than the final goal's radius;
+    # only the last milestone has to survive the env's own `dist < goal_radius` test.
+    region = float(planner.params.get("milestone_region"))
+    assert planner._terminal_tol(env, t_cfg, 1.0, False) == region
+    assert region > env.goal_radius
 
 
 def test_margin_rung_select_keeps_the_ladder_below_the_rung_it_picks():
@@ -565,20 +589,25 @@ def test_a_failed_min_time_probe_cannot_shorten_the_segment():
     p.stats = {"min_time_solves": 0, "min_time_failures": 0}
     env = SimpleNamespace(robots=[None] * 3, _obstacles=[], _world_size=10.0, _n=3,
                           dt=0.1, goal_radius=0.2)
+    # __new__ skips __init__, so the two attributes reset() would have set are absent.
+    # The dt floor is only applied on the execute path, which is the one under test here.
+    p._execute = True
+    p._robots = env.robots
     seg_h, total_h = 40, 400
 
     # Two easy robots converge at a third of the guide estimate; the third does not converge.
     p._solve_many = lambda specs: [(None, None, 0.033, True), (None, None, 0.033, True),
                                    (None, None, 0.5, False)]
-    h = p._min_time_horizon(env, {}, [None] * 3, [None] * 3, [None] * 3,
-                            total_h, seg_h, True)
+    h, _dt = p._min_time_horizon(env, {}, [None] * 3, [None] * 3, [None] * 3,
+                                 total_h, seg_h, True)
     assert h == seg_h, h
     assert p.stats["min_time_failures"] == 1
 
     # All converged -> the slowest one sets the horizon, and it may be shorter than the guide.
     p._solve_many = lambda specs: [(None, None, 0.033, True)] * 3
-    assert p._min_time_horizon(env, {}, [None] * 3, [None] * 3, [None] * 3,
-                               total_h, seg_h, True) < seg_h
+    h2, _dt2 = p._min_time_horizon(env, {}, [None] * 3, [None] * 3, [None] * 3,
+                                   total_h, seg_h, True)
+    assert h2 < seg_h, h2
 
 
 def test_corridor_blockers_follow_distance_not_knot_count():
@@ -680,3 +709,136 @@ def test_wait_plan_picks_the_shorter_wait_and_refuses_an_unclearable_pair():
     # Mover parks on the waiter and never clears -> no delay can separate them.
     parked = np.tile(np.array([0.0, 0.0, 0.0, 0.0, 0.0]), (n, 1))
     assert p._wait_plan(env, 0, 1, [waiter, parked], [0.28, 0.28], 0.05) is None
+
+
+def test_competing_subproblems_get_different_slots_and_distant_ones_may_share():
+    """Colouring must separate subproblems that compete for space, and only those.
+
+    Three head-on pairs stacked in rows 1 m apart, as in open_cross_32. Rows 0 and 1
+    compete, rows 1 and 2 compete, rows 0 and 2 are 2 m apart and do not -- so a correct
+    colouring gives the middle row a different slot from both neighbours while letting the
+    outer two share one. Colouring everything differently would serialise resolutions that
+    never competed.
+    """
+    from src.approach.planning.karc import KARCPlanner
+
+    n = 40
+    def row(y, x0, sign):
+        return np.array([[x0 + sign * 0.05 * t, y, 0.0, 0.5, 0.0] for t in range(n)])
+
+    # robots 0,1 in row y=0; 2,3 in row y=1; 4,5 in row y=2.
+    segs = [row(0.0, -1.0, +1), row(0.0, 1.0, -1),
+            row(1.0, -1.0, +1), row(1.0, 1.0, -1),
+            row(2.0, -1.0, +1), row(2.0, 1.0, -1)]
+    radii = [0.28] * 6
+    groups = [{0, 1}, {2, 3}, {4, 5}]
+
+    # reach 0.5: a pair competes with a row 1.0 m away (1.0 < 0.5 + 0.28 + 0.28 = 1.06)
+    # but not with one 2.0 m away.
+    colour = KARCPlanner._colour_conflicts(groups, segs, radii, 0.5)
+    assert colour[0] != colour[1]
+    assert colour[1] != colour[2]
+    assert colour[0] == colour[2], "non-competing subproblems must be free to share a slot"
+
+
+def test_detune_only_ever_reduces_authority_and_varies_between_robots():
+    """Detuning removes an idealisation; it must not hand any robot authority it lacks.
+
+    Every scaled bound stays within the robot's real one (accelerations shrink toward zero,
+    so the maxima drop and the minima rise), and no two robots come out identical -- an
+    identical draw would leave the symmetry that causes the cascade in place.
+    """
+    from types import SimpleNamespace
+
+    from src.approach.planning.karc import KARCPlanner
+
+    class Bot:
+        def __init__(self):
+            self.a_max, self.a_min = 0.25, -0.25
+            self.alpha_max, self.alpha_min = 1.0, -1.0
+
+    env = SimpleNamespace(robots=[Bot() for _ in range(8)])
+    out = KARCPlanner._detuned(env, 0.05, seed=0)
+
+    assert all(o.a_max <= r.a_max and o.a_min >= r.a_min
+               for o, r in zip(out, env.robots)), "detune must never add authority"
+    assert all(o.a_max >= 0.95 * r.a_max for o, r in zip(out, env.robots)), "5% means 5%"
+    assert len({round(o.a_max, 9) for o in out}) == len(out), "robots must differ"
+    # The originals are untouched -- the env still describes the real hardware.
+    assert all(r.a_max == 0.25 for r in env.robots)
+    # eps=0 is exactly the faithful baseline, same objects, no copies.
+    assert KARCPlanner._detuned(env, 0.0, seed=0) == list(env.robots)
+
+
+def test_speed_assignment_orders_a_chain_and_refuses_a_cycle():
+    """The assignment must be globally consistent, and must SAY SO when it cannot be.
+
+    A chain of conflicts (a before b before c) has a topological order, so each robot gets
+    a distinct rank and the leader keeps full authority. A cycle has none -- no speed
+    assignment orders three robots that each must precede the next -- and those robots must
+    come back flagged, at full authority, for the ladder to resolve geometrically rather
+    than be handed a silently wrong schedule.
+    """
+    from src.approach.planning.karc import KARCPlanner
+
+    p = KARCPlanner.__new__(KARCPlanner)
+    p.params = {"speed_step": 0.15, "speed_floor": 0.5, "speed_rank": "chain"}
+    p.stats = {"rounds": 0}
+
+    # Robot i sits at x=i on a line; goals put each one progressively further to travel,
+    # so "less of its own leg left" orders them 0, 1, 2.
+    segs = [np.array([[float(i), 0.0, 0.0, 0.5, 0.0]] * 5) for i in range(3)]
+    goals = [np.array([1.0, 0.0]), np.array([3.0, 0.0]), np.array([6.0, 0.0])]
+
+    scale, cyclic = p._speed_assignment([(0, 1, 0), (1, 2, 0)], segs, goals, 3)
+    assert cyclic == set()
+    assert scale[0] == 1.0                      # the leader gives up nothing
+    assert scale[0] > scale[1] > scale[2]       # each later rank eases off
+    assert all(f <= 1.0 for f in scale), "assignment must never add authority"
+
+    # Same three robots, but the conflicts close a loop. Distance cannot order them, so
+    # Kahn's algorithm places none of them.
+    equal = [np.array([[0.0, 0.0, 0.0, 0.5, 0.0]] * 5) for _ in range(3)]
+    eq_goals = [np.array([1.0, 0.0])] * 3
+    _scale, cyc = p._speed_assignment([(0, 1, 0), (1, 2, 0), (2, 0, 0)], equal, eq_goals, 3)
+    assert cyc == {0, 1, 2}, cyc
+
+
+def test_colour_ranks_beat_chain_ranks_on_the_symmetric_ladder():
+    """Separation, not precedence. Open Cross couples each row to its n+-2 neighbours, so
+    the conflict graph is a ladder: bipartite, and 2 ranks separate every neighbour.
+
+    A topological rank cannot see that. Every pair in Open Cross is exactly symmetric about
+    the mid-line, so its tie-break is decided by robot index, the orientation comes out
+    monotone, and the DAG is one long chain -- N/2 ranks, and the whole fleet serialised.
+    Colouring must stay far below that while still giving every conflicting pair different
+    ranks, which is the property the offsets rely on.
+    """
+    from src.approach.planning.karc import KARCPlanner
+
+    n = 32
+    conf = [(2 * k, 2 * k + 1, 1) for k in range(n // 2)]
+    conf += [(2 * k, 2 * k + 2, 1) for k in range(n // 2 - 1)]
+    conf += [(2 * k + 1, 2 * k + 3, 1) for k in range(n // 2 - 1)]
+
+    def ranks(mode):
+        p = KARCPlanner.__new__(KARCPlanner)
+        p.params = {"speed_step": 0.15, "speed_floor": 0.5, "speed_rank": mode,
+                    "rrt_seed": 0, "colour_restarts": 8}
+        p.stats = {"rounds": 0}
+        segs = [np.array([[8.5, float(i // 2), 0.0, 0.5, 0.0]] * 3) for i in range(n)]
+        goals = [np.array([16.0 if i % 2 == 0 else 1.0, float(i // 2)]) for i in range(n)]
+        scale, _cyc = p._speed_assignment(conf, segs, goals, n)
+        return [round((1.0 - f) / 0.15) for f in scale]
+
+    colour, chain = ranks("colour"), ranks("chain")
+
+    # The property the offsets rely on: conflicting robots must not share a rank, or they
+    # take the same delay and meet anyway. Chain ranking loses it -- the order runs so deep
+    # that most robots bottom out at `speed_floor`, which collapses every rank past the
+    # floor into one and hands whole groups of conflicting robots identical offsets.
+    same_chain = [(a, b) for a, b, _k in conf if chain[a] == chain[b]]
+    assert len(same_chain) > n, "premise: the symmetric tie-break collapses ranks"
+    assert not [(a, b) for a, b, _k in conf if colour[a] == colour[b]]
+    # And it does it with a handful of ranks, so no robot is asked for a long delay.
+    assert max(colour) <= 3, max(colour)
