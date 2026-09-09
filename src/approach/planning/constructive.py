@@ -30,23 +30,43 @@ from src.collision.shapes import collides, shape_distance
 
 
 def _profile(delta, dt, acc_max, vel_max):
-    """Symmetric accel/decel covering exactly `delta`, ending at rest.
+    """Accelerate/cruise/decelerate covering exactly `delta`, ending at rest.
 
     Solved on the semi-implicit Euler the env actually integrates with, so a leg LANDS on
-    its target rather than near it: n steps up then n down advance a*dt^2*n^2, so n fixes
-    the acceleration. Pick the smallest n whose implied a and peak velocity are in bounds.
+    its target rather than near it. n steps at +a then n at -a advance a*dt^2*n^2; adding
+    m cruise steps at the peak makes it a*dt^2*n*(n+m).
+
+    The cruise phase is not a refinement, it is most of the horizon. Without it a long leg
+    has to keep accelerating to its midpoint, so the velocity cap alone forces
+    n = d/(dt*v_max) steps each way -- 600 steps for the 15 m traverse here against 320
+    for the same motion at the same limits. Triangular profiles were costing 1.9x the
+    budget on every robot, which is what put the cluttered plans over the horizon.
     """
     d = abs(float(delta))
     if d < 1e-12:
         return []
+    sign = float(np.sign(delta))
+
+    # Triangular: fastest when the leg is too short to reach the speed cap.
     n = max(1, int(np.ceil(np.sqrt(d / (dt * dt * acc_max)))))
     while True:
         a = d / (dt * dt * n * n)
         if a <= acc_max + 1e-12 and n * a * dt <= vel_max + 1e-12:
             break
         n += 1
-    a *= float(np.sign(delta))
-    return [a] * n + [-a] * n
+    best = [a] * n + [-a] * n
+
+    # Trapezoidal: reach the cap in `nu` steps, then hold it for the rest of the distance.
+    nu = max(1, int(np.ceil(vel_max / (acc_max * dt))))
+    if dt * dt * acc_max * nu * nu < d:
+        m = int(np.ceil(d / (dt * dt * acc_max * nu) - nu))
+        if m > 0:
+            a2 = d / (dt * dt * nu * (nu + m))
+            if a2 <= acc_max + 1e-12 and nu * a2 * dt <= vel_max + 1e-12:
+                trap = [a2] * nu + [0.0] * m + [-a2] * nu
+                if len(trap) < len(best):
+                    best = trap
+    return [x * sign for x in best]
 
 
 def _turn_then_go(robot, state, target, dt):
