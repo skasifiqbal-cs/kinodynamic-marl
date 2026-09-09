@@ -696,6 +696,7 @@ class KARCPlanner(BasePlanner):
             terminal_stop=last,
             max_iter=int(t_cfg.get("max_iters", 500)),
             obstacle_margin=t_cfg.get("obstacle_margin", None),
+            body_discs=int(t_cfg.get("body_discs", 1)),
         )
         specs = [(self._robots[i], state[i], goals[i], env._obstacles, env._world_size,
                   dict(base, guides=[guides[i]])) for i in range(env._n)]
@@ -977,6 +978,7 @@ class KARCPlanner(BasePlanner):
             max_iter=int(t_cfg.get("max_iters", 500)),
             guides=None if guide is None else [guide],
             obstacle_margin=t_cfg.get("obstacle_margin", None),
+            body_discs=int(t_cfg.get("body_discs", 1)),
         )
         return X, _U, ok
 
@@ -1040,6 +1042,7 @@ class KARCPlanner(BasePlanner):
             terminal_stop=last,
             max_iter=int(t_cfg.get("max_iters", 500)),
             obstacle_margin=t_cfg.get("obstacle_margin", None),
+            body_discs=int(t_cfg.get("body_discs", 1)),
         )
         specs = [(self._robots[i], state[i], goals[i], env._obstacles, env._world_size,
                   dict(base, guides=[guides[i]])) for i in range(env._n)]
@@ -1767,6 +1770,7 @@ class KARCPlanner(BasePlanner):
             max_iter=int(t_cfg.get("max_iters", 500)),
             guides=None if guides is None else [guides[i] for i in involved],
             obstacle_margin=t_cfg.get("obstacle_margin", None),
+            body_discs=int(t_cfg.get("body_discs", 1)),
         )
         segs, ctrls, oks = list(segs), list(ctrls), list(oks)
         # One program, one verdict: the group is feasible together or not at all.

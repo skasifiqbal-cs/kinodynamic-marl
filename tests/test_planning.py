@@ -842,3 +842,36 @@ def test_colour_ranks_beat_chain_ranks_on_the_symmetric_ladder():
     assert not [(a, b) for a, b, _k in conf if colour[a] == colour[b]]
     # And it does it with a handful of ranks, so no robot is asked for a long delay.
     assert max(colour) <= 3, max(colour)
+
+
+def test_multi_disc_cover_contains_the_body_and_shrinks_the_constraint():
+    """The k-disc cover must CONTAIN the rectangle, or the avoidance constraint is unsound
+    rather than merely tighter -- a gap in the cover is a part of the robot nothing avoids.
+
+    Radius hypot(L/2k, W/2) with centres spaced L/k along the axis is the exact cover: each
+    disc owns a L/k slab, and its furthest point is that slab's corner.
+    """
+    # Read the real body instead of hard-coding it: BoxShape.width is the FORWARD extent and
+    # .length the LATERAL one here, inverted from the usual convention. A test carrying its
+    # own constants cannot catch the code getting that backwards -- and this one did not.
+    import yaml
+    sh = yaml.safe_load(open(os.path.join(ROOT, "conf/robot/unicycle_db.yaml")))["shape"]
+    L, W = float(sh["width"]), float(sh["length"])       # forward, lateral
+    assert (L, W) == (0.5, 0.25), (L, W)
+    xs, ys = np.linspace(-L / 2, L / 2, 61), np.linspace(-W / 2, W / 2, 31)
+    body = np.array([[x, y] for x in xs for y in ys])
+
+    for k in (1, 2, 3, 4):
+        r = float(np.hypot(L / (2 * k), W / 2))
+        off = [(L / k) * (m - (k - 1) / 2) for m in range(k)]
+        d = np.min([np.linalg.norm(body - np.array([o, 0.0]), axis=1) for o in off], axis=0)
+        assert d.max() <= r + 1e-9, (k, d.max(), r)   # every body point inside some disc
+
+    # And it must actually buy room: the pair constraint has to shrink with k, from the
+    # circumscribed disc (0.609 m for this body) toward the true 0.300 m requirement.
+    clearance = 0.05
+    pair = [2 * float(np.hypot(L / (2 * k), W / 2)) + clearance for k in (1, 2, 3)]
+    assert pair[0] > pair[1] > pair[2]
+    assert pair[0] == pytest.approx(0.609, abs=0.002)
+    assert pair[1] == pytest.approx(0.404, abs=0.002)
+    assert all(p > W + clearance for p in pair), "the cover is conservative, never optimistic"

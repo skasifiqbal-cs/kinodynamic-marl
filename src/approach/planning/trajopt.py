@@ -143,6 +143,7 @@ def solve_group(
     max_iter: int = 500,
     guides: Sequence[np.ndarray] | None = None,
     obstacle_margin: float | None = None,
+    body_discs: int = 1,
 ) -> tuple[list[np.ndarray], list[np.ndarray], float, bool]:
     """Solve one minimum-time program covering ``len(robots)`` robots jointly.
 
@@ -215,6 +216,23 @@ def solve_group(
         lo = np.asarray(robot.action_low, float)
         hi = np.asarray(robot.action_high, float)
         r_self = radii[i]
+        # Multi-disc cover of this body along its own axis: k discs of radius
+        # hypot(L/2k, W/2) contain the rectangle exactly. k=1 reproduces the single
+        # circumscribed disc, which is the previous behaviour.
+        # NOTE: the field names are inverted from the usual convention in this codebase --
+        # BoxShape.width is the extent along local x (FORWARD) and .length along local y
+        # (LATERAL). Discs spread along the forward axis, so fwd=width, lat=length. Getting
+        # this backwards still yields a valid cover but a nearly useless one: it absorbs the
+        # long axis into the radius, giving 0.565 m at k=2 instead of 0.404 m.
+        _sh = getattr(robots[i], "shape", None)
+        _L = float(getattr(_sh, "width", 2 * r_self))     # forward extent
+        _W = float(getattr(_sh, "length", 2 * r_self))    # lateral extent
+        if body_discs > 1:
+            r_self_k = float(np.hypot(_L / (2 * body_discs), _W / 2))
+            disc_off = [(_L / body_discs) * (m - (body_discs - 1) / 2)
+                        for m in range(body_discs)]
+        else:
+            r_self_k, disc_off = r_self, [0.0]
         s = np.asarray(starts[i], float)
         g = np.asarray(goals[i], float)
 
@@ -245,12 +263,37 @@ def solve_group(
 
             for traj, r_other in zip(avoid, avoid_radii):
                 kk = min(k, len(traj) - 1)
-                clear = r_self + float(r_other) + clearance
-                opti.subject_to(
-                    (X[i][0, k] - float(traj[kk][0])) ** 2
-                    + (X[i][1, k] - float(traj[kk][1])) ** 2
-                    >= clear**2
-                )
+                if body_discs <= 1:
+                    clear = r_self + float(r_other) + clearance
+                    opti.subject_to(
+                        (X[i][0, k] - float(traj[kk][0])) ** 2
+                        + (X[i][1, k] - float(traj[kk][1])) ** 2
+                        >= clear**2
+                    )
+                    continue
+                # A single circumscribed disc is 2.03x more conservative than the body it
+                # covers: for a 0.5 x 0.25 robot it demands 0.609 m of centre separation
+                # where two axis-aligned bodies need 0.300 m. SS V-A says K-ARC uses "simple
+                # polyhedrons ... shortest distances between any two objects", so the disc is
+                # OUR approximation, not the paper's. It is also load-bearing: at a 1.0 m row
+                # spacing (N=32) it makes two ADJACENT rows unable to pass at the same time
+                # (0.391 m left against 0.609 m demanded), so every resolution invalidates
+                # its neighbours' and the merge cascade follows. Covering the body with
+                # `body_discs` discs along its own axis keeps the constraint smooth for IPOPT
+                # while shrinking the radius to hypot(L/2k, W/2).
+                th_o = float(traj[kk][2]) if len(traj[kk]) > 2 else 0.0
+                # The other robot is known only by its bounding radius here, so its sub-disc
+                # radius is scaled by the same ratio. Exact when the bodies match, which they
+                # do in every scenario used; a mixed-body fleet would need its shape passed.
+                r_other_k = float(r_other) * (r_self_k / r_self) if r_self > 0 else r_other
+                clear = float(r_self_k) + r_other_k + clearance
+                for a_off in disc_off:
+                    ax = X[i][0, k] + a_off * ca.cos(X[i][2, k])
+                    ay = X[i][1, k] + a_off * ca.sin(X[i][2, k])
+                    for b_off in disc_off:
+                        bx = float(traj[kk][0]) + b_off * np.cos(th_o)
+                        by = float(traj[kk][1]) + b_off * np.sin(th_o)
+                        opti.subject_to((ax - bx) ** 2 + (ay - by) ** 2 >= clear**2)
 
         opti.subject_to(ca.sumsqr(X[i][0:2, N] - ca.DM(g[:2].reshape(2))) <= tols[i] ** 2)
         if terminal_stop:
