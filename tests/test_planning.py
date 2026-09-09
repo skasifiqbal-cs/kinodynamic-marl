@@ -915,3 +915,30 @@ def test_orbit_sends_every_member_the_same_way_round():
     # +x robot passes below the hub, +y robot passes to its right: both clockwise.
     assert np.allclose(ax_e * dy_e, [0.0, -2.0], atol=1e-6)
     assert np.allclose(ax_n * dy_n, [2.0, 0.0], atol=1e-6)
+
+
+def test_axis_groups_splits_mixed_directions_but_keeps_head_on_together():
+    """One lane axis per cluster is right for one encounter, wrong for a mixed component."""
+    # Head-on: tangents differ by exactly pi, same orientation -- must stay one group,
+    # or their opposite lane signs stop meaning opposite sides.
+    head_on = [_ray((-5, 0), (5, 0)), _ray((5, 0.1), (-5, 0.1))]
+    win = {0: (0.4, 0.6), 1: (0.4, 0.6)}
+    assert len(constructive._axis_groups(head_on, [0, 1], win)) == 1
+
+    # Perpendicular routes share no direction, so one axis cannot displace both usefully.
+    crossing = [_ray((-5, 0), (5, 0)), _ray((0, -5), (0, 5))]
+    assert len(constructive._axis_groups(crossing, [0, 1], win)) == 2
+
+
+def test_lane_pitch_is_capped_by_the_corridor_that_exists():
+    """Lanes are sized to the room between rows, not to a constant."""
+    lat, clearance, lane_w = 0.25, 0.05, 0.5
+    for room, want_lanes in ((0.70, 3), (0.50, 2), (0.20, 1)):
+        fits = int(room // (lat + clearance)) + 1 if room > 0 else 1
+        assert fits == want_lanes
+    # 4 colours in 0.70 m of room must compress to 3 lanes at a 0.35 m pitch, not span
+    # 1.50 m and reach into the neighbouring row.
+    lanes = min(4, 3)
+    pitch = min(lane_w, 0.70 / (lanes - 1))
+    assert lanes == 3 and abs(pitch - 0.35) < 1e-9
+    assert (lanes - 1) * pitch <= 0.70 + 1e-9

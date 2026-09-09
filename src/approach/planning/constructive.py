@@ -141,6 +141,52 @@ def _window(refs, i, partners, sep):
     return float(idx[0]) / n, float(idx[-1]) / n
 
 
+def _axis_groups(refs, comp, windows, tol=np.pi / 4):
+    """Split a conflict cluster into sub-groups whose routes actually share a direction.
+
+    One axis per connected cluster is right when the cluster IS one encounter -- and every
+    cluster in `open_cross_32` and `cluttered_cross_16` is (tangent eigenvalue ratio 0.000
+    to 0.038). It stops being right when a component grows by transitivity: the 20-robot
+    cluster in `cluttered_cross_32` has a ratio of 0.159, meaning its routes point in
+    unrelated directions and the dominant eigenvector is close to arbitrary. Displacing 20
+    robots along one arbitrary axis separates none of them.
+
+    Orientation is taken mod pi, so a head-on pair -- whose tangents differ by exactly pi --
+    stays in one group and keeps the shared axis that makes its opposite lane signs mean
+    opposite sides. Only genuinely differently-oriented encounters are split apart.
+    """
+    ang = {}
+    for i in comp:
+        pts = refs[i]
+        m = len(pts) - 1
+        if m < 1 or windows.get(i) is None:
+            continue
+        k = min(max(int(0.5 * (windows[i][0] + windows[i][1]) * m), 0), m - 1)
+        t = pts[k + 1] - pts[k]
+        if float(np.linalg.norm(t)) < 1e-9:
+            continue
+        ang[i] = float(np.arctan2(t[1], t[0]) % np.pi)
+    if len(ang) < 2:
+        return [comp]
+    order = sorted(ang, key=lambda i: ang[i])
+    groups, cur = [], [order[0]]
+    for a, b in zip(order, order[1:]):
+        if ang[b] - ang[a] > tol:
+            groups.append(cur)
+            cur = [b]
+        else:
+            cur.append(b)
+    # Orientation wraps at pi, so the last group may be the same direction as the first.
+    if groups and (ang[order[0]] + np.pi) - ang[order[-1]] <= tol:
+        groups[0] = cur + groups[0]
+    else:
+        groups.append(cur)
+    rest = [i for i in comp if i not in ang]
+    if rest:
+        groups.append(rest)
+    return groups
+
+
 def _lane_axis(refs, members, windows):
     """A single world-frame direction along which one conflict's robots are spread apart.
 
@@ -512,8 +558,9 @@ def plan(env, params, clearance=0.05, guides=None):
     lane_w = lat + clearance + float(params.get("veer_margin", 0.2))
     taper = float(params.get("taper", 0.12))
 
-    # --- LANES: spatial, from the routes ------------------------------------------------
     refs = _references(starts, goals, guides)
+
+    # --- LANES: spatial, from the routes ------------------------------------------------
     # Two BOXES can touch with their centres a body diagonal apart, not a lateral extent
     # apart, and a route pair missed here is a pair that never gets a lane.
     diag = float(np.hypot(float(getattr(sh, "width", 2 * radii[0])), lat))
@@ -564,11 +611,29 @@ def plan(env, params, clearance=0.05, guides=None):
                     axis_of[u], orbit_of[u] = orb[0], (orb[1], orb[2])
             hubs.append((centre, R, len(comp)))
             continue
-        ax = _lane_axis(refs, comp, windows)
-        for u in comp:
-            axis_of[u] = ax
+        for grp in _axis_groups(refs, comp, windows):
+            ax = _lane_axis(refs, grp, windows)
+            for u in grp:
+                axis_of[u] = ax
 
-    routes, base = [], []
+    # A lane has to fit the corridor the robot actually has. The colouring can ask for more
+    # lanes than the map holds: cluttered_cross_32 wants 4, which at lane_w 0.5 spans 1.5 m
+    # between rows 1.0 m apart, so the outer lanes reach into the NEIGHBOURING row and the
+    # device manufactures conflicts instead of resolving them. Room is the closest a robot
+    # comes to a route it does NOT contend with, less the body it has to keep clear.
+    room = float("inf")
+    for i in range(n):
+        for j in range(n):
+            if j != i and j not in partners[i]:
+                room = min(room, float(np.linalg.norm(refs[i] - refs[j], axis=1).min()))
+    room = max(0.0, room - (lat + clearance)) if np.isfinite(room) else 0.0
+    fits = int(room // (lat + clearance)) + 1 if room > 0 else 1
+    lanes = max(1, min(lanes, fits))
+    # Keep the tuned pitch where it fits and only compress when it does not, so scenarios
+    # that already work are untouched (open_cross_32: 2 lanes, 0.70 m of room, unchanged).
+    pitch = min(lane_w, room / (lanes - 1)) if lanes > 1 else 0.0
+
+    routes, base, dropped = [], [], 0
     for i in range(n):
         win = windows[i]
         # Hold the lane across the whole stretch the encounter COULD occupy, not just the
@@ -583,7 +648,7 @@ def plan(env, params, clearance=0.05, guides=None):
         if i in orbit_of:
             dy, win = orbit_of[i]
         else:
-            dy = (side.get(i, 0) - (lanes - 1) / 2.0) * lane_w if win else 0.0
+            dy = ((side.get(i, 0) % lanes) - (lanes - 1) / 2.0) * pitch if win else 0.0
         dense = _resample(refs[i], 128)
         route = dense
         if win and abs(dy) > 1e-9:
@@ -592,12 +657,31 @@ def plan(env, params, clearance=0.05, guides=None):
             # rather than pushing the body through a pillar to honour a colouring.
             # Mirroring is a lane's fallback, not a roundabout's: sending one member the
             # other way round the hub puts it head-on into the whole circulation.
-            for cand in ((dy,) if i in orbit_of else (dy, -dy)):
+            # A blocked lane is not the same as no lane. The colouring assigns a lane; if
+            # a pillar sits in it, the robot should CHANGE LANE, not give up and sit on the
+            # centre line where its head-on partner already is -- that leaves the encounter
+            # to be resolved in time, which on cluttered_cross_32 there is none of (1.0 m
+            # rows, 1300 steps). Measured there: all 5 dropped robots were in the outermost
+            # lanes of a 4-lane split, so the free lane is an inner one and widening the
+            # blocked offset -- the obvious ladder -- searches away from it.
+            if i in orbit_of:
+                cands = [dy]
+            else:
+                lane_set = [(c - (lanes - 1) / 2.0) * pitch for c in range(lanes)]
+                cands = sorted(lane_set, key=lambda x: (abs(x - dy), -abs(x)))
+            for cand in cands:
+                if abs(cand) < 1e-9:
+                    continue
                 trial = _offset_path(dense, cand, win[0], win[1], taper,
                                      axis_of.get(i, (0.0, 1.0)))
                 if not _hits_obstacle(env, i, trial):
                     route = trial
                     break
+            else:
+                # No side of this encounter is free of the obstacles. The robot keeps its
+                # centre line and the conflict is left entirely to the schedule -- which is
+                # the expensive resolution, so it is worth counting rather than silent.
+                dropped += 1
         route = _simplify(route, float(params.get("simplify_tol", 0.05)))
         route = np.vstack([route, goals[i][:2]])
         built = _legs(env, i, np.vstack([starts[i][:2], route]), dt)
@@ -650,29 +734,40 @@ def plan(env, params, clearance=0.05, guides=None):
         return False
 
     def _blockers(r, got):
-        """Who stopped `r` from fitting, and were they parked or driving when they did?
+        """Who stopped `r` from fitting, and WHERE were they standing when they did?
 
-        A robot that has ARRIVED never moves again, so if it sits on `r`'s route no delay
-        can ever help -- pushing `r` later only makes the block more certain. That is a
-        different failure from a congested crossing, and it wants a different fix, so the
-        rejection says which one it was instead of only reporting a count.
+        Three failures look identical from a count and want opposite fixes. A blocker that
+        has ARRIVED never moves again, so no delay for `r` can help. A blocker still parked
+        at its START has not left yet, so delaying `r` is the fix and the horizon is the
+        limit. A blocker that is DRIVING is an ordinary congested crossing. Report which,
+        at the delay where `r` is least obstructed.
         """
-        blame: dict = {}
+        best_at, fewest = None, None
         d = 0
         while d + len(tracks[r]) <= horizon_cap:
-            for q in got:
-                if _clash(r, d, q, got[q]):
-                    arrived = got[q] + len(tracks[q])
-                    parked = d + len(tracks[r]) > arrived
-                    hit = blame.setdefault(q, [0, 0])
-                    hit[0] += 1
-                    hit[1] += int(parked)
+            hit = [q for q in got if _clash(r, d, q, got[q])]
+            if fewest is None or len(hit) < len(fewest):
+                best_at, fewest = d, hit
+                if not hit:
+                    break
             d += step
-        n_try = max(1, len(range(0, horizon_cap - len(tracks[r]) + 1, step)))
-        always = [q for q, (c, _) in blame.items() if c >= n_try]
-        parked = [q for q in always if blame[q][1] >= n_try]
-        return {"blocked_robot": int(r), "blockers_at_every_delay": len(always),
-                "of_those_parked_on_goal": len(parked)}
+        where = {"at_goal": 0, "at_start": 0, "driving": 0}
+        for q in (fewest or []):
+            ta, tb = tracks[r], tracks[q]
+            span = max(best_at + len(ta), got[q] + len(tb))
+            ia = np.clip(np.arange(span) - best_at, 0, len(ta) - 1)
+            ib = np.clip(np.arange(span) - got[q], 0, len(tb) - 1)
+            pa, pb = ta[ia], tb[ib]
+            near = np.flatnonzero(np.linalg.norm(pa[:, :2] - pb[:, :2], axis=1)
+                                  < radii[r] + radii[q] + clearance)
+            k = int(near[0]) if len(near) else 0
+            if k >= got[q] + len(tb):
+                where["at_goal"] += 1
+            elif k < got[q]:
+                where["at_start"] += 1
+            else:
+                where["driving"] += 1
+        return {"blocked_robot": int(r), "blockers": len(fewest or []), **where}
 
     def _fit(r, got, skip=None):
         """Least delay at which r clears everything in `got`, or None."""
@@ -764,7 +859,7 @@ def plan(env, params, clearance=0.05, guides=None):
         if isinstance(params, dict):
             params.setdefault("_reject", {}).update(
                 {"unschedulable_robot": 1, "orders_tried": len(orders),
-                 "best_placed": best, "n": n, **why})
+                 "best_placed": best, "n": n, "offset_dropped": dropped, **why})
         return None
 
     T = max(delay[r] + len(tracks[r]) for r in range(n))
@@ -782,7 +877,8 @@ def plan(env, params, clearance=0.05, guides=None):
         if isinstance(params, dict):
             params.setdefault("_reject", {}).update(rep)
         return None
-    info = {"pairs": len(pairs), "lanes": lanes, "hubs": len(hubs),
+    info = {"pairs": len(pairs), "lanes": lanes, "lane_pitch": round(pitch, 3),
+            "hubs": len(hubs), "offset_dropped": dropped,
             "orbiting": len(orbit_of),
             "hub_radius": round(max([h[1] for h in hubs], default=0.0), 3),
             "delayed": sum(1 for d in delay.values() if d),
