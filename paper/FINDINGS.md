@@ -521,7 +521,11 @@ counters · `d7695b2` wait rung (untested) · `b12bfa5` feasibility certificate 
 This document is written to be usable by someone who was not present, so the error record
 matters as much as the results.
 
-**Retracted claims [!]**, all corrected above: shortcutting "cannot leave the homotopy class"
+**Retracted claims [!]**, all corrected above: two `cluttered_cross_32` diagnoses from this
+session — "not the time budget" (measured on superseded code) and "robots park on each
+other's routes" (an artefact of a blocker classifier that required blocking at *every*
+delay; the blockers are driving, and 0 of 40 goal incursions are mid-route), both §XII.C;
+shortcutting "cannot leave the homotopy class"
 (§V.C); density/geometry as an explanation of *infeasibility* at N=32 (§VI.C); a monotone
 worsening "trend" across timing arms that was actually a timeout artifact (§VIII.C); a "16-deep
 chain" reading of `speed_ranks`, which counts *robots slowed*, not chain depth (§VIII.C).
@@ -546,13 +550,13 @@ constructive rung with **zero solver calls** — no trajectory optimisation, no 
 conflict loop. Every row is verified by re-rolling the plan through the env's own collision
 checker, which is where `goals` and `collisions` come from.
 
-| scenario | solves | goals | collisions | steps / budget | min surface gap | device | delayed | solver calls | wall |
+| scenario | solves | goals | collisions | steps / budget | min gap | device | delayed | solver calls | wall |
 |---|---|---|---|---|---|---|---|---|---|
-| `open_cross_32` | yes | 32 | 0 | 633 / 1300 | 0.2493 m | 2 lanes | 0 (max 0) | 0 | 23 s |
-| `cluttered_cross_16` | yes | 16 | 0 | 931 / 1300 | 0.0656 m | 3 lanes | 5 (max 435) | 0 | 8 s |
-| `cluttered_cross_32` | **no** | 0 | 0 | — | — | — | — | 91 | 301 s |
-| `circular_cross_16` | yes | 16 | 0 | 836 / 1300 | 0.0856 m | orbit, R=1.551 m | 9 (max 255) | 0 | 8 s |
-| `circular_cross_32` | yes | 32 | 0 | 1212 / 1300 | 0.0503 m | orbit, R=3.102 m | 23 (max 475) | 0 | 51 s |
+| `open_cross_32` | yes | 32 | 0 | 633 / 1300 | 0.2493 m | 2 lanes @ 0.5 | 0 (max 0) | 0 | 22 s |
+| `cluttered_cross_16` | yes | 16 | 0 | 906 / 1300 | 0.053 m | 2 lanes @ 0.345 | 6 (max 225) | 0 | 8 s |
+| `cluttered_cross_32` | **no** | 0 | 0 | — | — | — | — | 91 | 305 s |
+| `circular_cross_16` | yes | 16 | 0 | 836 / 1300 | 0.0856 m | orbit R=1.551 | 9 (max 255) | 0 | 7 s |
+| `circular_cross_32` | yes | 32 | 0 | 1212 / 1300 | 0.0503 m | orbit R=3.102 | 23 (max 475) | 0 | 51 s |
 
 `cluttered_cross_32` is the exception and §XII.C is the diagnosis; it falls through to the
 full ladder, spends 91 solver calls and 301 s, and still fails.
@@ -630,34 +634,53 @@ The lesson generalises past this code: a repair that widens the feasible set als
 which solution the search returns first, and "feasible" is not the same as "the one we
 were getting".
 
-### XII.C `cluttered_cross_32` does not generalise, and the reason is measured
+### XII.C `cluttered_cross_32`: what it is, and two retractions [!]
 
-It is the one scenario of the five that the constructive rung still rejects. Three
-hypotheses were tested and two are excluded outright:
+It remains the one scenario of the five the constructive rung rejects. Placement improved
+from **21 of 32 robots seated to 28** over this session, and the two claims made earlier
+about *why* it fails were both wrong. Both are retracted here.
 
-* **Not the time budget.** Quadrupling the horizon (1300 → 2600 → 5200 steps) changes
-  nothing: same stranded robot, same single blocker, same 28 seated.
-* **Not the lane width**, though the lane *is* mis-sized. All 16 encounters in
-  `open_cross_32` are exactly 180° head-on, where only lateral extents face each other
-  (0.25 + 0.25 m) and `lane_w = 0.5` is correctly sized — hence its comfortable 0.2493 m
-  gap. `cluttered_cross_32` has only 26 of 52 head-on, with 19 near-parallel and 7 crossing
-  at 30–150°; near 45° two boxes project ~0.53 m of half-extent onto the lane normal, more
-  than the lane provides. Widening it helps a little and then reverses (lane 0.50 → 16
-  seated, 0.61 → 18, 0.75 → 21, 0.90 → 11) because wide offsets start colliding with the
-  pillars and fall back to no offset at all.
-* **What it actually is.** Robots 28 and 29 are swap partners whose goals lie at distance
-  **0.000 m** from each other's routes — each one's goal is literally on the other's path,
-  because each one's goal *is* the other's start. Whichever arrives first parks in the
-  other's way permanently, and a robot that has arrived never moves again. This is true of
-  every swap scenario, including the ones that solve; it is harmless only when the partners
-  travel at similar times. Across the whole scenario, **40 route/goal incursions** affect
-  **all 32 robots**. Seated 22nd, robot 29 finds every small delay taken and its partner
-  long since parked — so no delay exists, in any horizon.
+**Retracted [!] — "not the time budget".** That was measured on the pre-eviction code and
+does not survive re-measurement. Horizon does buy something, then saturates:
 
-The honest reading: the construction assumes a robot's resting place is free real estate,
-and in a dense swap it is not. The fix is a design change, not a knob — later routes must be
-planned against the *parked poses* of robots already scheduled, rather than only against
-their moving trajectories. That is the next mechanism, and it is not built.
+| horizon cap | robots seated |
+|---|---|
+| 1300 (the real budget) | 28 |
+| 1950 | 27–30 (order-dependent) |
+| 2600 | 27–30 |
+
+**Retracted [!] — "robots park on each other's routes".** The blocker classifier that
+produced this required a robot to block at *every* candidate delay, which mislabels the
+common case. Sharpened to report where the blocker actually stands, the answer is that
+`cluttered_cross_32`'s blockers are **driving**, not parked. The supporting geometry says
+the same: of the 40 route/goal incursions, **0 are mid-route** — every one is at an
+endpoint, which is unavoidable in a swap (a robot's goal *is* its partner's start) and is
+equally true of `cluttered_cross_16`, which solves.
+
+**What it actually is.** `cluttered_cross_32` is `open_cross_32`'s density — rows 1.0 m
+apart — plus four box pillars. `cluttered_cross_16` has the same four pillars but 2.14 m
+rows. The pillars force detours, the detours cross rows, and the conflict graph goes from
+16 pairs (mean degree 1.0) to **52 pairs (mean degree 3.25)** with a single 20-robot
+component. That component needs **4 lanes**, and 1.0 m rows hold **3**:
+
+| | lanes wanted | span needed | corridor available | fits |
+|---|---|---|---|---|
+| `open_cross_32` | 2 | 0.50 m | 0.70 m | yes |
+| `cluttered_cross_32` | 4 | 1.50 m | 0.70 m | **no** |
+
+Capping lanes to the corridor and letting a blocked robot change lane rather than abandon
+one took it from 21 to 28. The residue is a genuine capacity shortfall: more independent
+encounters than the corridor has lanes, and too little horizon to serialise the remainder.
+
+**Two fixes tried and rejected, both worse than doing nothing.** Every pillar is passed on
+both sides (4/8, 5/10, 4/10, 5/8), so each split makes the gap beside it a head-on
+encounter — the same failure the hub had. Applying the hub's own rule to pillars did not
+transfer. Normalising every route onto a ring around each pillar took placement from 28 to
+**4** and stopped `cluttered_cross_16` solving at all; flipping only the wrong-side
+minority still gave **12**. A forced flip around a 4 m pillar is a long detour that pushes
+the route into other rows, and it costs more than the head-on encounters it removes. The
+hub rule works when the routes already converge on a point; it does not follow that it
+works for an obstacle they merely pass.
 
 ### XII.D Two flagged suspicions, checked
 
