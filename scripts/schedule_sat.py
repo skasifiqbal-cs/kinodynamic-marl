@@ -35,8 +35,7 @@ from hydra import compose, initialize  # noqa: E402
 
 from src.approach.planning import constructive as C  # noqa: E402
 from src.approach.planning import flat, geometric_rrt  # noqa: E402
-from src.collision.shapes import shape_distance  # noqa: E402
-from src.conflict.margin import inscribed_radius  # noqa: E402
+from src.approach.planning.constructive import _forbidden, _runs  # noqa: E402
 
 
 def _guides(env, clearance):
@@ -106,59 +105,6 @@ def _candidates(env, cap, params, clearance, dt, smooth, speeds):
             return None, i
         per.append(got)
     return per, None
-
-
-def _forbidden(env, i, j, ta, tb, step, kmax, clearance):
-    """Delay DIFFERENCES (in units of `step`) at which this pair collides.
-
-    `_clash` compares index u of j against index u - d*step of i, both clamped at their
-    own ends -- so each candidate difference d is one clamped diagonal of the pose grid,
-    and the whole 1-D question is answered by walking the diagonals of a single distance
-    matrix instead of re-simulating the pair once per delay.
-
-    The body test is exact where exactness matters, and skipped where it cannot: outside
-    the sum of BOUNDING radii two bodies cannot touch, inside the sum of INSCRIBED radii
-    they must, and only the annulus between the two needs `shape_distance`. That keeps an
-    UNSAT verdict from being an artefact of approximating the robots as discs -- a
-    conservative disc test would forbid differences that are actually free, and could
-    manufacture the very unsatisfiability the experiment is trying to detect.
-    """
-    ri, rj = env.robots[i].shape.bounding_radius, env.robots[j].shape.bounding_radius
-    qi, qj = inscribed_radius(env.robots[i].shape), inscribed_radius(env.robots[j].shape)
-    M = np.linalg.norm(ta[:, None, :2] - tb[None, :, :2], axis=2)
-    maybe = M < ri + rj + clearance
-    if not maybe.any():
-        return []
-    sure = M < qi + qj + clearance
-    La, Lb = len(ta), len(tb)
-    bad = []
-    for d in range(-kmax, kmax + 1):
-        off = d * step
-        u = np.arange(min(0, off), max(off + La, Lb))
-        ia, ib = np.clip(u - off, 0, La - 1), np.clip(u, 0, Lb - 1)
-        if sure[ia, ib].any():
-            bad.append(d)
-            continue
-        for k in np.flatnonzero(maybe[ia, ib]):
-            p, q = int(ia[k]), int(ib[k])
-            if shape_distance(
-                env.robots[i].shape, (float(ta[p][0]), float(ta[p][1]), float(ta[p][2])),
-                env.robots[j].shape, (float(tb[q][0]), float(tb[q][1]), float(tb[q][2]))
-            ) < clearance:
-                bad.append(d)
-                break
-    return bad
-
-
-def _runs(vals):
-    """Compress sorted ints into inclusive intervals."""
-    out = []
-    for v in sorted(vals):
-        if out and v == out[-1][1] + 1:
-            out[-1][1] = v
-        else:
-            out.append([v, v])
-    return [tuple(x) for x in out]
 
 
 def main(argv):

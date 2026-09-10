@@ -294,6 +294,16 @@ class KARCPlanner(BasePlanner):
         self._solved = {a: True for a in agents}
         state = [env._states[i].copy() for i in range(env._n)]
 
+        # Every intermediate stage of Alg. 1/2 is computed below and then overwritten.
+        # With trace on they are kept, so the planning PROCESS can be drawn rather than
+        # only its outcome: reference paths, the uncoordinated solve, the conflicts it
+        # produced, and what each ladder rung did about them. Set up BEFORE rung 0, because
+        # a successful construction returns from there and would otherwise leave no trace
+        # at all on exactly the scenarios the construction is for.
+        self.trace = [] if k_cfg.get("trace", False) else None
+        self._committed = [np.asarray(state[i][:3], float).reshape(1, 3)
+                           for i in range(env._n)]
+
         # RUNG 0 -- CONSTRUCT, don't search. Every K-ARC rung answers "find me a
         # trajectory"; at density the cheaper question is "what is the coordination", and
         # once that is decided the trajectories follow analytically. `constructive.plan`
@@ -303,7 +313,8 @@ class KARCPlanner(BasePlanner):
         # Nothing is committed that does not verify, so a wrong assignment costs one
         # construction and the ladder below runs exactly as it would have.
         if bool(k_cfg.get("constructive", False)):
-            built = constructive.plan(env, k_cfg, clearance, guides=ref_paths)
+            built = constructive.plan(env, k_cfg, clearance, guides=ref_paths,
+                                      trace=self.trace)
             self.stats["constructive_attempts"] = 1
             if built is not None:
                 tracks, ctrls, info = built
@@ -331,13 +342,6 @@ class KARCPlanner(BasePlanner):
                 return
             self.stats["constructive_solved"] = 0
 
-        # Every intermediate stage of Alg. 1/2 is computed below and then overwritten.
-        # With trace on they are kept, so the planning PROCESS can be drawn rather than
-        # only its outcome: reference paths, the uncoordinated solve, the conflicts it
-        # produced, and what each ladder rung did about them.
-        self.trace = [] if k_cfg.get("trace", False) else None
-        self._committed = [np.asarray(state[i][:3], float).reshape(1, 3)
-                           for i in range(env._n)]
         # Dotted circles at every segment boundary, on every stage.
         self._waypoints = [np.asarray(ms, float)[:2]
                            for chain in milestones for ms in chain]

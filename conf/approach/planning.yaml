@@ -259,6 +259,18 @@ approach:
     # seats all 32 robots, 1.3 seats 21, 2.0 seats 18: a wider ring is a longer detour
     # through the same congested annulus.
     hub_pack: 1.0
+    # How the per-robot lane, speed and delay are chosen.
+    #   sat    - decide all of them together with z3, over exactly the candidates the
+    #            construction generated. Complete: it either produces an assignment or
+    #            proves none exists, so a failure is informative rather than a symptom of
+    #            insertion order. On cluttered_cross_32 greedy gives up under every order
+    #            and every eviction budget while this seats all 32.
+    #   greedy - insertion only, the previous behaviour. Faster on easy scenarios, and the
+    #            automatic fallback whenever z3 is missing or hits `sat_timeout`.
+    # Lane candidates are only offered to `sat`: insertion seats each robot once and never
+    # revisits it, so alternative lanes are choices it cannot act on.
+    schedule: sat
+    sat_timeout: 600
     # Delay granularity for insertion scheduling, in env steps. 5 rather than 10 because
     # circular_cross_32 needs the finer packing: at 10 it strands 2 of 32 robots.
     delay_step: 5
