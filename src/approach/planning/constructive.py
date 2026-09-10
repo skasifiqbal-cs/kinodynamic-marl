@@ -657,8 +657,37 @@ def _build(env, params, clearance=0.05, guides=None):
     orbit_of: dict = {}
     hubs: list = []
     seen: set = set()
+
+    # ONE LOCAL RULE, as an alternative to the whole device-selection apparatus below.
+    #
+    # Every robot displaces along its OWN right-hand normal, by an amount set by how many
+    # robots it is contending with. Nothing is shared: no colouring, no agreed axis, no
+    # test for what kind of cluster this is, no global view. Each robot uses only its own
+    # heading and a count of its own neighbours -- both locally observable.
+    #
+    # The claim being tested is that the two devices are not two rules. A head-on pair
+    # separates because east's right is south while west's right is north; a junction
+    # circulates because every approach displaced to its own right goes the same way
+    # round. Same rule, different geometry. The offset scales with the neighbour count
+    # for the same reason the ring radius does -- n bodies each needing (diag + clearance)
+    # of arc must sit on a circle of circumference n*(diag + clearance).
+    if bool(params.get("local_rule", False)):
+        for i in range(n):
+            win = windows.get(i)
+            if not partners[i] or win is None:
+                continue
+            pts, m = refs[i], len(refs[i]) - 1
+            k = min(max(int(0.5 * (win[0] + win[1]) * m), 0), m - 1)
+            t = pts[k + 1] - pts[k]
+            ln = float(np.linalg.norm(t))
+            if ln < 1e-9:
+                continue
+            t = t / ln
+            deg = len(partners[i]) + 1
+            axis_of[i] = np.array([t[1], -t[0]])          # my right, and only mine
+            orbit_of[i] = (max(0.5 * lane_w, deg * (diag + clearance) / (2.0 * np.pi)), win)
     for i in range(n):
-        if i in seen or not partners[i]:
+        if i in seen or not partners[i] or orbit_of:
             continue
         stack, comp = [i], []
         while stack:
@@ -707,6 +736,16 @@ def _build(env, params, clearance=0.05, guides=None):
     # Keep the tuned pitch where it fits and only compress when it does not, so scenarios
     # that already work are untouched (open_cross_32: 2 lanes, 0.70 m of room, unchanged).
     pitch = min(lane_w, room / (lanes - 1)) if lanes > 1 else 0.0
+
+    # Diagnostics hook: hand out the derived geometry so an external experiment can pose
+    # the SAME candidate set to a complete solver, rather than re-deriving it and risking
+    # answering a question about a different problem.
+    cap_out = params.get("_capture") if isinstance(params, dict) else None
+    if isinstance(cap_out, dict):
+        cap_out.update({"refs": refs, "windows": windows, "axis_of": axis_of,
+                        "orbit_of": orbit_of, "lanes": lanes, "pitch": pitch,
+                        "partners": partners, "taper": taper, "side": side,
+                        "lat": lat, "lane_w": lane_w, "diag": diag})
 
     routes, base, dropped, exact = [], [], 0, 0
     full_routes: list = [None] * n     # what each robot was actually handed, for re-timing
