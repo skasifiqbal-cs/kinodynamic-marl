@@ -25,6 +25,7 @@ at its goal after it arrives. Shifting BOTH robots equally changes nothing, so a
 clashes as a function of the DIFFERENCE of its two delays alone -- a 1-D question per pair,
 answerable by reading diagonals off one distance matrix per trajectory pair.
 """
+import pathlib
 import sys
 import time
 
@@ -143,6 +144,7 @@ def main(argv):
           f"lanes={cap['lanes']} pitch={cap['pitch']:.3f}")
     print(f"delay grid: step={step} kmax={kmax} horizon={horizon}", flush=True)
 
+    tag = next((a.split("=", 1)[1] for a in argv if a.startswith("env=")), "scenario")
     sel = [z3.Int(f"c{i}") for i in range(n)]
     kd = [z3.Int(f"k{i}") for i in range(n)]
     s = z3.Solver()
@@ -178,6 +180,19 @@ def main(argv):
 
     # A wall clock on the solver, because `unknown` and `unsat` are opposite verdicts and
     # a hang would silently look like neither.
+    # Write the formula out in SMT-LIB2 so it can be read, diffed, or handed to another
+    # solver. The encoding is otherwise only ever a Python object graph, which makes the
+    # one claim worth checking -- which theory fragment this actually lands in -- something
+    # you have to take on trust rather than read. QF_LIA rather than QF_IDL because of the
+    # horizon atoms: `k_i * step + len <= cap` carries a coefficient, and a coefficient is
+    # what puts it outside difference logic. Dividing through by `step` would bring it back.
+    smt = f"experiments/schedule_sat_{tag}.smt2"
+    pathlib.Path(smt).write_text(
+        f"; {tag}: {n} robots, delay step {step}, horizon {horizon}\n"
+        f"; candidates per robot: {[len(c) for c in per]}\n"
+        "(set-logic QF_LIA)\n" + s.sexpr() + "(check-sat)\n(get-model)\n")
+    print(f"SMT-LIB2 -> {smt}")
+
     s.set("timeout", 1000 * int(params.get("sat_timeout", 3600)))
     print(f"clash tables built in {time.time() - t0:.0f}s; solving ...", flush=True)
     t1 = time.time()
@@ -212,7 +227,7 @@ def main(argv):
     print("\nA valid assignment EXISTS over the planner's own candidates. Greedy insertion")
     print("is what fails, not the routes. Study this witness and fix the SCHEDULER.")
 
-    tag = next((a.split("=", 1)[1] for a in argv if a.startswith("env=")), "scenario")
+
     np.savez(f"experiments/schedule_sat_{tag}.npz", delay=np.array(delay),
              pick=np.array(pick), tracks=np.stack(full))
     _gif(env, full, f"experiments/schedule_sat_{tag}.gif")
