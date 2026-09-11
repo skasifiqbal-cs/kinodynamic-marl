@@ -35,8 +35,11 @@ import numpy as np  # noqa: E402
 from hydra import compose, initialize  # noqa: E402
 
 from src.approach.planning import constructive as C  # noqa: E402
-from src.approach.planning import flat, geometric_rrt  # noqa: E402
-from src.approach.planning.constructive import _forbidden, _runs  # noqa: E402
+from src.approach.planning import (  # noqa: E402
+    flat,
+    geometric_rrt,
+    schedule,  # noqa: E402
+)
 
 
 def _guides(env, clearance):
@@ -167,12 +170,12 @@ def main(argv):
             for a, ta in enumerate(per[i]):
                 for b, tb in enumerate(per[j]):
                     combos += 1
-                    bad_d = _forbidden(env, i, j, ta, tb, step, kmax, clearance)
+                    bad_d = schedule.forbidden(env, i, j, ta, tb, step, kmax, clearance)
                     if not bad_d:
                         continue
                     constrained += 1
                     guard = z3.And(sel[i] == a, sel[j] == b)
-                    for lo, hi in _runs(bad_d):
+                    for lo, hi in schedule.runs(bad_d):
                         s.add(z3.Implies(guard, z3.Not(z3.And(kd[i] - kd[j] >= lo,
                                                               kd[i] - kd[j] <= hi))))
         print(f"  robot {i}: {combos} combos tested, {constrained} constrained, "
@@ -218,7 +221,7 @@ def main(argv):
     full = [np.vstack([h, np.repeat(h[-1][None, :], T - len(h), axis=0)])
             if len(h) < T else h for h in held]
     rep: dict = {}
-    gap = C._verify(env, full, clearance, rep)
+    gap = schedule.verify(env, full, clearance, rep)
     print(f"\nWITNESS steps={T} delays={delay} candidates={pick}")
     if gap is None:
         print(f"verify FAILED: {rep} -- the encoding does not match the checker")

@@ -24,12 +24,13 @@ combinatorics are derived. See `veer_margin` and `lead`/`span` below.
 """
 from __future__ import annotations
 
+import time
+
 import numpy as np
 
-from src.approach.planning import flat
+from src.approach.planning import flat, geometric_rrt, schedule
+from src.approach.planning.base import BasePlanner
 from src.approach.planning.flat import profile as _profile
-from src.collision.shapes import collides, shape_distance
-from src.conflict.margin import inscribed_radius
 
 
 def _turn_then_go(robot, state, target, dt):
@@ -201,6 +202,14 @@ def _offset_path(pts, dy, lo, hi, taper, axis):
     f = np.linspace(0.0, 1.0, m)
     ramp = np.clip(np.minimum((f - (lo - taper)) / taper,
                               ((hi + taper) - f) / taper), 0.0, 1.0)
+    # Smootherstep, not the raw clipped ramp. A piecewise-linear ramp meets the untouched
+    # route at four corners, and a corner is a curvature spike -- which is what caps speed,
+    # and which then has to be blurred out of the route again at the cost of the lane's
+    # separation budget. Under clutter that budget is ~18 mm and the blur cannot be paid
+    # for, so every robot falls back to driving the polyline. 6r^5-15r^4+10r^3 has zero
+    # first AND second derivative at both ends, so the displacement joins the route with
+    # continuous curvature and there is nothing left to blur out.
+    ramp = ramp * ramp * ramp * (ramp * (ramp * 6.0 - 15.0) + 10.0)
     axis = np.asarray(axis, float)
     axis = axis / max(float(np.linalg.norm(axis)), 1e-12)
     return pts + axis[None, :] * (dy * ramp)[:, None]
@@ -424,51 +433,6 @@ def _sides(n, pairs):
     return _colour(range(n), adj)
 
 
-def _verify(env, tracks, clearance, report=None):
-    """Every pair at every shared index, with the env's own checker.
-
-    Returns the tightest surface gap, or None if anything touches, a robot misses its
-    goal, or the tightest pass is under `clearance`. A rejected construction is the normal
-    case on a scenario the geometry does not suit, so `report` is filled with WHY -- a
-    silent None is the difference between "does not generalise" and "generalises but the
-    lane is 2 cm too wide", and those need opposite responses.
-    """
-    n, T = env._n, len(tracks[0])
-    goals = [np.asarray(g, float) for g in env._goals]
-    rep = {"obstacle_hits": 0, "robot_hits": 0, "missed_goals": 0,
-           "min_gap": float("inf"), "steps": T}
-    worst = float("inf")
-    for k in range(T):
-        for i in range(n):
-            pi = (float(tracks[i][k][0]), float(tracks[i][k][1]), float(tracks[i][k][2]))
-            for ob in env._obstacles:
-                if collides(env.robots[i].shape, pi, ob.shape, ob.pose):
-                    rep["obstacle_hits"] += 1
-            for j in range(i + 1, n):
-                pj = (float(tracks[j][k][0]), float(tracks[j][k][1]),
-                      float(tracks[j][k][2]))
-                if collides(env.robots[i].shape, pi, env.robots[j].shape, pj):
-                    rep["robot_hits"] += 1
-                worst = min(worst, shape_distance(env.robots[i].shape, pi,
-                                                 env.robots[j].shape, pj))
-    rep["missed_goals"] = sum(
-        float(np.linalg.norm(tracks[i][-1][:2] - goals[i][:2])) >= env.goal_radius
-        for i in range(n))
-    rep["min_gap"] = round(float(worst), 4)
-    # A plan longer than the horizon is not a plan: the episode ends before the robots
-    # arrive, so "collision-free and reaches every goal" is true only of a trajectory that
-    # never finishes being executed. Serialising groups trades collisions for length, so
-    # this is the constraint that keeps that trade honest.
-    budget = int(getattr(env, "max_steps", 0) or 0)
-    rep["over_budget"] = int(bool(budget and T > budget))
-    if report is not None:
-        report.update(rep)
-    if (rep["obstacle_hits"] or rep["robot_hits"] or rep["missed_goals"]
-            or rep["over_budget"]):
-        return None
-    return worst if worst >= clearance else None
-
-
 def _simplify(pts, tol=0.05):
     """Drop vertices that the route does not need, by DEVIATION from the chord.
 
@@ -504,105 +468,13 @@ def _simplify(pts, tol=0.05):
 
 
 def _hits_obstacle(env, i, pts):
-    """Does this route put robot i's body through an obstacle at any sample?"""
-    sh = env.robots[i].shape
-    pts = np.asarray(pts, float)
-    for k in range(len(pts)):
-        th = 0.0
-        if k + 1 < len(pts):
-            d = pts[k + 1] - pts[k]
-            if np.linalg.norm(d) > 1e-9:
-                th = float(np.arctan2(d[1], d[0]))
-        pose = (float(pts[k][0]), float(pts[k][1]), th)
-        if any(collides(sh, pose, ob.shape, ob.pose) for ob in env._obstacles):
-            return True
-    return False
+    """`flat.hits_obstacle` for robot i in this env."""
+    return flat.hits_obstacle(env.robots[i].shape, env._obstacles, pts)
 
 
 def _fit_blur(env, i, route, target, base, cap):
-    """The largest blur this route can take while still being the route that was planned.
-
-    Blur is not a cosmetic setting, it is the speed knob. Curvature caps speed through
-    w = kappa*v, so a sharp corner inherited from the guide throttles the whole bend --
-    measured on cluttered_cross_16, blur 0.12 leaves a robot crawling at 0.245 m/s and its
-    traverse 952 steps long, over the horizon once a delay is added, while blur 0.60 gets
-    the same robot to 0.401 m/s and 513 steps. Rounding the corner IS the speed-up.
-
-    What stops it being free is that a blurred curve cuts the corner, and a route that has
-    been displaced into a lane must stay in that lane or the displacement meant nothing.
-    So take the largest blur whose curve stays within `cap` of the intended route and
-    clear of the obstacles, and only then hand it to the profiler.
-
-    Returns None when even the smallest blur cannot meet `cap`. That is a real answer, not
-    a failure: some corridors have no room to round anything. Returning the base blur
-    anyway -- which this used to do -- silently spends separation the lane did not have.
-    """
-    for mult in (8.0, 4.0, 2.0, 1.0):
-        got = flat._curve(route, base * mult)
-        if got is None:
-            continue
-        pts = got[0]
-        dev = float(np.linalg.norm(pts[:, None, :] - target[None, :, :],
-                                   axis=2).min(axis=1).max())
-        if dev <= cap and not _hits_obstacle(env, i, pts):
-            return base * mult
-    return None
-
-
-def _forbidden(env, i, j, ta, tb, step, kmax, clearance):
-    """Delay DIFFERENCES (in units of `step`) at which this pair of traversals collides.
-
-    Only the difference matters, never the two delays separately: a robot sits at its start
-    before it departs and at its goal after it arrives, so shifting BOTH by the same amount
-    changes nothing either of them does. That halves the dimension of the pairwise question
-    and is what makes a complete schedule search affordable at all.
-
-    At difference d the pair is compared at indices (u - d*step, u), both clamped -- one
-    clamped diagonal of the pose grid. So a pair's whole delay table is read off a single
-    distance matrix, instead of re-simulating the pair once per candidate delay.
-
-    The body test runs only in the annulus between the sum of INSCRIBED radii and the sum
-    of BOUNDING radii; outside it the answer is already known. Approximating the bodies as
-    discs would forbid differences that are actually free, which for a completeness claim
-    is the dangerous direction -- it would manufacture the very unsatisfiability the search
-    is meant to detect.
-    """
-    ri, rj = env.robots[i].shape.bounding_radius, env.robots[j].shape.bounding_radius
-    qi, qj = inscribed_radius(env.robots[i].shape), inscribed_radius(env.robots[j].shape)
-    M = np.linalg.norm(ta[:, None, :2] - tb[None, :, :2], axis=2)
-    maybe = M < ri + rj + clearance
-    if not maybe.any():
-        return []
-    sure = M < qi + qj + clearance
-    La, Lb = len(ta), len(tb)
-    bad = []
-    for d in range(-kmax, kmax + 1):
-        off = d * step
-        u = np.arange(min(0, off), max(off + La, Lb))
-        ia, ib = np.clip(u - off, 0, La - 1), np.clip(u, 0, Lb - 1)
-        if sure[ia, ib].any():
-            bad.append(d)
-            continue
-        for k in np.flatnonzero(maybe[ia, ib]):
-            a, b = int(ia[k]), int(ib[k])
-            if shape_distance(
-                env.robots[i].shape, (float(ta[a][0]), float(ta[a][1]), float(ta[a][2])),
-                env.robots[j].shape, (float(tb[b][0]), float(tb[b][1]), float(tb[b][2]))
-            ) < clearance:
-                bad.append(d)
-                break
-    return bad
-
-
-def _runs(vals):
-    """Sorted ints as inclusive intervals, so a delay table becomes a handful of clauses."""
-    out = []
-    for v in vals:
-        if out and v == out[-1][1] + 1:
-            out[-1][1] = v
-        else:
-            out.append([v, v])
-    return [tuple(x) for x in out]
+    """`flat.fit_blur` for robot i in this env."""
+    return flat.fit_blur(env.robots[i].shape, env._obstacles, route, target, base, cap)
 
 
 def _drive(env, i, route, dt, smooth, cap, speeds, tol, goal):
@@ -823,16 +695,24 @@ def _build(env, params, clearance=0.05, guides=None, trace=None):
             for u in grp:
                 axis_of[u] = ax
 
-    # A lane has to fit the corridor the robot actually has. The colouring can ask for more
-    # lanes than the map holds: cluttered_cross_32 wants 4, which at lane_w 0.5 spans 1.5 m
-    # between rows 1.0 m apart, so the outer lanes reach into the NEIGHBOURING row and the
-    # device manufactures conflicts instead of resolving them. Room is the closest a robot
-    # comes to a route it does NOT contend with, less the body it has to keep clear.
-    room = float("inf")
-    for i in range(n):
-        for j in range(n):
-            if j != i and j not in partners[i]:
-                room = min(room, float(np.linalg.norm(refs[i] - refs[j], axis=1).min()))
+    # A lane has to fit the corridor the robot actually has, and the colouring can ask for
+    # more lanes than the map holds. Corridor width is measured against the routes this
+    # robot is NOT going to be coordinated with: a partner's route is excluded on purpose,
+    # because partners cross -- that is what makes them partners -- and their crossing is
+    # what the lane and the schedule exist to resolve.
+    #
+    # Obstacles are absent from this measure, and that is deliberate too. A route is
+    # allowed to hug a pillar, and `_fit_blur` already rejects any smoothing that puts a
+    # body through one, so folding a clearance margin in here double-counts the obstacle.
+    # Measured on cluttered_cross_16, doing so collapsed the corridor to zero and took
+    # every lane with it -- both cluttered scenarios went UNSAT outright.
+    #
+    # Kept per robot as well as aggregated: lane pitch needs the tightest corridor
+    # anywhere in the scene, while anything per-robot needs that robot's own.
+    apart = [min([float(np.linalg.norm(refs[i] - refs[j], axis=1).min())
+                  for j in range(n) if j != i and j not in partners[i]] or [float("inf")])
+             for i in range(n)]
+    room = min(apart)
     room = max(0.0, room - (lat + clearance)) if np.isfinite(room) else 0.0
     fits = int(room // (lat + clearance)) + 1 if room > 0 else 1
     lanes = max(1, min(lanes, fits))
@@ -870,6 +750,16 @@ def _build(env, params, clearance=0.05, guides=None, trace=None):
         else:
             dy = ((side.get(i, 0) % lanes) - (lanes - 1) / 2.0) * pitch if win else 0.0
         dense = _resample(refs[i], 128)
+        # Round the GUIDE's corners BEFORE any lane is applied. The RRT hands back a
+        # polyline, and a kink in it caps the cornering speed for the whole traverse
+        # (v <= w_max/kappa) whether or not the lane later moves the route sideways.
+        # Measured on cluttered_cross_16: without this the plan is 913 steps with 6 robots
+        # falling back to stop-and-go legs, with it 675 and 2.
+        if smooth > 0.0:
+            fold = _fit_blur(env, i, dense, dense, smooth, 0.5 * apart[i])
+            got = flat._curve(dense, fold) if fold is not None else None
+            if got is not None:
+                dense = _resample(got[0], 128)
         route = dense
         if win and abs(dy) > 1e-9:
             # A lane is only available if it is free. Try the assigned side, then its
@@ -1017,293 +907,31 @@ def _build(env, params, clearance=0.05, guides=None, trace=None):
     # which is the whole reason the next stage exists.
     _snap(f"constructive: {lanes} lanes, {len(hubs)} roundabouts -- no schedule", tracks)
 
-    # --- SCHEDULE: per-robot delays, by insertion ---------------------------------------
-    # Colouring conflicts and staggering colour c by c*offset is uniform and blunt: every
-    # robot in a colour waits the same amount whether it needed 10 steps or 400, and the
-    # horizon is (groups-1)*offset + max_traj, which explodes exactly when a scenario needs
-    # many colours. Measured on cluttered_cross_16: 3 groups at offset 407 gave 1668 steps
-    # and 280 surviving collisions, and finer colouring made it 2804 steps and 2923.
+    # --- SCHEDULE ----------------------------------------------------------------------
+    # Handed off entirely: from here the problem is "one candidate and one delay per
+    # robot", which is discrete and knows nothing about lanes or curves. The one thing
+    # this side still owns is the ORDER the fallback should try, because a good insertion
+    # order is a geometric judgement.
     #
-    # Insert robots one at a time instead, each delayed the LEAST that clears everyone
-    # already placed. A placement is only accepted against trajectories already committed,
-    # so the schedule is correct by construction rather than by re-detection; the robots
-    # that need no delay get none. Longest trajectory first, because the hardest robot to
-    # fit should choose while the space is still empty.
-    step = max(1, int(params.get("delay_step", 5)))
-    horizon_cap = int(getattr(env, "max_steps", 0) or 0) or 10 ** 6
-
-    def _clash(a, da, ka, b, db, kb):
-        """Do a and b ever come within `clearance`, at these delays and these speeds?
-
-        Compared over the FULL span, clamped at both ends: before its delay a robot sits at
-        its start, and after arrival it sits at its goal. Both are real occupancy -- skipping
-        the tail let a robot park on a spot a later robot drives through (79 hits on
-        circular_cross_32). Cheap centre-distance pre-filter, exact shape test only on the
-        steps that survive it.
-        """
-        ta, tb = alts[a][ka], alts[b][kb]
-        span = max(da + len(ta), db + len(tb))
-        ia = np.clip(np.arange(span) - da, 0, len(ta) - 1)
-        ib = np.clip(np.arange(span) - db, 0, len(tb) - 1)
-        pa, pb = ta[ia], tb[ib]
-        near = np.linalg.norm(pa[:, :2] - pb[:, :2], axis=1) < radii[a] + radii[b] + clearance
-        if not near.any():
-            return False
-        for k in np.flatnonzero(near):
-            qa, qb = pa[k], pb[k]
-            if shape_distance(env.robots[a].shape, (float(qa[0]), float(qa[1]), float(qa[2])),
-                              env.robots[b].shape, (float(qb[0]), float(qb[1]), float(qb[2]))
-                              ) < clearance:
-                return True
-        return False
-
-    def _least(r, got, k, skip=None):
-        """Least delay at which variant k of r clears everything placed, or None."""
-        d = 0
-        while d + len(alts[r][k]) <= horizon_cap:
-            if not any(_clash(r, d, k, q, got[q][0], got[q][1]) for q in got if q != skip):
-                return d
-            d += step
-        return None
-
-    def _fit(r, got, skip=None):
-        """Cheapest (delay, speed) at which r clears everything placed, or None.
-
-        Waiting and slowing both cost makespan, and they are directly comparable in the
-        same unit: waiting `d` steps adds `d`, and taking a slower traversal adds however
-        many steps longer that traversal is. So score every option by the time it adds and
-        take the smallest -- which keeps full speed with no delay whenever that fits, and
-        otherwise picks whichever concession is actually cheaper rather than always
-        reaching for the same one.
-        """
-        best = None
-        for k in range(len(alts[r])):
-            extra = len(alts[r][k]) - len(alts[r][0])
-            if best is not None and extra >= best[0]:
-                continue                      # cannot beat what we already have
-            d = _least(r, got, k, skip=skip)
-            if d is None:
-                continue
-            cost = d + extra
-            if best is None or cost < best[0]:
-                best = (cost, d, k)
-                if cost == 0:
-                    break
-        return None if best is None else (best[1], best[2])
-
-    def _blockers(r, got):
-        """Who stopped `r` from fitting, and WHERE were they standing when they did?
-
-        Three failures look identical from a count and want opposite fixes. A blocker that
-        has ARRIVED never moves again, so no delay for `r` can help. A blocker still parked
-        at its START has not left yet, so delaying `r` is the fix and the horizon is the
-        limit. A blocker that is DRIVING is an ordinary congested crossing. Report which,
-        at the delay where `r` is least obstructed.
-        """
-        best_at, fewest = None, None
-        d = 0
-        while d + len(alts[r][0]) <= horizon_cap:
-            hit = [q for q in got if _clash(r, d, 0, q, got[q][0], got[q][1])]
-            if fewest is None or len(hit) < len(fewest):
-                best_at, fewest = d, hit
-                if not hit:
-                    break
-            d += step
-        where = {"at_goal": 0, "at_start": 0, "driving": 0}
-        for q in (fewest or []):
-            ta, tb = alts[r][0], alts[q][got[q][1]]
-            dq = got[q][0]
-            span = max(best_at + len(ta), dq + len(tb))
-            ia = np.clip(np.arange(span) - best_at, 0, len(ta) - 1)
-            ib = np.clip(np.arange(span) - dq, 0, len(tb) - 1)
-            pa, pb = ta[ia], tb[ib]
-            near = np.flatnonzero(np.linalg.norm(pa[:, :2] - pb[:, :2], axis=1)
-                                  < radii[r] + radii[q] + clearance)
-            k = int(near[0]) if len(near) else 0
-            if k >= dq + len(tb):
-                where["at_goal"] += 1
-            elif k < dq:
-                where["at_start"] += 1
-            else:
-                where["driving"] += 1
-        return {"blocked_robot": int(r), "blockers": len(fewest or []), **where}
-
-    def _place(order, why=None, budget=None):
-        """Insert in this order, each robot conceding the least that clears those before it.
-
-        Insertion is greedy and has no backtracking, so one badly-seated robot can leave a
-        later one with nowhere to go. Measured on cluttered_cross_32, that later robot had
-        exactly ONE blocker -- so allow a bounded repair: evict the single blocker, seat the
-        robot that could not fit, and re-seat the blocker afterwards. Each robot may be
-        evicted `evictions` times, which bounds the work and keeps the loop finite. Measured
-        on cluttered_cross_32: no repair seats 21 of 32, one eviction each seats 28.
-        """
-        got: dict = {}
-        evicted: dict = {}
-        if budget is None:
-            budget = int(params.get("evictions", 3))
-        queue = list(order)
-        while queue:
-            r = queue.pop(0)
-            spot = _fit(r, got)
-            if spot is not None:
-                got[r] = spot
-                continue
-            # Who blocks r at every delay? Take the delay where r is least obstructed: if
-            # exactly one robot stands in the way there, that one is the repairable blocker.
-            # (Scanning delays once beats testing every placed robot for removability --
-            # the latter is O(placed^2 * delays) and does not finish.)
-            best_at, fewest = None, None
-            d = 0
-            while d + len(alts[r][0]) <= horizon_cap:
-                hit = [q for q in got if _clash(r, d, 0, q, got[q][0], got[q][1])]
-                if fewest is None or len(hit) < len(fewest):
-                    best_at, fewest = d, hit
-                    if len(hit) == 1:
-                        break
-                d += step
-            if fewest is not None and len(fewest) == 1 and evicted.get(fewest[0], 0) < budget:
-                q = fewest[0]
-                evicted[q] = evicted.get(q, 0) + 1
-                del got[q]
-                got[r] = (best_at, 0)
-                queue.append(q)
-                continue
-            if why is not None:
-                why.update(_blockers(r, got))
-            return None, len(got)
-        return got, len(got)
-
-    def _solve():
-        """Lane, speed and delay for EVERY robot at once. Returns (assignment, verdict).
-
-        Insertion is greedy: it seats robots one at a time, each taking the least delay
-        that clears whoever is already down, and it never revisits a seating. That is fast
-        and it is also why it fails -- a robot seated early at zero delay can leave a later
-        one with nowhere to go, and on cluttered_cross_32 no order and no bounded eviction
-        recovers from it, so the construction returns nothing at all.
-
-        Nothing about the problem forces that. A pair's constraint is a set of forbidden
-        delay DIFFERENCES (`_forbidden`), which is a finite table, so the whole schedule is
-        a finite constraint problem and can be decided rather than guessed at. Measured on
-        cluttered_cross_32: greedy gives up after every order and every eviction, this
-        seats all 32 in under a minute of table building plus under a second of solving.
-
-        `unsat` is a real answer and worth distinguishing from `unavailable`: it says no
-        assignment of lane, speed and delay exists over these candidates, so retrying with
-        a different insertion order cannot help and the fix belongs in route generation.
-        """
-        try:
-            import z3
-        except ImportError:
-            return None, "unavailable"
-        kmax = horizon_cap // step
-        sel = [z3.Int(f"c{i}") for i in range(n)]
-        kd = [z3.Int(f"k{i}") for i in range(n)]
-        z = z3.Solver()
-        z.set("timeout", 1000 * int(params.get("sat_timeout", 600)))
-        for i in range(n):
-            z.add(sel[i] >= 0, sel[i] < len(alts[i]), kd[i] >= 0)
-            for a, t in enumerate(alts[i]):
-                z.add(z3.Implies(sel[i] == a, kd[i] * step + len(t) <= horizon_cap))
-        # Two robots whose candidate sets never come within a body of each other cannot
-        # constrain one another at any relative timing, so their table is never built.
-        pad = 2.0 * max(radii) + clearance
-        box = [(np.min([t[:, :2].min(axis=0) for t in alts[i]], axis=0) - pad,
-                np.max([t[:, :2].max(axis=0) for t in alts[i]], axis=0) + pad)
-               for i in range(n)]
-        for i in range(n):
-            for j in range(i + 1, n):
-                if (box[i][0] > box[j][1]).any() or (box[j][0] > box[i][1]).any():
-                    continue
-                for a, ta in enumerate(alts[i]):
-                    for b, tb in enumerate(alts[j]):
-                        bad = _forbidden(env, i, j, ta, tb, step, kmax, clearance)
-                        if not bad:
-                            continue
-                        guard = z3.And(sel[i] == a, sel[j] == b)
-                        for lo, hi in _runs(bad):
-                            z.add(z3.Implies(guard, z3.Not(z3.And(kd[i] - kd[j] >= lo,
-                                                                  kd[i] - kd[j] <= hi))))
-        res = z.check()
-        if res != z3.sat:
-            return None, "unsat" if res == z3.unsat else "unknown"
-
-        def _read(m):
-            pickd = {r: (m[kd[r]].as_long() * step, m[sel[r]].as_long()) for r in range(n)}
-            return pickd, max(d + len(alts[r][k]) for r, (d, k) in pickd.items())
-
-        def _cap(H):
-            for i in range(n):
-                for a, t in enumerate(alts[i]):
-                    z.add(z3.Implies(sel[i] == a, kd[i] * step + len(t) <= H))
-
-        # Satisfiability is not the goal, a SHORT plan is. Any delay vector that clears
-        # everyone satisfies the constraints, including one that simply queues the robots:
-        # measured on open_cross_32, the first model found was 1177 steps with all 32 robots
-        # delayed, against 332 for greedy insertion -- which minimises delay by construction
-        # and so never had to be told to. So bisect on the makespan, keeping the shortest
-        # model that still checks. The tables are already built and each re-check costs
-        # under a second, so the whole search is a handful of solver calls.
-        best, T = _read(z.model())
-        lo = max(min(len(t) for t in alts[i]) for i in range(n))
-        for _ in range(int(params.get("sat_bisect", 16))):
-            if lo >= T:
-                break
-            mid = (lo + T - 1) // 2
-            z.push()
-            _cap(mid)
-            if z.check() == z3.sat:
-                best, T = _read(z.model())
-                z.pop()
-                _cap(T)          # commit the improvement, so later steps cannot undo it
-            else:
-                z.pop()
-                lo = mid + 1
-        return best, "sat"
-
     # Insertion can only ever DELAY, and delaying is the wrong move when a robot has to go
-    # EARLY: in a swap, A's goal is B's start, so B must be gone before A arrives. Placed in
-    # an unlucky order, B's only lever makes things worse and the greedy run dead-ends --
-    # circular_cross_32 placed 1 of 32. Order is a heuristic, not a commitment, so try
-    # several and keep the first that seats everyone. Longest-first and shortest-first are
-    # the two structured guesses; the rest are seeded shuffles, so this is reproducible.
-    rng = np.random.default_rng(int(params.get("order_seed", 0)))
-    by_len = sorted(range(n), key=lambda r: -len(tracks[r]))
-    # Longest-first stays the FIRST order tried: the goal-precedence order is a repair for
+    # EARLY: in a swap, A's goal is B's start, so B must be gone before A arrives. Placed
+    # in an unlucky order, B's only lever makes things worse and the greedy run dead-ends
+    # -- circular_cross_32 placed 1 of 32. Order is a heuristic, not a commitment, so offer
+    # several. Longest-first stays FIRST: the goal-precedence order is a repair for
     # scenarios greed strands, and leading with it costs makespan where greed already works
     # -- circular_cross_32 went 1212 -> 1300 steps (its whole budget) when it led.
+    rng = np.random.default_rng(int(params.get("order_seed", 0)))
+    by_len = sorted(range(n), key=lambda r: -len(tracks[r]))
     orders = [by_len, _goal_order(refs, starts, goals, radii[0] * 2 + clearance),
               by_len[::-1]]
     orders += [list(rng.permutation(n)) for _ in range(int(params.get("order_tries", 6)))]
 
-    # Eviction rescues orders that greed alone cannot seat, but the schedule it rescues is
-    # not necessarily good: on circular_cross_32 it let the FIRST order succeed at 1300
-    # steps -- the entire budget -- where an order further down the list had been winning at
-    # 1212. So sweep every order with no evictions first, and only fall back to the repair
-    # for scenarios where nothing seats without it.
-    delay, best, why = None, 0, {}
-    verdict = "off"
-    if solve:
-        delay, verdict = _solve()
-    # Greedy is the fallback, not the method: it runs when z3 is absent or gave up. It is
-    # skipped after an `unsat`, where it is provably a waste of the order sweep.
-    for allowance in ([] if (delay is not None or verdict == "unsat") else
-                      (0, int(params.get("evictions", 3)))):
-        for od in orders:
-            probe: dict = {}
-            delay, got = _place([int(r) for r in od], probe, budget=allowance)
-            if got > best:
-                best, why = got, probe
-            if delay is not None:
-                break
-        if delay is not None:
-            break
+    delay, verdict, why = schedule.assign(env, alts, clearance, params, orders)
     if delay is None:
         if isinstance(params, dict):
             params.setdefault("_reject", {}).update(
-                {"unschedulable_robot": 1, "orders_tried": len(orders), "schedule": verdict,
-                 "best_placed": best, "n": n, "offset_dropped": dropped, **why})
+                {"unschedulable_robot": 1, "schedule": verdict, "n": n,
+                 "offset_dropped": dropped, **why})
         return None
 
     # `delay` now carries both concessions: how long each robot waits, and which traversal
@@ -1323,7 +951,7 @@ def _build(env, params, clearance=0.05, guides=None, trace=None):
     ctrls = [np.vstack([c, np.zeros((T - len(c), 2))]) if len(c) < T else c for c in heldu]
 
     rep: dict = {}
-    gap = _verify(env, tracks, clearance, rep)
+    gap = schedule.verify(env, tracks, clearance, rep)
     if gap is None:
         if isinstance(params, dict):
             params.setdefault("_reject", {}).update(rep)
@@ -1342,3 +970,74 @@ def _build(env, params, clearance=0.05, guides=None, trace=None):
             "max_delay": max(wait.values()), "steps": T,
             "min_surface_gap": round(float(gap), 4)}
     return tracks, ctrls, info
+
+
+def guides(env, params, clearance):
+    """One kinematic guide per robot, from a geometric sampling planner.
+
+    Obstacles only -- each robot is routed as if it were alone, and every interaction is
+    left to the construction and the schedule. Deliberately NOT shared with the K-ARC
+    baseline's `_milestones`: the two methods are separate, and a shared guide generator
+    is the kind of coupling that makes an ablation impossible to read later.
+    """
+    rng = np.random.default_rng(int(params.get("guide_seed", 0)))
+    out = []
+    for i in range(env._n):
+        s0 = np.asarray(env._states[i], float)
+        g = np.asarray(env._goals[i], float)
+        path = geometric_rrt.plan_path(
+            s0[:2], g[:2], env._obstacles, env._world_size,
+            radius=env.robots[i].shape.bounding_radius + clearance,
+            max_iters=int(params.get("guide_rrt_iters", 5000)),
+            step=float(params.get("guide_rrt_step", 0.6)),
+            goal_bias=float(params.get("guide_rrt_goal_bias", 0.1)),
+            shortcut=bool(params.get("guide_rrt_shortcut", True)), rng=rng)
+        out.append(np.asarray(path, float) if path is not None
+                   else np.vstack([s0[:2], g[:2]]))
+    return out
+
+
+class ConstructivePlanner(BasePlanner):
+    """Construct the coordination, then schedule it completely.
+
+    Separate from :class:`~src.approach.planning.karc.KARCPlanner` on purpose. That one is
+    a faithful reimplementation of arXiv:2501.01559 and exists to be a baseline; nothing
+    here may be switched on inside it, because a baseline with our method hidden behind a
+    flag is not a baseline. The two share no module, no config key and no guide generator.
+    """
+
+    method = "constructive"
+
+    def reset(self, env) -> None:
+        t0 = time.perf_counter()
+        params = dict(self.params)
+        params["constructive"] = True
+        clearance = float(self.approach_cfg.get("trajopt", {}).get("clearance", 0.05))
+        agents = list(env.possible_agents)
+        self._controls = {a: [] for a in agents}
+        self.trace = [] if params.get("trace", False) else None
+        self.stats = {"method": "constructive", "solved": 0}
+
+        built = plan(env, params, clearance, guides=guides(env, params, clearance),
+                     trace=self.trace)
+        if built is not None:
+            tracks, ctrls, info = built
+            self.stats["solved"] = 1
+            self.stats.update(info)
+            for i, a in enumerate(agents):
+                self._controls[a] = [np.asarray(u, float) for u in ctrls[i]]
+            self.stats["makespan"] = round(len(tracks[0]) * env.dt, 4)
+        else:
+            # A rejected construction says WHY, and the reason decides what to do next: an
+            # `unsat` schedule means the candidate routes are inadequate, a geometric
+            # rejection means the construction never got as far as scheduling.
+            self.stats.update(params.get("_reject", {}))
+        self.stats["wall_time"] = round(time.perf_counter() - t0, 3)
+        self._plan = self._controls
+
+    def act(self, obs_dict: dict, env) -> dict:
+        out = {}
+        for i, agent in enumerate(env.agents):
+            seq = self._controls.get(agent, [])
+            out[agent] = seq.pop(0) if seq else np.zeros(env.robots[i].action_dim)
+        return out

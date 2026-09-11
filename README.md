@@ -9,7 +9,7 @@ The same problem is solved two ways, chosen by one config field:
 | `approach=` | What it does | Entry |
 |---|---|---|
 | `reinforcement_learning` (default) | trains decentralized IPPO policies with obstacle-aware potential-based shaping | `train.py` |
-| `planning` | computes controls online — sampling-based or minimum-time trajectory optimisation, including a K-ARC reimplementation | `evaluate.py` |
+| `planning` | computes controls online — sampling-based, minimum-time trajectory optimisation, the K-ARC baseline, or our constructive coordinator | `evaluate.py` |
 
 Both build the **same env from the same config**, so a scenario is described once and
 either approach can be pointed at it. Every component (robot, observation, initializer,
@@ -33,7 +33,7 @@ See `paper/` and `notes/` for write-ups and results.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"                 # runtime + pytest/ruff; exposes the `src` package
-pip install -e ".[dev,planning]"        # add CasADi for approach=planning
+pip install -e ".[dev,planning]"        # add CasADi + z3 for approach=planning
 # other extras: pip install -e ".[wandb,viewer,dubins]"
 ```
 
@@ -104,7 +104,7 @@ for n in 4 8 16 32; do
 done
 ```
 
-### K-ARC and its resolution ladder
+## K-ARC baseline (reimplementation)
 
 The default ladder is K-ARC's own (§III-C): **prioritized trajectory optimization →
 Decoupled Kinodynamic RRT → Composite Kinodynamic RRT**. The two sampling rungs exist
@@ -185,6 +185,132 @@ and ~8x the wall time — the price of the completeness they buy.
 > for a given `approach.karc.rrt_seed`. Runs whose `rungs` shows only `prioritized` are
 > unaffected and stay deterministic — which is every open-cross result at N ≤ 16.
 
+## Constructive coordination (ours)
+
+`approach.method=constructive` is **not** a rung, a flag or a variant of the baseline above.
+It is a separate planner in `src/approach/planning/constructive.py` with its own config
+block, its own guide generator and its own scheduler; the two share no module, no config
+key and no code path, so neither can be quietly turned into the other by a switch.
+
+Where K-ARC plans segments and then repairs whichever conflicts it finds, this one builds a
+plan that is collision-free by construction and then asks a solver whether the whole team
+can be seated in time at once:
+
+1. **Guides.** One geometric RRT path per robot (`src/approach/planning/geometric_rrt.py`),
+   sampled in continuous space and shortcut — obstacle-free, but ignorant of other robots.
+2. **Lanes and roundabouts.** Robots whose guides run together are offset onto parallel
+   lanes; robots whose guides meet at a shared hub are routed around it in one consistent
+   sense. Lane pitch is bounded by the corridor each robot actually has.
+3. **Smooth driving.** Each route is fitted with a blurred, arclength-uniform curve
+   (`smooth` is the blur length in metres, so curvature — and with it the cornering cap
+   `v <= ω_max/κ` — stays usable) and realised through differential flatness
+   (`src/approach/planning/flat.py`): the flat outputs (x, y) give θ, v, ω, a, α exactly,
+   so the trajectory is dynamically feasible by construction rather than feasible up to a
+   bounded discontinuity. A TOPP-style forward/backward sweep sets the speed profile
+   under `v_max`, `ω_max`, `a_max`, `α_max`.
+4. **Timing.** Each robot gets a small set of candidate trajectories (lane variants,
+   speeds). For every pair and every candidate pair, the *differences* of departure time
+   at which the two bodies would touch are tabulated exactly — bounding-radius and
+   inscribed-radius bands decide most cells, and only the annulus needs an OBB distance.
+5. **Schedule.** The tables go to z3 as a QF_LIA/difference-logic problem: pick one
+   candidate per robot and one departure time per robot such that no pair lands on a
+   forbidden difference. Makespan is then bisected down using the same tables. A
+   satisfying model is a plan; **UNSAT is a proof** that no schedule exists over that
+   candidate set, which is what makes the candidate set (not the scheduler) the thing to
+   fix when it fails.
+
+```bash
+# plan, execute and report the coordination counters (`STATS,constructive,...`)
+python main.py approach=planning approach.method=constructive \
+  env=cluttered_cross_16_unicycle2
+
+# the planning *process* as a GIF (reference paths -> lanes -> schedule)
+python scripts/karc_trace_gif.py approach=planning approach.method=constructive \
+  env=cluttered_cross_16_unicycle2 eval.gif_path=experiments/cc16_trace.gif
+
+# greedy insertion instead of the solver — the scheduler ablation
+python main.py approach=planning approach.method=constructive \
+  env=cluttered_cross_16_unicycle2 approach.constructive.schedule=greedy
+
+# render the execution to a GIF
+python evaluate.py approach=planning approach.method=constructive \
+  env=cluttered_cross_16_unicycle2 eval.gif_path=experiments/cc16.gif
+```
+
+Knobs live under `constructive:` in `conf/approach/planning.yaml`: `guide_rrt_*` (the
+sampler), `smooth` / `blur_cap` (how far the fitted curve may stray), `veer_margin` and
+`hub_pack` (lane and roundabout geometry), `spacetime` (conflict test), `schedule`
+(`sat` | `greedy`), `sat_timeout`, `delay_step`, and `trace`.
+
+**Looking at the encoding.** `scripts/schedule_sat.py` runs the timing stage standalone
+and dumps the problem it posed, so the constraints can be read or re-solved outside the
+planner:
+
+```bash
+python scripts/schedule_sat.py env=cluttered_cross_8_unicycle2
+# -> experiments/schedule_sat_cluttered_cross_8_unicycle2.smt2   (SMT-LIB2, QF_LIA)
+```
+
+**Where it stands** (`experiments/ours_baseline_compare.txt`, one run each, every plan
+verified collision-free by the environment's own checker; steps at `dt=0.1`):
+
+| scenario | `constructive` | `cegar` |
+|---|---|---|
+| `open_cross_32` | **332** steps / 92 s | 516 / 51 s |
+| `circular_cross_16` | **416** / 21 s | 556 / 32 s |
+| `cluttered_cross_16` | **675** / 33 s | 711 / **11 s** |
+| `cluttered_cross_32` | 785 / 166 s | **619** / **119 s** |
+
+The split is the interesting part and it is not noise: the rulebook wins where its devices
+are exactly right — parallel rows want lanes, a circle wants a roundabout — and loses in
+clutter, where lane pitch is squeezed by the pillars and the sampled alternative simply
+goes round. Single seeds, so read the pattern, not the third digit.
+
+
+## Conflict-guided resampling (ours, the sampling-based one)
+
+`approach.method=cegar` is the same problem attacked without a rulebook. The method above
+decides lanes, roundabouts and passing sides from geometry the author picked out of the
+benchmarks; this one decides nothing in advance. Each robot owns a growing set of **sampled
+candidate motions**, a solver picks one per robot, and when no pick works the solver's own
+explanation says which robots to resample and where.
+
+1. **Candidates.** A sampled path (geometric RRT), its corners rounded as hard as the
+   corridor allows (`flat.fit_blur`: a kink in a polyline caps the cornering speed for the
+   whole traverse, and open_cross_32 is 701 steps driving the path as sampled against 516
+   with it rounded), driven as one smooth flat trajectory — the same `flat` realisation as
+   above — plus the same geometry traversed slower and
+   variants that stop EN ROUTE for a sampled number of steps. Waiting is a motion like any
+   other: nothing is ever held on its start line, because a robot parked on its start is a
+   device only a planner that owns the whole world can use.
+2. **Lazy SMT.** Pick exactly one candidate per robot. Collision clauses are added only
+   when the solver actually proposes a pair — it proposes, the pair test refutes, the
+   refutation comes back as a clause `¬(x_ia ∧ x_jb)`. Most pairs are never checked.
+3. **Core-guided refinement.** UNSAT means no combination of the current candidates works.
+   The **unsat core** is a set of pairwise refutations, so it names the robots that cannot
+   be reconciled and the points where their candidates met. Those robots resample with a
+   disc dropped on the contested point, which pushes the sampler out of that corridor
+   instead of back into it. The candidate set grows strictly, so a refutation is never
+   re-derived.
+4. **Makespan.** Any satisfying pick is collision-free but says nothing about duration, and
+   the cheapest way out of a conflict — wait longer — is the one that inflates it. Once a
+   plan verifies, its horizon is bisected down over the same candidates and the same
+   learned refutations, so the search costs solver time only.
+
+```bash
+python main.py approach=planning approach.method=cegar env=cluttered_cross_16_unicycle2
+
+# the loop itself: each failed round draws the points its core blamed
+python scripts/karc_trace_gif.py approach=planning approach.method=cegar \
+  env=cluttered_cross_16_unicycle2 eval.gif_path=experiments/cc16_cegar.gif
+```
+
+Knobs under `cegar:` in `conf/approach/planning.yaml`: `guide_rrt_*`, `smooth`/`blur_cap`,
+`slow`,
+`waits` / `long_wait` (how long an en-route stop may be), `rounds`, `timeout`, `trace`.
+`timeout` is meant to be the binding budget — a round is cheap, and stopping on a round
+count throws away a loop that was still making progress.
+
 ## Robots
 
 | Config | Type | State | Action | Shape | Notes |
@@ -206,6 +332,8 @@ goal. `unicycle_db` is a **box**, which is why `swap1`/`swap2` render as rectang
 | `swap1_unicycle2` | 1 | `unicycle_db` | db-CBS port; single robot, empty world — for testing a *potential* |
 | `swap2_unicycle2` | 2 | `unicycle_db` | db-CBS port; symmetric head-on swap — a *coordination* problem |
 | `open_cross_{4,8,16,32}_unicycle2` | 4–32 | `unicycle_db` | K-ARC Open Cross port; N/2 symmetric head-on rows, empty world. Generated — run `python scripts/gen_open_cross.py`, don't hand-edit |
+| `cluttered_cross_{4,8,16,32}_unicycle2` | 4–32 | `unicycle_db` | K-ARC Cluttered Cross port; same rows, with pillars in the way. Generated by `scripts/gen_open_cross.py` |
+| `circular_cross_{4,8,16,32}_unicycle2` | 4–32 | `unicycle_db` | **not** a K-ARC benchmark — antipodal swaps on a circle, so there are no rows to index and every route meets at one hub. Generated by `scripts/gen_circular_cross.py` |
 
 ## Shaping potentials (`shaping=…`)
 
@@ -219,7 +347,11 @@ cannot express).
 `rrt` · `kinodynamic_rrt` (both stubs — intern exercises, see `docs/INTERN.md`) ·
 `optimization` (prioritised minimum-time NLP) ·
 `karc` (K-ARC, arXiv:2501.01559 — segmented plans, geometric conflict detection, and a
-configurable resolution ladder). Everything is set from `conf/approach/planning.yaml`;
+configurable resolution ladder) ·
+`constructive` (ours — sampled guides, lanes/roundabouts, flatness-based smooth driving,
+and an exact SMT schedule) ·
+`cegar` (ours — sampled candidate motions, lazy SMT, and unsat-core-guided resampling).
+Both of ours are described above. Everything is set from `conf/approach/planning.yaml`;
 `approach=planning` also drops the `network`/`train` groups, so `--cfg job` shows only
 knobs that affect the run.
 
@@ -230,7 +362,9 @@ conf/            Hydra configs (approach/ env/ robot/ shaping/ obs/ init/ networ
 src/
   approach/      the RL-vs-planning split
     rl/            IPPO training + the eval controller that loads checkpoints
-    planning/      rrt, kinodynamic_rrt, optimization, karc, and the CasADi NLP
+    planning/      geometric_rrt + krrt (samplers), rrt, kinodynamic_rrt, optimization,
+                   the CasADi NLP, karc (baseline), and constructive + cegar + flat +
+                   schedule (ours)
     rollout.py     the episode loop both approaches score with
   robot/         UnicycleModel, Unicycle2Model, CarModel (RK4)
   env/           MultiAgentNav (PettingZoo), vectorized wrapper, factory.build_env
@@ -240,7 +374,9 @@ src/
   init/          start/goal initializers (fixed, random, random_heading)
   networks/      policy and value nets (mlp, gru)
   viz/           greyscale matplotlib renderer
-scripts/         fasteval.py (bulk metrics), viewer.py (streamlit), numerical diagnostics
+scripts/         fasteval.py (bulk metrics), viewer.py (streamlit), karc_trace_gif.py
+                 (planning process as a GIF), schedule_sat.py (SMT-LIB2 dump),
+                 gen_*_cross.py (scenario generators), numerical diagnostics
 tests/           pytest: robot dynamics, shaping, env contract, planners, renderer, eval
 docs/            task notes for collaborators (INTERN.md, results.md, ...)
 paper/ notes/    write-ups and results

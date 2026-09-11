@@ -36,11 +36,11 @@ from src.viz import render_frame_with_shapes  # noqa: E402
 def main(cfg: DictConfig) -> None:
     # `approach=planning` is what loads the karc block; the default config selects RL and
     # has no planner settings at all, so say that rather than failing on a missing key.
-    if cfg.approach.get("type") != "planning" or "karc" not in cfg.approach:
-        raise SystemExit("pass approach=planning (and approach.method=karc, the default)")
+    method = cfg.approach.get("method", "karc")
+    if cfg.approach.get("type") != "planning" or method not in ("karc", "constructive", "cegar"):
+        raise SystemExit("pass approach=planning with method=karc, constructive or cegar")
     OmegaConf.set_struct(cfg, False)
-    cfg.approach.method = "karc"
-    cfg.approach.karc.trace = True
+    cfg.approach[method].trace = True
 
     out = cfg.eval.get("gif_path", None) or "karc_trace.gif"
     fps = int(cfg.eval.get("fps", 15))
@@ -51,7 +51,7 @@ def main(cfg: DictConfig) -> None:
     planner.reset(env)
 
     if not planner.trace:
-        raise RuntimeError("planner recorded no stages — is approach.method=karc?")
+        raise RuntimeError(f"planner recorded no stages — is {method}.trace set?")
 
     shapes = [r.shape for r in env.robots]
     start = [s.copy() for s in env._states]

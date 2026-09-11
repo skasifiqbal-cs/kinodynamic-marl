@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from src.collision.shapes import collides
+
 
 def profile(delta, dt, acc_max, vel_max):
     """Accelerate/cruise/decelerate covering exactly `delta`, ending at rest.
@@ -274,3 +276,62 @@ def trajectory(robot, state, route, dt, smooth=0.12, gain=(1.6, 1.2), slow=1.0):
         if len(xs) > 4 * n + 400:
             break
     return (np.asarray(xs), np.asarray(us)) if xs else None
+
+
+def hits_obstacle(shape, obstacles, pts):
+    """Does a route put this body through an obstacle at any sample?
+
+    Heading is taken from the route itself, which matters for a box: a long body swung
+    round a corner sweeps more than its bounding disc suggests.
+    """
+    pts = np.asarray(pts, float)
+    for k in range(len(pts)):
+        th = 0.0
+        if k + 1 < len(pts):
+            d = pts[k + 1] - pts[k]
+            if np.linalg.norm(d) > 1e-9:
+                th = float(np.arctan2(d[1], d[0]))
+        pose = (float(pts[k][0]), float(pts[k][1]), th)
+        if any(collides(shape, pose, ob.shape, ob.pose) for ob in obstacles):
+            return True
+    return False
+
+
+def fit_blur(shape, obstacles, route, target, base, cap, mults=(8.0, 4.0, 2.0, 1.0)):
+    """The largest blur this route can take while still being the route that was planned.
+
+    Blur is not a cosmetic setting, it is the speed knob. Curvature caps speed through
+    w = kappa*v, so a sharp corner inherited from a sampled guide throttles the whole bend
+    -- measured on cluttered_cross_16, blur 0.12 leaves a robot crawling at 0.245 m/s and
+    its traverse 952 steps long while blur 0.60 gets the same robot to 0.401 m/s and 513
+    steps. Rounding the corner IS the speed-up.
+
+    What stops it being free is that a blurred curve cuts the corner, and a route that was
+    placed somewhere on purpose must stay there. So take the largest blur whose curve stays
+    within `cap` of `target` and clear of the obstacles, and only then profile it.
+
+    Returns None when even the smallest blur cannot meet `cap`. That is a real answer, not
+    a failure: some corridors have no room to round anything.
+
+    Deviation is measured against a DENSELY resampled target. A 128-point polyline over an
+    18 m route is 14 cm between vertices, so a curve running exactly down the middle of it
+    still reports up to half that spacing as "deviation" by nearest-vertex distance --
+    purely a sampling artefact. Measured on cluttered_cross_16 the floor was 59 mm against
+    a 22 mm budget, identical at every blur length because it never came from the blur at
+    all, and 15 of 16 robots were refused smooth driving because of it. Straight routes
+    hide this (their vertices interpolate themselves), which is why it only ever showed up
+    under clutter.
+    """
+    dense, _ = _even(np.asarray(target, float)[:, :2], max(len(target), 2000))
+    if dense is None:
+        return None
+    for mult in mults:
+        got = _curve(route, base * mult)
+        if got is None:
+            continue
+        pts = got[0]
+        dev = float(np.linalg.norm(pts[:, None, :] - dense[None, :, :],
+                                   axis=2).min(axis=1).max())
+        if dev <= cap and not hits_obstacle(shape, obstacles, pts):
+            return base * mult
+    return None

@@ -9,7 +9,9 @@
 # `python main.py approach=planning --cfg job` shows the full experiment.
 approach:
   type: planning
-  method: karc         # rrt | kinodynamic_rrt | optimization | karc
+  # karc        = the faithful arXiv:2501.01559 reimplementation (the BASELINE)
+  # constructive = ours: constructed coordination + complete scheduling
+  method: karc   # rrt | kinodynamic_rrt | optimization | karc | constructive
 
   # ── Shared nonlinear-program settings ───────────────────────────────────────
   # Read by every optimisation-based method (`optimization`, `karc`), so the
@@ -223,71 +225,6 @@ approach:
     #                    impassable at N=32.
     ladder: [prioritized, decoupled_rrt, composite_rrt]
 
-    # RUNG 0: construct a coordinated plan and verify it, before any search runs. Derives
-    # the pairing, the side each robot goes round, and the manoeuvre schedule from the
-    # conflict graph; builds rest-to-rest legs under the real acceleration bounds. Falls
-    # through to the ladder above unless the construction VERIFIES against the env's own
-    # collision checker, so enabling it can only add solutions, never lose one.
-    constructive: false
-    # How a route is DRIVEN once its lane/orbit is decided. 0.0 keeps the rest-to-rest
-    # legs (turn in place, drive straight, stop). Any positive value flies the whole route
-    # as one time-parameterised curve with both controls live, and is read as the blur
-    # length in METRES used to fit that curve -- large enough to keep curvature (and so
-    # the cornering speed cap w_max/kappa) usable, small enough that the curve stays in
-    # its lane. 0.12 keeps the fitted curve within a few cm of the intended geometry.
-    smooth: 0.12
-    # WHEN two robots are judged to conflict. false compares their routes at equal
-    # normalised progress -- a proxy that holds only while robots advance at similar
-    # rates. true compares where they actually ARE at the same instant, which needs a
-    # time parameterisation to exist, so it only takes effect when `smooth` is on.
-    spacetime: false
-    # How far the fitted curve may stray from the route it was given, as a fraction of the
-    # lane pitch. Deviation is what buys speed (it rounds the corners that cap v at
-    # w_max/kappa) and what spends lane separation, since two robots in adjacent lanes
-    # each straying `cap` toward the other close 2*cap of the pitch between them.
-    # 0.5 rather than something tighter because verification, not this number, is what
-    # keeps a plan safe -- and the cap is only felt where routes actually curve. On the
-    # straight-route scenarios it changes nothing (open_cross_32 is 332 steps either way);
-    # on the curved ones it is most of the benefit (circular_cross_16 is 454 steps at 0.5
-    # against 740 at 0.25, versus 836 for stop-and-go).
-    blur_cap: 0.5
-    veer_margin: 0.2     # extra centre separation beyond (lateral extent + clearance)
-    # Which coordination device a conflict cluster gets is read off its own geometry:
-    # scattered pairwise crossings get lanes, a cluster whose encounters all land on one
-    # point gets a roundabout of radius hub_pack * |cluster| * (body diag + clearance)/2pi.
-    # 1.0 is the geometric minimum AND the best measured value -- on circular_cross_32 it
-    # seats all 32 robots, 1.3 seats 21, 2.0 seats 18: a wider ring is a longer detour
-    # through the same congested annulus.
-    hub_pack: 1.0
-    # How the per-robot lane, speed and delay are chosen.
-    #   sat    - decide all of them together with z3, over exactly the candidates the
-    #            construction generated. Complete: it either produces an assignment or
-    #            proves none exists, so a failure is informative rather than a symptom of
-    #            insertion order. On cluttered_cross_32 greedy gives up under every order
-    #            and every eviction budget while this seats all 32.
-    #   greedy - insertion only, the previous behaviour. Faster on easy scenarios, and the
-    #            automatic fallback whenever z3 is missing or hits `sat_timeout`.
-    # Lane candidates are only offered to `sat`: insertion seats each robot once and never
-    # revisits it, so alternative lanes are choices it cannot act on.
-    schedule: sat
-    sat_timeout: 600
-    # Delay granularity for insertion scheduling, in env steps. 5 rather than 10 because
-    # circular_cross_32 needs the finer packing: at 10 it strands 2 of 32 robots.
-    delay_step: 5
-    # Insertion can only DELAY, so a bad order dead-ends with no way back. Retry the same
-    # greedy insertion under several orders (longest-first, shortest-first, then seeded
-    # shuffles) and keep the first that seats everyone.
-    order_tries: 6
-    order_seed: 0
-    # Greedy insertion strands a robot when a single already-seated robot blocks it at
-    # every delay. Evict that one blocker, seat the stuck robot, re-seat the blocker after.
-    # On cluttered_cross_32 this lifts placement from 21 of 32 to 28 of 32; raising the
-    # budget above 1 buys nothing there, so the remaining block is structural, not greed.
-    evictions: 3
-    # 0 = derive it from the plan: the last index at which anything is still
-    # contested. A constant is only ever right for one scenario -- 220 suits the
-    # open cross and is ~4x too small for the cluttered cross, whose trajectory
-    # lengths spread over 848 steps.
     group_offset: 0      # env steps between manoeuvre groups; 0 = derived
     lead: 5.5            # metres run straight before the veer begins
     span: 2.0            # metres held at the veered offset across the crossing
@@ -423,3 +360,136 @@ approach:
   # `optimization` (prioritised one-shot trajopt, K-ARC's first ladder rung)
   # takes all of its settings from `trajopt` above and needs no block.
   optimization: {}
+
+  # ── Constructive coordination + complete scheduling (OURS, not K-ARC) ────────
+  # Selected with `approach.method=constructive`. Deliberately a separate method and a
+  # separate block from `karc:` above: that one is the faithful reimplementation of
+  # arXiv:2501.01559 and exists to be the baseline, and a baseline with our method behind
+  # a flag is not a baseline. Nothing here is read by K-ARC and nothing there is read by
+  # this. Where a value coincides with one of K-ARC's it is duplicated on purpose.
+  #
+  # Derives the pairing, the side each robot goes round and the manoeuvre schedule from
+  # the conflict graph, drives each route under the real acceleration bounds, and VERIFIES
+  # the result with the environment's own collision checker before returning it.
+  constructive:
+    # Kinematic guides. Obstacles only -- each robot is routed as if it were alone, and
+    # every interaction is left to the construction and the schedule.
+    guide_seed: 0
+    guide_rrt_iters: 5000
+    guide_rrt_step: 0.6
+    guide_rrt_goal_bias: 0.1
+    guide_rrt_shortcut: true
+    # How a route is DRIVEN once its lane/orbit is decided. 0.0 keeps the rest-to-rest
+    # legs (turn in place, drive straight, stop). Any positive value flies the whole route
+    # as one time-parameterised curve with both controls live, and is read as the blur
+    # length in METRES used to fit that curve -- large enough to keep curvature (and so
+    # the cornering speed cap w_max/kappa) usable, small enough that the curve stays in
+    # its lane. 0.12 keeps the fitted curve within a few cm of the intended geometry.
+    smooth: 0.12
+    # WHEN two robots are judged to conflict. false compares their routes at equal
+    # normalised progress -- a proxy that holds only while robots advance at similar
+    # rates. true compares where they actually ARE at the same instant, which needs a
+    # time parameterisation to exist, so it only takes effect when `smooth` is on.
+    spacetime: false
+    # How far the fitted curve may stray from the route it was given, as a fraction of the
+    # lane pitch. Deviation is what buys speed (it rounds the corners that cap v at
+    # w_max/kappa) and what spends lane separation, since two robots in adjacent lanes
+    # each straying `cap` toward the other close 2*cap of the pitch between them.
+    # 0.5 rather than something tighter because verification, not this number, is what
+    # keeps a plan safe -- and the cap is only felt where routes actually curve. On the
+    # straight-route scenarios it changes nothing (open_cross_32 is 332 steps either way);
+    # on the curved ones it is most of the benefit (circular_cross_16 is 454 steps at 0.5
+    # against 740 at 0.25, versus 836 for stop-and-go).
+    blur_cap: 0.5
+    veer_margin: 0.2     # extra centre separation beyond (lateral extent + clearance)
+    # Which coordination device a conflict cluster gets is read off its own geometry:
+    # scattered pairwise crossings get lanes, a cluster whose encounters all land on one
+    # point gets a roundabout of radius hub_pack * |cluster| * (body diag + clearance)/2pi.
+    # 1.0 is the geometric minimum AND the best measured value -- on circular_cross_32 it
+    # seats all 32 robots, 1.3 seats 21, 2.0 seats 18: a wider ring is a longer detour
+    # through the same congested annulus.
+    hub_pack: 1.0
+    # How the per-robot lane, speed and delay are chosen.
+    #   sat    - decide all of them together with z3, over exactly the candidates the
+    #            construction generated. Complete: it either produces an assignment or
+    #            proves none exists, so a failure is informative rather than a symptom of
+    #            insertion order. On cluttered_cross_32 greedy gives up under every order
+    #            and every eviction budget while this seats all 32.
+    #   greedy - insertion only, the previous behaviour. Faster on easy scenarios, and the
+    #            automatic fallback whenever z3 is missing or hits `sat_timeout`.
+    # Lane candidates are only offered to `sat`: insertion seats each robot once and never
+    # revisits it, so alternative lanes are choices it cannot act on.
+    schedule: sat
+    sat_timeout: 600
+    # Delay granularity for insertion scheduling, in env steps. 5 rather than 10 because
+    # circular_cross_32 needs the finer packing: at 10 it strands 2 of 32 robots.
+    delay_step: 5
+    # Insertion can only DELAY, so a bad order dead-ends with no way back. Retry the same
+    # greedy insertion under several orders (longest-first, shortest-first, then seeded
+    # shuffles) and keep the first that seats everyone.
+    order_tries: 6
+    order_seed: 0
+    # Greedy insertion strands a robot when a single already-seated robot blocks it at
+    # every delay. Evict that one blocker, seat the stuck robot, re-seat the blocker after.
+    # On cluttered_cross_32 this lifts placement from 21 of 32 to 28 of 32; raising the
+    # budget above 1 buys nothing there, so the remaining block is structural, not greed.
+    evictions: 3
+    # 0 = derive it from the plan: the last index at which anything is still
+    # contested. A constant is only ever right for one scenario -- 220 suits the
+    # open cross and is ~4x too small for the cluttered cross, whose trajectory
+    # lengths spread over 848 steps.
+    # Keep every intermediate stage for `scripts/karc_trace_gif.py`: the reference paths,
+    # the devices with no schedule (where the collisions are), and the scheduled plan.
+    trace: false
+    # Route simplification tolerance, metres -- only used by the stop-and-go fallback,
+    # since Douglas-Peucker exists to delete stops and smooth driving has none.
+    simplify_tol: 0.05
+    # Fraction of the route over which a lane displacement opens and closes.
+    taper: 0.12
+    # How far past the measured encounter the lane is held, as a fraction of the route.
+    window_pad: 0.35
+    # Traversal speeds offered to the scheduler, as divisors of the nominal profile.
+    # Available under smooth driving only: dividing a speed profile is a
+    # reparameterisation, not a re-plan, and a trapezoid has no such knob.
+    speeds: [1.4, 2.0]
+
+  # ── Conflict-guided resampling + lazy SMT (OURS, the sampling-based one) ────────
+  # Selected with `approach.method=cegar`. A third, independent method: `karc:` is the
+  # baseline, `constructive:` builds coordination from a rulebook and schedules it
+  # exactly, and this one has no rulebook at all. Each robot owns a set of SAMPLED
+  # candidate motions, z3 picks one per robot, pairwise collisions come back as clauses
+  # only when the solver actually proposes them, and an UNSAT core says which robots to
+  # resample and around which point. Nothing here is read by either of the other two.
+  cegar:
+    seed: 0
+    # Candidate paths come from the same geometric sampler as `constructive`, with its own
+    # keys on purpose -- a shared knob is a shared method.
+    guide_rrt_iters: 5000
+    guide_rrt_step: 0.6
+    guide_rrt_goal_bias: 0.1
+    guide_rrt_shortcut: true
+    # Blur length in metres for the flat curve fit; see `constructive.smooth`. The
+    # sampled path's corners are rounded as hard as `blur_cap` allows before it is driven,
+    # because a kink in a polyline caps the cornering speed for the whole traverse:
+    # open_cross_32 is 701 steps driving the polyline as sampled and 516 with the corners
+    # rounded.
+    smooth: 0.12
+    # How far the rounded curve may leave the sampled path, as a fraction of a body width
+    # plus clearance. The bound is what keeps rounding from cutting a corner into a pillar
+    # -- and it is checked against the obstacles as well, not only measured.
+    blur_cap: 0.5
+    # What a path offers besides itself: the same geometry traversed slower, and the same
+    # geometry with a stop part-way along. Waiting EN ROUTE rather than on the start line
+    # is the point -- a robot parked on its start is a coordination device that only a
+    # planner owning the whole world can use.
+    slow: 1.6
+    waits: [30, 80]        # hold, in steps, at a sampled point along the path
+    long_wait: 200         # the wait offered to a robot the unsat core has named
+    # How many resample-and-retry rounds before giving up, and the wall-clock budget for
+    # the whole loop. `timeout` is meant to be the binding one: a round is cheap (16 of
+    # them solve cluttered_cross_32 in 114 s) and stopping at a round count throws away a
+    # loop that was still making progress -- at 8 rounds that scenario reports UNSAT after
+    # 5.7 s of a 1200 s budget.
+    rounds: 60
+    timeout: 600
+    trace: false
