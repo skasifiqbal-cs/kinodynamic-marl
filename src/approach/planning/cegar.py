@@ -38,8 +38,8 @@ import numpy as np
 
 from src.approach.planning import flat, geometric_rrt, schedule
 from src.approach.planning.base import BasePlanner
-from src.collision.shapes import CircleShape, shape_distance
-from src.conflict.margin import inscribed_radius
+from src.collision.shapes import CircleShape
+from src.conflict.pairwise import first_contact
 
 try:                                                        # pragma: no cover - optional
     import z3
@@ -145,35 +145,8 @@ def _block(point, radius):
 # ── pairwise conflict test ──────────────────────────────────────────────────────────
 
 def _hits(env, i, j, ta, tb, clearance):
-    """Do two candidates touch when driven from the same instant? Returns the point or None.
-
-    Both are held at their last state once they finish, which is what the executed plan
-    does, so the comparison runs to the longer horizon. Three bands, as in
-    `schedule.forbidden`: outside the sum of bounding radii is provably clear, inside the
-    sum of inscribed radii is provably touching, and only the annulus pays for an exact
-    box-to-box distance.
-    """
-    La, Lb = len(ta), len(tb)
-    T = max(La, Lb)
-    ia = np.clip(np.arange(T), 0, La - 1)
-    ib = np.clip(np.arange(T), 0, Lb - 1)
-    pa, pb = ta[ia], tb[ib]
-    d = np.linalg.norm(pa[:, :2] - pb[:, :2], axis=1)
-    ri = env.robots[i].shape.bounding_radius + env.robots[j].shape.bounding_radius
-    qi = inscribed_radius(env.robots[i].shape) + inscribed_radius(env.robots[j].shape)
-    near = np.flatnonzero(d < ri + clearance)
-    if len(near) == 0:
-        return None
-    for k in near:
-        if d[k] < qi + clearance:
-            return 0.5 * (pa[k][:2] + pb[k][:2])
-        gap = shape_distance(env.robots[i].shape,
-                             (float(pa[k][0]), float(pa[k][1]), float(pa[k][2])),
-                             env.robots[j].shape,
-                             (float(pb[k][0]), float(pb[k][1]), float(pb[k][2])))
-        if gap < clearance:
-            return 0.5 * (pa[k][:2] + pb[k][:2])
-    return None
+    """`conflict.pairwise.first_contact` for two robots of this env."""
+    return first_contact(env.robots[i].shape, env.robots[j].shape, ta, tb, clearance)
 
 
 # ── the loop ────────────────────────────────────────────────────────────────────────

@@ -239,7 +239,17 @@ def trajectory(robot, state, route, dt, smooth=0.12, gain=(1.6, 1.2), slow=1.0):
     ref = reference(route, robot, dt, smooth=smooth, slow=slow)
     if ref is None or len(ref["x"]) < 2:
         return None
+    return execute(robot, state, ref, dt, gain=gain)
 
+
+def execute(robot, state, ref, dt, gain=(1.6, 1.2)):
+    """Fly a finished reference and return what the robot ACTUALLY does.
+
+    Split out from `trajectory` because the reference can come from anywhere -- a blurred
+    polyline here, a B-spline in `splinecegar` -- while the execution is the same every
+    time: feedforward from flatness, a proportional correction, and the robot's own
+    integrator, so the states handed back are the states the verifier will check.
+    """
     st = np.asarray(state, dtype=np.float64).copy()
     xs, us = [], []
 

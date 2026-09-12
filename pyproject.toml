@@ -27,7 +27,7 @@ dubins = ["dubins>=1.0.1"]
 # the complete scheduler used by approach.method=constructive. Without z3 the scheduler
 # falls back to greedy insertion, which is correct but strictly weaker -- and silent about
 # it -- so it is a declared dependency rather than an optional import.
-planning = ["casadi>=3.6", "z3-solver>=4.12"]
+planning = ["casadi>=3.6", "z3-solver>=4.12", "scipy>=1.10"]
 wandb = ["wandb>=0.17.0"]
 viewer = ["streamlit>=1.30.0"]
 dev = ["pytest>=7.0", "ruff>=0.4.0"]

@@ -13,10 +13,11 @@ from src.approach.planning.karc import KARCPlanner
 from src.approach.planning.kinodynamic_rrt import KinodynamicRRTPlanner
 from src.approach.planning.optimization import OptimizationPlanner
 from src.approach.planning.rrt import RRTPlanner
+from src.approach.planning.splinecegar import SplineCEGARPlanner
 
 __all__ = [
     "BasePlanner", "RRTPlanner", "KinodynamicRRTPlanner", "OptimizationPlanner",
-    "KARCPlanner", "ConstructivePlanner", "CEGARPlanner",
+    "KARCPlanner", "ConstructivePlanner", "CEGARPlanner", "SplineCEGARPlanner",
     "build_planner",
 ]
 
@@ -27,6 +28,7 @@ _PLANNERS = {
     "karc": KARCPlanner,
     "constructive": ConstructivePlanner,
     "cegar": CEGARPlanner,
+    "splinecegar": SplineCEGARPlanner,
 }
 
 

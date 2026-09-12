@@ -112,6 +112,7 @@ def render_frame_with_shapes(
     markers: Optional[List[np.ndarray]] = None,
     waypoints: Optional[List[np.ndarray]] = None,
     highlight: Optional[List[bool]] = None,
+    guides: Optional[List[np.ndarray]] = None,
 ) -> np.ndarray:
     """Render one frame with correct robot shapes (circle or OBB).
 
@@ -158,6 +159,15 @@ def render_frame_with_shapes(
         ax.add_patch(mpatches.Circle((float(w[0]), float(w[1])), goal_radius,
                                      facecolor="none", edgecolor=EDGE_COLOR,
                                      linestyle=":", linewidth=1.0, alpha=0.75, zorder=3))
+
+    for guide in (guides or []):
+        # The planner's REFERENCE geometry -- a sampled polyline, not something anything
+        # drives. Dotted so it never reads as a trajectory: what the robots actually fly is
+        # the solid trail, which is a curve fitted through this and then time-parameterised.
+        g = np.asarray(guide, float)
+        if len(g) > 1:
+            ax.plot(g[:, 0], g[:, 1], color=TRAIL_COLOR, linewidth=0.9, linestyle=":",
+                    alpha=0.7, zorder=2)
 
     for trail in trails:
         if len(trail) > 1:

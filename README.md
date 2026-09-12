@@ -33,7 +33,7 @@ See `paper/` and `notes/` for write-ups and results.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"                 # runtime + pytest/ruff; exposes the `src` package
-pip install -e ".[dev,planning]"        # add CasADi + z3 for approach=planning
+pip install -e ".[dev,planning]"        # add CasADi + z3 + scipy for approach=planning
 # other extras: pip install -e ".[wandb,viewer,dubins]"
 ```
 
@@ -311,6 +311,42 @@ Knobs under `cegar:` in `conf/approach/planning.yaml`: `guide_rrt_*`, `smooth`/`
 `timeout` is meant to be the binding budget — a round is cheap, and stopping on a round
 count throws away a loop that was still making progress.
 
+## Core-guided B-spline coordination (ours, current)
+
+`approach.method=splinecegar` is the `cegar` loop with its geometry layer replaced. A
+candidate motion **is a cubic B-spline**, and a B-spline is its control points
+(`src/approach/planning/splinecegar.py`), which changes three things:
+
+| | `cegar` | `splinecegar` |
+|---|---|---|
+| smoothness | Gaussian blur of a polyline, blur length tuned per scenario | the cubic basis — C² by construction |
+| curvature | two finite differences of the blurred path, then a second blur to hide the noise | analytic, from the spline's own derivatives |
+| repair | drop the path, resample a whole new RRT with a disc on the conflict | displace the 2–3 control points nearest the conflict; local support bounds the edit |
+
+Knots are placed by arclength — one control point per `ctrl_spacing` metres — and the fit
+is least-squares over those knots, with the first and last control points overwritten by
+the start pose and the goal (a clamped basis makes those exact). Spacing is the one knob
+that matters: it sets both how closely the spline follows the sampled path and how local a
+repair is.
+
+The loop above it is unchanged: lazy SMT over candidates, clauses only for pairs the
+solver proposes, unsat cores to name who is stuck, makespan bisection at the end. The
+sampler is now the *fallback* — it is called only when every control-point repair is
+undrivable or hits an obstacle.
+
+```bash
+python main.py approach=planning approach.method=splinecegar env=cluttered_cross_16_unicycle2
+
+python scripts/karc_trace_gif.py approach=planning approach.method=splinecegar \
+  env=open_cross_32_unicycle2 eval.gif_path=experiments/oc32.gif +fig_px=640
+```
+
+Two bugs worth knowing about, both caught by `tests/test_splinecegar.py` and both fixed:
+`scipy.interpolate.splprep(t=…)` wants the **full** knot vector, and silently mis-reads a
+list of interior knots (17 control points came back as 9, which quietly destroyed
+locality); and deviation from a sampled path must be measured against a **densified**
+target or nearest-vertex distance reports the polyline's own vertex spacing as error.
+
 ## Robots
 
 | Config | Type | State | Action | Shape | Notes |
@@ -350,8 +386,9 @@ cannot express).
 configurable resolution ladder) ·
 `constructive` (ours — sampled guides, lanes/roundabouts, flatness-based smooth driving,
 and an exact SMT schedule) ·
-`cegar` (ours — sampled candidate motions, lazy SMT, and unsat-core-guided resampling).
-Both of ours are described above. Everything is set from `conf/approach/planning.yaml`;
+`cegar` (ours — sampled candidate motions, lazy SMT, and unsat-core-guided resampling) ·
+`splinecegar` (ours, current — the same loop over B-spline candidates, repaired by moving
+control points). All three of ours are described above. Everything is set from `conf/approach/planning.yaml`;
 `approach=planning` also drops the `network`/`train` groups, so `--cfg job` shows only
 knobs that affect the run.
 
@@ -363,8 +400,8 @@ src/
   approach/      the RL-vs-planning split
     rl/            IPPO training + the eval controller that loads checkpoints
     planning/      geometric_rrt + krrt (samplers), rrt, kinodynamic_rrt, optimization,
-                   the CasADi NLP, karc (baseline), and constructive + cegar + flat +
-                   schedule (ours)
+                   the CasADi NLP, karc (baseline), and constructive + cegar +
+                   splinecegar + flat + schedule (ours)
     rollout.py     the episode loop both approaches score with
   robot/         UnicycleModel, Unicycle2Model, CarModel (RK4)
   env/           MultiAgentNav (PettingZoo), vectorized wrapper, factory.build_env

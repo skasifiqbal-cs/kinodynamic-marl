@@ -493,3 +493,31 @@ approach:
     rounds: 60
     timeout: 600
     trace: false
+
+  # ── Core-guided B-spline coordination (OURS, the spline one) ───────────────────
+  # Selected with `approach.method=splinecegar`. Same reasoning as `cegar:` above --
+  # lazy SMT over candidate motions, unsat cores to say who is stuck -- with the geometry
+  # layer replaced: a candidate IS a cubic B-spline, so smoothness is the basis rather
+  # than a blur, curvature is analytic rather than finite-differenced, and repair is a
+  # displacement of the two or three control points nearest the contested point, which
+  # local support guarantees changes nothing else on the curve.
+  splinecegar:
+    seed: 0
+    guide_rrt_iters: 5000
+    guide_rrt_step: 0.6
+    guide_rrt_goal_bias: 0.1
+    guide_rrt_shortcut: true
+    # Metres of path per control point. It sets BOTH how closely the spline follows the
+    # sampled path and how local a repair is: support is 4 knot spans, so a control point
+    # per metre confines an edit to roughly 4 m of an 18 m route, while the 5 control
+    # points scipy's own smoothing fit chose would let one edit move the whole curve.
+    ctrl_spacing: 1.0
+    slow: 1.6
+    waits: [30, 80]        # hold, in steps, at a sampled point along the spline
+    long_wait: 200         # the wait offered to a robot the unsat core has named
+    # How far from the contested point control points are considered for repair, in body
+    # diameters, and how many rounds/seconds the loop gets.
+    repair_reach: 2.0
+    rounds: 60
+    timeout: 600
+    trace: false

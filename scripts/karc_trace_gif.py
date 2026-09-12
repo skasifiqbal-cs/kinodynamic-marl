@@ -37,8 +37,8 @@ def main(cfg: DictConfig) -> None:
     # `approach=planning` is what loads the karc block; the default config selects RL and
     # has no planner settings at all, so say that rather than failing on a missing key.
     method = cfg.approach.get("method", "karc")
-    if cfg.approach.get("type") != "planning" or method not in ("karc", "constructive", "cegar"):
-        raise SystemExit("pass approach=planning with method=karc, constructive or cegar")
+    if cfg.approach.get("type") != "planning" or method not in ("karc", "constructive", "cegar", "splinecegar"):
+        raise SystemExit("pass approach=planning with method=karc, constructive, cegar or splinecegar")
     OmegaConf.set_struct(cfg, False)
     cfg.approach[method].trace = True
 
@@ -56,6 +56,7 @@ def main(cfg: DictConfig) -> None:
     shapes = [r.shape for r in env.robots]
     start = [s.copy() for s in env._states]
     skip = int(cfg.get("frame_skip", 3))
+    px = int(cfg.get("fig_px", 480))
 
     def touching(states):
         """Which robots are in body-on-body contact right now.
@@ -73,13 +74,13 @@ def main(cfg: DictConfig) -> None:
                     hit[i] = hit[j] = True
         return hit
 
-    def draw(states, trails, label, markers, waypoints):
+    def draw(states, trails, label, markers, waypoints, guides=None):
         return render_frame_with_shapes(
             states=states, robot_shapes=shapes, goals=env._goals,
             obstacles=env._obstacles, trails=trails, world_size=env._world_size,
-            reached=[False] * env._n, step=0, title=label, markers=markers,
+            reached=[False] * env._n, step=0, title=label, markers=markers, fig_px=px,
             goal_radius=env.goal_radius, waypoints=waypoints,
-            highlight=touching(states),
+            highlight=touching(states), guides=guides,
         )
 
     frames = []
@@ -90,7 +91,7 @@ def main(cfg: DictConfig) -> None:
 
         if not anim or max(len(a) for a in anim) < 2:
             # A path with no dynamics (the kinematic reference): nothing to drive.
-            frames.extend([draw(start, static, label, markers, wp)] * fps)
+            frames.extend([draw(start, [], label, markers, wp, static)] * fps)
             print(f"  {label}  [still]")
             continue
 
@@ -107,21 +108,23 @@ def main(cfg: DictConfig) -> None:
 
         for t in shown:
             states = at(t)
-            trails = [static[i] + [a[k, :2] for k in range(min(t, len(a) - 1) + 1)]
-                      for i, a in enumerate(anim)]
-            frame = draw(states, trails, label, markers, wp)
+            trails = [[a[k, :2] for k in range(min(t, len(a) - 1) + 1)] for a in anim]
+            frame = draw(states, trails, label, markers, wp, static)
             frames.append(frame)
             if contact and t == contact[0]:
                 frames.extend([frame] * fps)
         # Hold on the finished trajectory, with the conflicts it produced still marked.
         end = [a[-1] for a in anim]
-        end_trails = [static[i] + [p for p in a[:, :2]] for i, a in enumerate(anim)]
-        frames.extend([draw(end, end_trails, label, markers, wp)] * (fps // 2))
+        end_trails = [[p for p in a[:, :2]] for a in anim]
+        frames.extend([draw(end, end_trails, label, markers, wp, static)] * (fps // 2))
         print(f"  {label}  [{horizon} steps"
               + (f", {len(contact)} in contact]" if contact else "]"))
 
     save_gif(frames, out, fps)
     print(f"{len(planner.trace)} stages, {len(frames)} frames → {out}")
+    st = getattr(planner, "stats", None)
+    if st:
+        print(f"STATS,{method}," + ",".join(f"{k}={v}" for k, v in sorted(st.items())))
 
 
 if __name__ == "__main__":
