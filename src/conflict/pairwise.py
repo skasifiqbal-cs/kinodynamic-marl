@@ -19,6 +19,21 @@ def first_contact(shape_i, shape_j, ta, tb, clearance):
     Both are held at their last state once they finish, which is what an executed plan
     does -- a robot that arrives early sits on its goal, and sitting there still blocks --
     so the comparison runs to the longer horizon.
+    """
+    k = contact_step(shape_i, shape_j, ta, tb, clearance)
+    if k is None:
+        return None
+    pa, pb = _held(ta, k), _held(tb, k)
+    return 0.5 * (pa[:2] + pb[:2])
+
+
+def _held(t, k):
+    t = np.asarray(t, float)
+    return t[min(k, len(t) - 1)]
+
+
+def contact_step(shape_i, shape_j, ta, tb, clearance):
+    """The index of `first_contact`, or None -- WHEN they meet, not only where.
 
     Three bands. Outside the sum of bounding radii the pair is provably clear; inside the
     sum of inscribed radii it is provably touching; only the annulus between them pays for
@@ -35,16 +50,13 @@ def first_contact(shape_i, shape_j, ta, tb, clearance):
 
     far = shape_i.bounding_radius + shape_j.bounding_radius + clearance
     near = inscribed_radius(shape_i) + inscribed_radius(shape_j) + clearance
-    maybe = np.flatnonzero(d < far)
-    if len(maybe) == 0:
-        return None
-    for k in maybe:
+    for k in np.flatnonzero(d < far):
         if d[k] < near:
-            return 0.5 * (pa[k][:2] + pb[k][:2])
+            return int(k)
         gap = shape_distance(shape_i,
                              (float(pa[k][0]), float(pa[k][1]), float(pa[k][2])),
                              shape_j,
                              (float(pb[k][0]), float(pb[k][1]), float(pb[k][2])))
         if gap < clearance:
-            return 0.5 * (pa[k][:2] + pb[k][:2])
+            return int(k)
     return None

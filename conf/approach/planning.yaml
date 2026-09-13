@@ -493,6 +493,26 @@ approach:
     rounds: 60
     timeout: 600
     trace: false
+    # How a sampled path becomes a candidate motion.
+    #   smooth  -- blur the corners, speed-profile the curve, track it (flat.py)
+    #   legs    -- stop, turn on the spot, drive each segment (the ablation)
+    #   trajopt -- hand the path to the trajectory optimiser K-ARC uses (trajopt.py) as a
+    #              seed, on the env's own time step, so the plan IS what the env executes.
+    #              Candidates are a fast and a slow solve per guide; an unsat core's
+    #              repair re-solves a named robot from shortly before it met the robot it
+    #              was refuted against, keeping clear of that robot, on both sides.
+    drive: smooth
+    horizon_slack: [1.3, 1.6]   # x straight-line rest-to-rest time along the guide
+    repair_slack: 1.2           # extra time a sidestep may take; 1.0 never solved
+    yield_back: 30              # steps before first contact the re-solve starts from
+    back_doublings: 2           # if no side converges, start 2x, then 4x further back
+    yield_keys: 1               # core refutations each blamed robot gets a yield for
+    sidestep: 0.9               # metres the re-solve's seed is pushed aside at contact
+    body_discs: 3               # discs covering the body in the keep-clear constraint
+    goal_tol: 0.15
+    obstacle_margin: 4.0
+    max_iter: 1000
+    workers: 4                  # solve processes; IPOPT holds ~0.5-1.5 GB each
 
   # ── Core-guided B-spline coordination (OURS, the spline one) ───────────────────
   # Selected with `approach.method=splinecegar`. Same reasoning as `cegar:` above --

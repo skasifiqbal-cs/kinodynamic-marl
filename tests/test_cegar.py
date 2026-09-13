@@ -50,3 +50,18 @@ def test_hits_holds_the_shorter_candidate_at_its_last_state():
     parked = _track([5.0], 5.0, 0.0)
     through = _track(np.linspace(1.0, 9.0, 60), 5.0, 0.0)
     assert _hits(env, 0, 1, through, parked, 0.05) is not None
+
+
+def test_contact_step_is_when_first_contact_happens():
+    """The trajopt repair keeps a candidate up to shortly before this step, so it must be the
+    step of the SAME contact `first_contact` reports, not merely a close one."""
+    from src.conflict.pairwise import contact_step, first_contact
+
+    shape = BoxShape(width=0.5, length=0.25)
+    x = np.linspace(1.0, 9.0, 81)
+    east, west = _track(x, 5.0, 0.0), _track(x[::-1], 5.0, np.pi)
+    k = contact_step(shape, shape, east, west, 0.05)
+    assert k is not None and 0 < k < 40
+    assert contact_step(shape, shape, east[:k], west[:k], 0.05) is None
+    assert np.allclose(first_contact(shape, shape, east, west, 0.05),
+                       0.5 * (east[k, :2] + west[k, :2]))

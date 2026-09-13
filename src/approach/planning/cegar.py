@@ -32,6 +32,7 @@ can never be produced twice.
 from __future__ import annotations
 
 import time
+from concurrent.futures import ProcessPoolExecutor
 from types import SimpleNamespace
 
 import numpy as np
@@ -39,7 +40,7 @@ import numpy as np
 from src.approach.planning import flat, geometric_rrt, schedule
 from src.approach.planning.base import BasePlanner
 from src.collision.shapes import CircleShape
-from src.conflict.pairwise import first_contact
+from src.conflict.pairwise import contact_step, first_contact
 
 try:                                                        # pragma: no cover - optional
     import z3
@@ -154,6 +155,104 @@ def _block(point, radius):
                            pose=(float(point[0]), float(point[1]), 0.0))
 
 
+# ── trajopt candidates (drive: trajopt) ───────────────────────────────────────────
+#
+# The smooth layer above (blur, curvature caps, speed sweeps, a tracking controller) exists
+# to turn a path into something the robot can drive. A trajectory optimiser does all of that
+# in one call, and on the env's own time step its dynamics constraint IS the env's RK4 step,
+# so the plan and the execution agree exactly. Candidates then differ only in what the
+# optimiser is asked: which guide, how many steps, and whose trajectory to keep clear of.
+
+def _topt_spec(env, i, x0, guide, steps, params, clearance, avoid=None, j=None):
+    """One picklable `trajopt.solve_one` job for robot i from state x0 to its goal."""
+    kw = dict(horizon=int(steps), dt_fixed=float(env.dt),
+              guides=[np.asarray(guide, float)[:, :2]],
+              goal_tol=float(params.get("goal_tol", 0.15)), clearance=float(clearance),
+              obstacle_margin=float(params.get("obstacle_margin", 4.0)),
+              max_iter=int(params.get("max_iter", 1000)),
+              body_discs=int(params.get("body_discs", 3)))
+    if avoid is not None:
+        kw.update(avoid=[avoid], avoid_radii=[env.robots[j].shape.bounding_radius])
+    return (env.robots[i], np.asarray(x0, float), np.asarray(env._goals[i], float),
+            list(env._obstacles), float(env._world_size), kw)
+
+
+def _topt_run(env, pool, jobs, info):
+    """Solve `(robot, prefix controls, spec)` jobs; return (robot, candidate) for each success.
+
+    The candidate is re-driven from the robot's start through its own integrator, prefix and
+    all, so what enters the candidate set is what the env will execute -- not the solver's
+    iterate, which is only trusted when IPOPT says it converged.
+    """
+    from src.approach.planning.trajopt import solve_one
+
+    specs = [spec for _, _, spec in jobs]
+    got = list(pool.map(solve_one, specs)) if pool is not None else [solve_one(x) for x in specs]
+    info["solves"] = info.get("solves", 0) + len(specs)
+    out = []
+    for (i, prefix, _), (_, us, _, ok) in zip(jobs, got):
+        if not ok:
+            continue
+        robot = env.robots[i]
+        us = np.clip(np.vstack([np.asarray(prefix, float).reshape(-1, 2),
+                                np.atleast_2d(us)]), robot.action_low, robot.action_high)
+        st, xs = np.asarray(env._states[i], float).copy(), []
+        for u in us:
+            st = robot.step(st, u, float(env.dt))
+            xs.append(st.copy())
+        out.append((i, (np.asarray(xs), us)))
+    info["solve_fail"] = info.get("solve_fail", 0) + len(specs) - len(out)
+    return out
+
+
+def _topt_seed_jobs(env, i, path, params, clearance):
+    """Fast and slow traverses of one guide. `horizon_slack` multiplies the straight-line
+    rest-to-rest time along the guide; below ~1.3 the optimiser fails in clutter."""
+    robot = env.robots[i]
+    L = float(np.linalg.norm(np.diff(np.asarray(path, float)[:, :2], axis=0), axis=1).sum())
+    base = (L / robot.v_max + robot.v_max / robot.a_max) / float(env.dt)
+    return [(i, np.zeros((0, 2)),
+             _topt_spec(env, i, env._states[i], path, np.ceil(k * base), params, clearance))
+            for k in params.get("horizon_slack", [1.3, 1.6])]
+
+
+def _topt_yield_jobs(env, i, j, ci, cj, clearance, params, back):
+    """Robot i steps aside for robot j: keep i's candidate up to `back` steps before they
+    first meet, then re-solve to the goal keeping clear of j's candidate, on both sides.
+
+    The window's END is left free on purpose. Re-solving a fixed-length stretch with both
+    ends pinned is infeasible for a robot at cruise speed: a sidestep is longer than the
+    stretch it replaces and there is no time left to drive it in (measured: 6 s and 12 s
+    windows never solved). So the rest of the motion absorbs the detour, with
+    `repair_slack` extra time. Both sides are tried because the core says where the robots
+    meet, not which way round -- and one side may be a wall.
+    """
+    fi = np.vstack([np.asarray(env._states[i], float), ci[0]])
+    fj = np.vstack([np.asarray(env._states[j], float), cj[0]])
+    k = contact_step(env.robots[i].shape, env.robots[j].shape, fi, fj, clearance)
+    if k is None:
+        return []
+    k = min(k, len(fi) - 1)
+    s = max(k - int(back), 0)
+    steps = int(np.ceil(float(params.get("repair_slack", 1.2)) * max(len(fi) - 1 - s, 10)))
+    avoid = fj[s:]
+    if len(avoid) < steps + 1:
+        avoid = np.vstack([avoid, np.repeat(avoid[-1:], steps + 1 - len(avoid), axis=0)])
+    th = float(fi[k, 2])
+    normal = np.array([-np.sin(th), np.cos(th)])
+    m = max(k - s, 1)
+    t = np.arange(len(fi) - s)
+    bump = np.where(t <= 2 * m, np.sin(np.pi * t / (2 * m)) ** 2, 0.0)
+    r = env.robots[i].shape.bounding_radius
+    jobs = []
+    for side in (1.0, -1.0):
+        seed = fi[s:, :2] + side * float(params.get("sidestep", 0.9)) * bump[:, None] * normal
+        seed = np.clip(seed, r, float(env._world_size) - r)
+        jobs.append((i, ci[1][:s],
+                     _topt_spec(env, i, fi[s], seed, steps, params, clearance, avoid, j)))
+    return jobs
+
+
 # ── pairwise conflict test ──────────────────────────────────────────────────────────
 
 def _hits(env, i, j, ta, tb, clearance):
@@ -165,6 +264,20 @@ def _hits(env, i, j, ta, tb, clearance):
 
 def plan(env, params, clearance=0.05, trace=None):
     """A verified plan, or None. Returns (tracks, controls, info)."""
+    if str(params.get("drive", "smooth")) != "trajopt":
+        return _plan(env, params, clearance, trace, None)
+    # A process pool, not threads: CasADi holds the GIL through a solve (see trajopt.solve_one).
+    workers = int(params.get("workers", 4))
+    pool = ProcessPoolExecutor(max_workers=workers) if workers > 1 else None
+    try:
+        return _plan(env, params, clearance, trace, pool)
+    finally:
+        if pool is not None:
+            pool.shutdown(cancel_futures=True)
+
+
+def _plan(env, params, clearance, trace, pool):
+    topt = str(params.get("drive", "smooth")) == "trajopt"
     if z3 is None:
         if isinstance(params, dict):
             params.setdefault("_reject", {})["z3"] = "missing"
@@ -175,16 +288,24 @@ def plan(env, params, clearance=0.05, trace=None):
     deadline = time.perf_counter() + float(params.get("timeout", 600.0))
     body = 2.0 * max(r.shape.bounding_radius for r in env.robots) + clearance
 
+    info = {"rounds": 0, "refutations": 0, "resampled": 0, "checks": 0}
     paths = [[_sample(env, i, clearance, rng, params)] for i in range(n)]
-    cand = [_variants(env, i, paths[i][0], params, rng, clearance)
-            for i in range(n)]
+    if topt:
+        cand = [[] for _ in range(n)]
+        for i, c in _topt_run(env, pool, [job for i in range(n) for job in
+                                          _topt_seed_jobs(env, i, paths[i][0], params,
+                                                          clearance)], info):
+            cand[i].append(c)
+    else:
+        cand = [_variants(env, i, paths[i][0], params, rng, clearance)
+                for i in range(n)]
     if any(not c for c in cand):
         if isinstance(params, dict):
             params.setdefault("_reject", {})["undrivable_robot"] = 1
         return None
 
     touch: dict = {}          # (i, a, j, b) -> contested point; the refutations found so far
-    info = {"rounds": 0, "refutations": 0, "resampled": 0, "checks": 0}
+    core_keys: list = []      # the refutations the last unsat core used, for trajopt repair
 
     def _snap(label, pick=None, spots=()):
         """One stage in the shape `scripts/karc_trace_gif.py` draws.
@@ -272,6 +393,7 @@ def plan(env, params, clearance=0.05, trace=None):
                                    z3.Bool(f"r_{i}_{a_}_{j}_{b_}"))
 
         blame: dict = {}
+        core_keys.clear()
         for name in (str(c) for c in s.unsat_core()):
             if not name.startswith("r_"):
                 continue
@@ -279,6 +401,7 @@ def plan(env, params, clearance=0.05, trace=None):
             at = touch.get((i, a_, j, b_))
             if at is None:
                 continue
+            core_keys.append((i, a_, j, b_))
             blame.setdefault(i, []).append(at)
             blame.setdefault(j, []).append(at)
         return None, "unsat", blame
@@ -313,6 +436,18 @@ def plan(env, params, clearance=0.05, trace=None):
             blame = {i: [] for i in range(n)}
         _snap(f"round {rnd + 1}: unsat core blames {len(blame)} robots, resampling",
               spots=[p for spots in blame.values() for p in spots[:1]])
+        if topt:
+            if core_keys:
+                _topt_repair(env, pool, cand, core_keys, clearance, params, info)
+            else:                         # nothing to localise: new guides for everyone
+                for i in range(n):
+                    paths[i].append(_sample(env, i, clearance, rng, params))
+                for i, c in _topt_run(env, pool, [job for i in range(n) for job in
+                                                  _topt_seed_jobs(env, i, paths[i][-1],
+                                                                  params, clearance)], info):
+                    cand[i].append(c)
+                info["resampled"] += n
+            continue
         for i, spots in blame.items():
             blocks = [_block(p, body) for p in spots[:4]]
             path = _sample(env, i, clearance, rng, params, blocks=blocks)
@@ -331,6 +466,35 @@ def plan(env, params, clearance=0.05, trace=None):
     if isinstance(params, dict):
         params.setdefault("_reject", {}).update({"exhausted": 1, **info})
     return None
+
+
+def _topt_repair(env, pool, cand, core_keys, clearance, params, info):
+    """Offer every robot the core names a way to step aside for the robot it met.
+
+    Each robot yields in its first `yield_keys` core refutations, to the candidate it was
+    refuted against. A robot none of whose re-solves converge tries again from twice as far
+    back, up to `back_doublings` times -- a sidestep that cannot fit in 3 s may in 6.
+    """
+    per: dict = {}
+    for (i, a, j, b) in core_keys:
+        for me, mine, other, theirs in ((i, a, j, b), (j, b, i, a)):
+            if len(per.setdefault(me, [])) < int(params.get("yield_keys", 1)):
+                per[me].append((mine, other, theirs))
+    back = int(params.get("yield_back", 30))
+    pending = dict(per)
+    for _ in range(int(params.get("back_doublings", 2)) + 1):
+        jobs = [job for me, entries in pending.items() for (mine, other, theirs) in entries
+                for job in _topt_yield_jobs(env, me, other, cand[me][mine], cand[other][theirs],
+                                            clearance, params, back)]
+        grew = _topt_run(env, pool, jobs, info)
+        for i, c in grew:
+            cand[i].append(c)
+        done = {i for i, _ in grew}
+        info["resampled"] += len(done)
+        pending = {i: e for i, e in pending.items() if i not in done}
+        if not pending:
+            break
+        back *= 2
 
 
 def _assemble(env, cand, pick, clearance, info):
