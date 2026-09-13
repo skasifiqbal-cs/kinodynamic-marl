@@ -322,15 +322,25 @@ def plan(env, params, clearance=0.05, trace=None):
                                z3.Bool(f"r_{i}_{a_}_{j}_{b_}"))
 
         while True:
-            if time.perf_counter() > deadline:
+            left = deadline - time.perf_counter()
+            if left <= 0.0:
                 return None, "timeout", {}
-            if s.check() != z3.sat:
+            # Bound the solver call itself. Checking the clock between calls is not enough:
+            # with thousands of learned clauses one `check()` can run for minutes, which is
+            # how circular_cross_32 sailed past a 300 s budget without ever looking up.
+            s.set("timeout", max(1, int(left * 1000)))
+            got = s.check()
+            if got == z3.unknown:
+                return None, "timeout", {}
+            if got != z3.sat:
                 break
             m = s.model()
             pick = [next(c for c in range(len(cand[i])) if z3.is_true(m[x[i][c]]))
                     for i in range(n)]
             fresh = []
             for i in range(n):
+                if time.perf_counter() > deadline:
+                    return None, "timeout", {}
                 for j in range(i + 1, n):
                     key = (i, pick[i], j, pick[j])
                     if key in touch:
@@ -371,9 +381,20 @@ def plan(env, params, clearance=0.05, trace=None):
 
     for rnd in range(int(params.get("rounds", 60))):
         info["rounds"] = rnd + 1
+        # The budget has to be checked HERE as well as inside the solver loop: repairing
+        # and re-driving a blamed robot's candidates is the expensive half of a round, and
+        # a deadline the refinement never looks at is not a deadline. Measured on
+        # circular_cross_32, where 32 robots meeting at one hub put 20 robots in a core
+        # and the round outran a 600 s budget without a single solver call being made.
+        if time.perf_counter() > deadline:
+            if isinstance(params, dict):
+                params.setdefault("_reject", {}).update({"timed_out": 1, **info})
+            return None
         out, verdict, blame = _search(None)
         if verdict == "timeout":
-            break
+            if isinstance(params, dict):
+                params.setdefault("_reject", {}).update({"timed_out": 1, **info})
+            return None
         if out is not None:
             lo = max(min(len(c[0]) for c in cand[i]) for i in range(n))
             for _ in range(int(params.get("bisect", 12))):
@@ -395,6 +416,8 @@ def plan(env, params, clearance=0.05, trace=None):
         _snap(f"round {rnd + 1}: unsat core blames {len(blame)} robots, repairing",
               spots=[at for hits in blame.values() for _, at in hits[:1] if at is not None])
         for i, hits in blame.items():
+            if time.perf_counter() > deadline:
+                break
             cand[i].extend(_repair(env, i, cand, hits, params, rng, clearance, body, info))
 
     if isinstance(params, dict):

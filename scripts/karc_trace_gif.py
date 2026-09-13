@@ -22,7 +22,8 @@ import sys
 
 sys.path.insert(0, ".")
 
-import hydra  # noqa: E402
+import hydra
+import numpy as np  # noqa: E402
 from omegaconf import DictConfig, OmegaConf  # noqa: E402
 
 from src.approach.planning import build_planner  # noqa: E402
@@ -104,6 +105,14 @@ def main(cfg: DictConfig) -> None:
         # -- so plain subsampling can step clean over the collision this is meant to show.
         # Every contact step is kept regardless of frame_skip, and the first one is held.
         contact = [t for t in range(horizon) if any(touching(at(t)))]
+        # ... but a refuted 32-robot proposal can be in contact for 400 of its 750 steps,
+        # and keeping every one of those at full resolution is thousands of frames held in
+        # memory before the GIF is written -- which is what killed the cluttered_cross_32
+        # render twice. Keep the first (it is the one held on) and a thin even sample.
+        cap = int(cfg.get("contact_cap", 40))
+        if len(contact) > cap:
+            contact = [contact[0]] + [contact[i] for i in
+                                      np.linspace(1, len(contact) - 1, cap - 1).astype(int)]
         shown = sorted(set(range(0, horizon, skip)) | set(contact))
 
         for t in shown:
