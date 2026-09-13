@@ -1,5 +1,9 @@
 % Every entry here was checked against the primary source before being added.
 % Verified 2026-09-09: title, author list and year read off arXiv/DOI landing pages.
+% Verified 2026-09-13: the entries below the "B-spline / SMT layer" rule had their
+% title, full author list, venue, volume, issue, page range and year read back from
+% the Crossref metadata record for the stated DOI (api.crossref.org/works/<doi>),
+% except surynek2020 which was read off its arXiv abstract page.
 
 @article{karc2025,
   author  = {Qin, Mike and Solis, Irving and Motes, James and
@@ -72,4 +76,127 @@
   title        = {Dynobench: Dynamics Benchmark for Robot Motion Planning},
   howpublished = {\url{https://github.com/quimortiz/dynobench}},
   note         = {Model \texttt{unicycle2\_v0}; accessed 2026-09-09}
+}
+
+% ── B-spline / SMT layer ────────────────────────────────────────────────────────────
+% Verified 2026-09-13 against Crossref metadata for each DOI.
+
+@article{deboor1972,
+  author  = {de Boor, Carl},
+  title   = {On Calculating with {B}-splines},
+  journal = {Journal of Approximation Theory},
+  volume  = {6},
+  number  = {1},
+  pages   = {50--62},
+  year    = {1972},
+  doi     = {10.1016/0021-9045(72)90080-9}
+}
+
+@inproceedings{z3,
+  author    = {de Moura, Leonardo and Bj{\o}rner, Nikolaj},
+  title     = {{Z3}: An Efficient {SMT} Solver},
+  booktitle = {Tools and Algorithms for the Construction and Analysis of Systems
+               (TACAS)},
+  series    = {Lecture Notes in Computer Science},
+  volume    = {4963},
+  pages     = {337--340},
+  year      = {2008},
+  doi       = {10.1007/978-3-540-78800-3_24}
+}
+
+@article{toppra2018,
+  author  = {Pham, Hung and Pham, Quang-Cuong},
+  title   = {A New Approach to Time-Optimal Path Parameterization Based on
+             Reachability Analysis},
+  journal = {IEEE Transactions on Robotics},
+  volume  = {34},
+  number  = {3},
+  pages   = {645--659},
+  year    = {2018},
+  doi     = {10.1109/TRO.2018.2819195}
+}
+
+@inproceedings{usenko2017,
+  author    = {Usenko, Vladyslav and von Stumberg, Lukas and Pangercic, Andrej and
+               Cremers, Daniel},
+  title     = {Real-Time Trajectory Replanning for {MAV}s Using Uniform {B}-splines
+               and a {3D} Circular Buffer},
+  booktitle = {IEEE/RSJ International Conference on Intelligent Robots and Systems
+               (IROS)},
+  pages     = {215--222},
+  year      = {2017},
+  doi       = {10.1109/IROS.2017.8202160}
+}
+
+@article{fastplanner2019,
+  author  = {Zhou, Boyu and Gao, Fei and Wang, Luqi and Liu, Chuhao and Shen, Shaojie},
+  title   = {Robust and Efficient Quadrotor Trajectory Generation for Fast
+             Autonomous Flight},
+  journal = {IEEE Robotics and Automation Letters},
+  volume  = {4},
+  number  = {4},
+  pages   = {3529--3536},
+  year    = {2019},
+  doi     = {10.1109/LRA.2019.2927938}
+}
+
+@article{egoplanner2021,
+  author  = {Zhou, Xin and Wang, Zhepei and Ye, Hongkai and Xu, Chao and Gao, Fei},
+  title   = {{EGO-Planner}: An {ESDF}-Free Gradient-Based Local Planner for
+             Quadrotors},
+  journal = {IEEE Robotics and Automation Letters},
+  volume  = {6},
+  number  = {2},
+  pages   = {478--485},
+  year    = {2021},
+  doi     = {10.1109/LRA.2020.3047728}
+}
+
+@inproceedings{egoswarm2021,
+  author    = {Zhou, Xin and Zhu, Jiangchao and Zhou, Hongyu and Xu, Chao and
+               Gao, Fei},
+  title     = {{EGO-Swarm}: A Fully Autonomous and Decentralized Quadrotor Swarm
+               System in Cluttered Environments},
+  booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+  pages     = {4101--4107},
+  year      = {2021},
+  doi       = {10.1109/ICRA48506.2021.9561902}
+}
+
+@inproceedings{parkkim2020,
+  author    = {Park, Jungwon and Kim, H. Jin},
+  title     = {Efficient Multi-Agent Trajectory Planning with Feasibility Guarantee
+               Using Relative {B}ernstein Polynomial},
+  booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+  pages     = {434--440},
+  year      = {2020},
+  doi       = {10.1109/ICRA40945.2020.9197162}
+}
+
+@article{elbanhawi2015,
+  author  = {Elbanhawi, Mohamed and Simic, Milan and Jazar, Reza N.},
+  title   = {Continuous Path Smoothing for Car-Like Robots Using {B}-Spline Curves},
+  journal = {Journal of Intelligent and Robotic Systems},
+  volume  = {80},
+  number  = {S1},
+  pages   = {23--56},
+  year    = {2015},
+  doi     = {10.1007/s10846-014-0172-0}
+}
+
+@inproceedings{mellinger2011,
+  author    = {Mellinger, Daniel and Kumar, Vijay},
+  title     = {Minimum Snap Trajectory Generation and Control for Quadrotors},
+  booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+  pages     = {2520--2525},
+  year      = {2011},
+  doi       = {10.1109/ICRA.2011.5980409}
+}
+
+@article{surynek2020,
+  author  = {Surynek, Pavel},
+  title   = {Pushing the Envelope: From Discrete to Continuous Movements in
+             Multi-Agent Path Finding via Lazy Encodings},
+  journal = {arXiv preprint arXiv:2004.13477},
+  year    = {2020}
 }
