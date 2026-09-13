@@ -1435,9 +1435,11 @@ Stated in Remark~\ref{rem:gap}; it has known fixes.
 The verifier assumes a robot keeps following its candidate until that candidate ends at rest
 on its goal. The simulator instead parks a robot the moment it is inside $\varrho$ below a
 stopping speed, which can be a short distance before the planned stopping point. On one of our
-$20$ runs the simulator scored collisions on a plan the verifier had accepted; this mismatch is
-our leading explanation and is being confirmed by replay. The fix is to verify under the
-simulator's parking rule (or disable it); until then,
+$20$ runs this produced $13$ scored collision steps on a plan the verifier had accepted.
+Replaying that plan's controls through the simulator reproduces all $13$: robot $8$ is parked at
+step $408$, $0.18$\,m short of its planned stopping point, and robot $6$ passes through that
+spot during steps $423$--$435$, where the plan had robot $8$ further on. The fix is to verify
+under the simulator's parking rule (or disable it); until then,
 Prop.~\ref{prop:sound} holds for the plan as planned, and the experiments count such runs as
 failures.
 
