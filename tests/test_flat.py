@@ -88,3 +88,20 @@ def test_a_lane_displacement_is_back_on_the_centre_line_by_the_goal():
     assert abs(float(moved[0][1])) < 1e-9
     assert abs(float(moved[-1][1])) < 1e-9
     assert np.abs(moved[:, 1]).max() > 0.2      # the lane is still actually applied
+
+
+def test_legs_lands_on_every_waypoint_and_ends_at_rest():
+    """The whole point of a rest-to-rest primitive: it arrives, and it stops.
+
+    `profile` is solved on the same semi-implicit Euler the env integrates with, so a leg
+    should land ON its target rather than near it -- if that drifts, every candidate the
+    `drive=legs` ablation produces misses its goal and the ablation silently measures
+    nothing.
+    """
+    route = np.array([[0.0, 0.0], [3.0, 0.0], [3.0, 2.0]])
+    got = flat.legs(_robot(), np.array([0.0, 0.0, 0.0, 0.0, 0.0]), route, DT)
+    assert got is not None
+    states, controls = got
+    assert np.linalg.norm(states[-1][:2] - route[-1]) < 0.05
+    assert abs(float(states[-1][3])) < 1e-2 and abs(float(states[-1][4])) < 1e-2
+    assert len(states) == len(controls)

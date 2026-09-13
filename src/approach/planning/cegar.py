@@ -72,28 +72,40 @@ def _drive(env, i, path, params, clearance=0.05, slow=1.0, cut=None, wait=0):
     deceleration to rest and the restart is a real acceleration -- not a frozen frame.
     """
     dt, robot = float(env.dt), env.robots[i]
-    smooth = float(params.get("smooth", 0.12))
     state = np.asarray(env._states[i], float)
-    # A sampled path is a polyline, and a kink in it caps the cornering speed for the whole
-    # traverse (v <= w_max/kappa) even where the geometry is otherwise open. Round the
-    # corners as hard as the corridor allows -- `fit_blur` returns the largest blur whose
-    # curve stays within `cap` of the sampled path and clear of the obstacles, so the
-    # rounding can never cut a corner into a pillar.
-    if smooth > 0.0:
-        cap = float(params.get("blur_cap", 0.5)) * (
-            2.0 * robot.shape.bounding_radius + clearance)
-        blur = flat.fit_blur(robot.shape, env._obstacles, path, path, smooth, cap)
-        smooth = smooth if blur is None else blur
+
+    if str(params.get("drive", "smooth")) == "legs":
+        # Rest-to-rest primitives. Nothing about the ROUTE is reinterpreted -- no blur, no
+        # curvature, no speed profile -- so the only thing the driving layer contributes is
+        # a bang-bang ramp per leg. Kept as a switch rather than a separate planner because
+        # it is the ablation that says what the smooth layer is worth.
+        def run(st, route):
+            return flat.legs(robot, st, route, dt, slow=slow)
+    else:
+        smooth = float(params.get("smooth", 0.12))
+        # A sampled path is a polyline, and a kink in it caps the cornering speed for the
+        # whole traverse (v <= w_max/kappa) even where the geometry is otherwise open.
+        # Round the corners as hard as the corridor allows -- `fit_blur` returns the
+        # largest blur whose curve stays within `cap` of the sampled path and clear of the
+        # obstacles, so the rounding can never cut a corner into a pillar.
+        if smooth > 0.0:
+            cap = float(params.get("blur_cap", 0.5)) * (
+                2.0 * robot.shape.bounding_radius + clearance)
+            blur = flat.fit_blur(robot.shape, env._obstacles, path, path, smooth, cap)
+            smooth = smooth if blur is None else blur
+
+        def run(st, route):
+            return flat.trajectory(robot, st, route, dt, smooth=smooth, slow=slow)
+
     if cut is None:
-        got = flat.trajectory(robot, state, path, dt, smooth=smooth, slow=slow)
-        return got
+        return run(state, path)
     parts = _split(path, cut)
     if parts is None:
         return None
-    head = flat.trajectory(robot, state, parts[0], dt, smooth=smooth, slow=slow)
+    head = run(state, parts[0])
     if head is None:
         return None
-    tail = flat.trajectory(robot, head[0][-1], parts[1], dt, smooth=smooth, slow=slow)
+    tail = run(head[0][-1], parts[1])
     if tail is None:
         return None
     hold = np.repeat(head[0][-1][None, :], int(wait), axis=0)

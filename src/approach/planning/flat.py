@@ -68,6 +68,37 @@ def profile(delta, dt, acc_max, vel_max):
     return [x * sign for x in best]
 
 
+def legs(robot, state, route, dt, slow=1.0):
+    """Drive a polyline as rest-to-rest primitives: turn in place, then drive straight.
+
+    The whole kinodynamic content is `profile` -- one bang-bang ramp that lands exactly on
+    its target under the acceleration bound. No flatness inverse, no curvature, no speed
+    profile along a curve, no smoothing: every leg starts and ends at rest, so the only
+    bounds that can bind are the two `profile` already respects.
+
+    What it costs is time. The robot never fires both controls at once and stops at every
+    vertex, which on these scenarios runs 1.7-2.1x the cruise-limited bound. `slow` lowers
+    the velocity caps rather than rescaling time, which keeps each leg exactly solvable.
+    """
+    st = np.asarray(state, dtype=np.float64).copy()
+    xs, us = [], []
+    v_cap = robot.v_max / max(float(slow), 1.0)
+    w_cap = robot.omega_max / max(float(slow), 1.0)
+    for wp in np.asarray(route, float)[1:, :2]:
+        want = float(np.arctan2(wp[1] - st[1], wp[0] - st[0]))
+        turn = float(np.arctan2(np.sin(want - st[2]), np.cos(want - st[2])))
+        dist = float(np.linalg.norm(wp - st[:2]))
+        seq = [(0.0, al) for al in profile(turn, dt, robot.alpha_max, w_cap)]
+        seq += [(a, 0.0) for a in profile(dist, dt, robot.a_max, v_cap)]
+        for a, al in seq:
+            u = np.array([float(np.clip(a, robot.a_min, robot.a_max)),
+                          float(np.clip(al, robot.alpha_min, robot.alpha_max))])
+            st = robot.step(st, u, dt)
+            xs.append(st.copy())
+            us.append(u)
+    return (np.asarray(xs), np.asarray(us)) if xs else None
+
+
 def _even(pts, n):
     """`n` points spaced evenly by ARCLENGTH along a polyline."""
     seg = np.linalg.norm(np.diff(pts, axis=0), axis=1)
