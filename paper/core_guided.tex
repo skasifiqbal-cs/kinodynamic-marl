@@ -642,8 +642,9 @@ Sec.~\ref{sec:properties} states precisely what is left open.
 \begin{assumption}
 \label{ass:homog}
 For clarity of exposition the robots in this paper share one dynamic model and one body.
-Nothing in the method requires this: every bound is read from $\Rob_i$ individually and the
-collision test in Def.~\ref{def:conflict} is already per-pair. Heterogeneous teams are a
+Nothing in the method requires this: every bound in \eqref{eq:bounds} is read from robot
+$i$'s own model, and the collision test in Def.~\ref{def:conflict} is already per-pair in
+both its bodies and its radii. Heterogeneous teams are a
 configuration change, not a method change.
 \end{assumption}
 
