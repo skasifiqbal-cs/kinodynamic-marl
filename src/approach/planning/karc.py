@@ -324,7 +324,8 @@ class KARCPlanner(BasePlanner):
         brake_h = max(2, int(max(r.v_max / max(getattr(r, "a_max", np.inf), 1e-6) for r in env.robots)
                              / env.dt) + 2)
 
-        for j in range(m):
+        j = 0
+        while j < m:
             if self._over_budget():
                 # Out of time with segments left. Every robot brakes to rest from wherever
                 # it stands: `act` pads an exhausted control sequence with ZERO acceleration,
@@ -341,8 +342,9 @@ class KARCPlanner(BasePlanner):
                     self._abandon(agents, env)
                 break
 
-            goals = [milestones[i][j] for i in range(env._n)]
-            last = (j == m - 1)   # only the final milestone requires a full stop
+            end = j               # last segment this window covers; adaptation moves it on
+            goals = [milestones[i][end] for i in range(env._n)]
+            last = (end == m - 1)   # only the final milestone requires a full stop
             start_ck = self._checkpoint(agents, state)
 
             # Alg. 2's outer `while P' == ∅`: run the whole solver hierarchy, and only if
@@ -360,7 +362,7 @@ class KARCPlanner(BasePlanner):
                 # Alg. 1 line 17 hands the optimizer this window's slice of the kinematic
                 # path. After an adaptation the window reaches back `adapt` segments, so
                 # the guide does too -- and the horizon is measured along it.
-                lo, hi = max(0, j - adapt) / m, (j + 1) / m
+                lo, hi = max(0, j - adapt) / m, (end + 1) / m
                 guides = [self._guide(ref_paths[i], state[i], lo, hi)
                           for i in range(env._n)]
                 seg_h = self._segment_horizon(env, t_cfg, state, goals, total_h, m, guides)
@@ -374,17 +376,28 @@ class KARCPlanner(BasePlanner):
                 )
                 self.stats["rounds"] += rounds
                 if ((not conflicts and all(oks)) or adapt >= adapt_max
-                        or not prev_starts or self._over_budget()):
+                        or (not prev_starts and end == m - 1) or self._over_budget()):
                     break
                 adapt += 1
                 self.stats["adaptations"] += 1
-                start_ck = prev_starts.pop()
-                state = self._restore(agents, start_ck)
+                # Both halves of K-ARC's widening, for every robot at once (every robot shares
+                # the window, so there is nothing unplanned to overtake). Rolling back re-opens
+                # how the window was entered; moving the goal on stops it having to END at a
+                # milestone that may be unreachable safely -- e.g. four robots meeting at a
+                # shared centre milestone at speed, which no later window can recover from.
+                if prev_starts:
+                    start_ck = prev_starts.pop()
+                    state = self._restore(agents, start_ck)
+                if end < m - 1:
+                    end += 1
+                    goals = [milestones[i][end] for i in range(env._n)]
+                    last = (end == m - 1)
 
             prev_starts.append(start_ck)
             unsolved = bool(conflicts) or not all(oks)
             if unsolved:
                 self.stats["unsolved_segments"] += 1
+            j = end + 1
             if unsolved and on_unsolved == "return_empty":
                 self._abandon(agents, env)
                 break
@@ -573,6 +586,14 @@ class KARCPlanner(BasePlanner):
         if self.trace is not None:
             self._committed = [np.asarray(env._states[i], float)[None, :3].copy()
                                for i in range(env._n)]
+
+    def _rrt_deadline(self):
+        """Wall-clock stop for one RRT call: `rrt_time_limit` or the planning deadline."""
+        lim = self.params.get("rrt_time_limit", None)
+        cap = None if lim is None else time.perf_counter() + float(lim)
+        if self._deadline is None:
+            return cap
+        return self._deadline if cap is None else min(cap, self._deadline)
 
     def _over_budget(self) -> bool:
         """True once the planning time budget is spent.
@@ -1714,6 +1735,7 @@ class KARCPlanner(BasePlanner):
             steps=int(self.params.get("rrt_steps", 5)),
             goal_bias=float(self.params.get("rrt_goal_bias", 0.15)),
             rng=rng,
+            deadline=self._rrt_deadline(),
         )
         segs, ctrls, oks = list(segs), list(ctrls), list(oks)
         outside = [(segs[i], env.robots[i].shape)

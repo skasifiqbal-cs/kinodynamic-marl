@@ -49,3 +49,14 @@ def test_avoids_a_moving_trajectory_not_its_swept_path():
     # Detour or wait, but never overlap the occupied cell at any shared index.
     gap = min(float(np.linalg.norm(X[k, 0, :2] - blocked[k][:2])) for k in range(horizon + 1))
     assert gap >= 2 * r.shape.radius, f"drove through the moving obstacle (min gap {gap:.3f})"
+
+
+def test_a_passed_deadline_stops_growth_and_fails_the_rung():
+    """The wall-clock cap is what keeps one composite tree from eating the planning budget."""
+    import time
+    r = _robot()
+    X, U, ok = krrt.plan([r], [np.array([1.0, 1.0, 0.0, 0.0, 0.0])],
+                         [np.array([3.0, 1.0, 0.0, 0.0, 0.0])],
+                         [], 10.0, 0.05, 60, rng=np.random.default_rng(0),
+                         deadline=time.perf_counter() - 1.0)
+    assert not ok and X.shape == (61, 1, 5)

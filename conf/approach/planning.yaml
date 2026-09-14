@@ -231,6 +231,10 @@ approach:
     # Sampling-rung knobs, shared by both RRT rungs.
     rrt_seed: 0          # tree growth is randomised, so a run is only reproducible per-seed.
     rrt_iters: 3000      # extension attempts before giving up and failing the rung.
+    # DEVIATION: wall-clock cap per RRT call (s), also clipped to the planning deadline. The
+    # Python composite tree is far slower per sample than K-ARC's C++; uncapped, one 4-robot
+    # tree took 344 s of a 600 s budget and starved AdaptSubProblem.
+    rrt_time_limit: 30.0
     # Slot assignment for the `wait` rung. NOVELTY -- not K-ARC. Subproblems that compete
     # for the same space get different colours, so their resolutions do not all happen at
     # once. On open_cross_32, 19 of 19 conflicts are individually resolvable by waiting and
@@ -287,11 +291,10 @@ approach:
     # did before 2026-09-07 -- and without it max_rounds re-solves a near-identical problem,
     # since nothing about the window has changed between rounds.
     #
-    # DEVIATION: only the backward half. Moving the goal query to the NEXT segment's
-    # milestone would have this window overtake segments that are unplanned for every other
-    # robot, so there would be nothing to avoid there and the outer loop would have to skip
-    # them per-robot. The mechanism's purpose -- room to manoeuvre that the window did not
-    # previously contain -- is served by re-opening committed motion.
+    # Both halves are applied, to every robot at once, and the widened window consumes the
+    # segments it reaches into. Backward-only (before 2026-09-15) could not recover when a
+    # committed segment ENDED in an unrecoverable state -- circular_cross_4 committed four
+    # robots arriving at speed at their shared centre milestone.
     adapt_max: 1
     # Planning time budget in seconds for the WHOLE instance. Checked between rungs, rounds
     # and segments, so the overshoot is one solver call. On expiry every robot brakes to rest

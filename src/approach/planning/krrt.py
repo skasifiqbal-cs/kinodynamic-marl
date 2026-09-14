@@ -22,6 +22,8 @@ in the same ladder.
 """
 from __future__ import annotations
 
+import time
+
 import numpy as np
 
 from src.collision.shapes import collides, collides_wall
@@ -81,13 +83,13 @@ def _sample(robots, world_size, rng):
 
 def plan(robots, starts, goals, obstacles, world_size, dt, horizon, others=(),
          goal_tol=0.2, terminal_stop=True, stop_speed=0.4, max_iters=3000,
-         n_controls=10, steps=5, goal_bias=0.15, rng=None):
+         n_controls=10, steps=5, goal_bias=0.15, rng=None, deadline=None):
     """Grow one tree over the joint state of `robots`. One robot = the decoupled rung.
 
     Returns (X, U, ok). X is (horizon+1, |R|, state_dim) and U is (horizon, |R|, act_dim),
     both on the env's dt grid. ok is False if no node reached the goal set, in which case X
     is the best partial branch -- the caller must not commit it, exactly as with an
-    infeasible trajopt solve.
+    infeasible trajopt solve. `deadline` (a time.perf_counter() value) ends growth early.
     """
     rng = np.random.default_rng(0) if rng is None else rng
     shapes = [r.shape for r in robots]
@@ -105,7 +107,9 @@ def plan(robots, starts, goals, obstacles, world_size, dt, horizon, others=(),
     best, best_d = 0, _dist(root, goals)
 
     goal_state = np.asarray(goals, dtype=np.float64)
-    for _ in range(int(max_iters)):
+    for it in range(int(max_iters)):
+        if deadline is not None and it % 20 == 0 and time.perf_counter() >= deadline:
+            break
         # RRT proper: sample a state, extend the NEAREST node toward it. Growing a random
         # node instead (what this did before) drops the Voronoi bias -- the property that
         # makes an RRT expand toward unexplored space rather than thickening where it
