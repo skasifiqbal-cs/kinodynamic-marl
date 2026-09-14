@@ -238,9 +238,9 @@ def _topt_yield_jobs(env, i, j, ci, cj, clearance, params, back):
     k = min(k, len(fi) - 1)
     s = max(k - int(back), 0)
     steps = int(np.ceil(float(params.get("repair_slack", 1.2)) * max(len(fi) - 1 - s, 10)))
-    avoid = fj[s:]
-    if len(avoid) < steps + 1:
-        avoid = np.vstack([avoid, np.repeat(avoid[-1:], steps + 1 - len(avoid), axis=0)])
+    # j holds its last state once its candidate ends; pad BEFORE slicing, since the contact
+    # (and so s) can come after j has already parked.
+    avoid = np.vstack([fj, np.repeat(fj[-1:], max(s + steps + 1 - len(fj), 0), axis=0)])[s:]
     th = float(fi[k, 2])
     normal = np.array([-np.sin(th), np.cos(th)])
     m = max(k - s, 1)

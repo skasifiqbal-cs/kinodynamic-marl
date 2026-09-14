@@ -83,3 +83,22 @@ def test_trajopt_first_order_plan_is_what_the_robot_executes():
         st = robot.step(st, u, 0.1)
     assert np.linalg.norm(st[:2] - goal[:2]) <= 0.16
     assert np.allclose(us[-1], 0.0, atol=1e-6)
+
+
+def test_yield_jobs_avoid_a_partner_that_parked_before_the_contact():
+    """Contact after j's candidate ended used to slice j's states to nothing (IndexError)."""
+    from types import SimpleNamespace
+
+    from src.approach.planning.cegar import _topt_yield_jobs
+
+    shape = BoxShape(0.5, 0.25)
+    env = SimpleNamespace(robots=[_Rb(shape), _Rb(shape)], dt=0.1, _world_size=17.0,
+                          _states=[_track([1.0], 8.0, 0.0)[0], _track([6.0], 8.0, 0.0)[0]],
+                          _goals=[np.array([12.0, 8.0, 0.0])] * 2, _obstacles=[])
+    ci = (_track(np.linspace(1.1, 11.0, 100), 8.0, 0.0), np.zeros((100, 2)))
+    cj = (_track([6.0] * 5, 8.0, 0.0), np.zeros((5, 2)))
+    jobs = _topt_yield_jobs(env, 0, 1, ci, cj, 0.05, {}, back=10)
+    assert len(jobs) == 2
+    for _, prefix, spec in jobs:
+        avoid = spec[-1]["avoid"][0]
+        assert len(avoid) == spec[-1]["horizon"] + 1 and np.allclose(avoid[:, 0], 6.0)
