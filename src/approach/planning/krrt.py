@@ -149,7 +149,7 @@ def plan(robots, starts, goals, obstacles, world_size, dt, horizon, others=(),
             best, best_d = len(nodes) - 1, child_goal_d
         if child_goal_d <= goal_tol and (
                 not terminal_stop
-                or all(abs(float(s[3])) <= stop_speed for s in best_child)):
+                or all(len(s) < 4 or abs(float(s[3])) <= stop_speed for s in best_child)):
             best = len(nodes) - 1
             break
 
@@ -173,7 +173,8 @@ def plan(robots, starts, goals, obstacles, world_size, dt, horizon, others=(),
             U.append(action[node])
     while len(U) < horizon:
         s = X[-1].copy()
-        hold = np.array([np.clip([-s[i][3] / dt, -s[i][4] / dt], lo[i], hi[i])
+        hold = np.array([np.zeros(len(lo[i])) if len(s[i]) < 4
+                         else np.clip([-s[i][3] / dt, -s[i][4] / dt], lo[i], hi[i])
                          for i in range(len(robots))])
         s = np.array([robots[i].step(s[i], hold[i], dt) for i in range(len(robots))])
         X.append(s)

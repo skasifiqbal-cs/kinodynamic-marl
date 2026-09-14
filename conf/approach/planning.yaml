@@ -541,3 +541,14 @@ approach:
     rounds: 60
     timeout: 600
     trace: false
+
+  # K-CBS baseline (Kottinger et al., IROS 2022): official C++ run as a subprocess, see
+  # src/approach/planning/kcbs.py for the build and the three patches. Values below are
+  # db-CBS's own K-CBS settings (example/algorithms.yaml); timeout matches cegar's.
+  kcbs:
+    binary: ~/kcbs_bench/build/main_kcbs
+    seed: 0
+    timeout: 600
+    ll_timelimit: 1.0
+    control_duration: [1, 10]
+    clearance: 0.05

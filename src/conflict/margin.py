@@ -196,6 +196,8 @@ def provable_ics(
     Inscribed (not bounding) radii, because overlap must be implied, not merely
     possible.
     """
+    if not (hasattr(model_i, "a_max") and hasattr(model_j, "a_max")):
+        return False, float("inf")   # first-order reach sets are not modelled: "not proved"
     inr = inscribed_radius(model_i.shape) + inscribed_radius(model_j.shape)
     ts = np.linspace(0.0, horizon, n_times + 1)
     si, sj = np.asarray(state_i, float), np.asarray(state_j, float)

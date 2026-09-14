@@ -86,3 +86,10 @@ def test_shaping_gamma_differs_from_learner_gamma_and_idle_is_free():
     assert idle / abs(step_penalty) > 10.0, (
         "matched-gamma idling must dwarf the step penalty -- the reason gamma_shape=1"
     )
+
+
+def test_bangbang_time_of_a_first_order_robot_is_distance_over_speed():
+    """No a_max (first-order unicycle): speed changes instantly, so no ramps."""
+    from src.shaping.braking_potential import bangbang_time
+
+    assert bangbang_time(3.0, 0.0, 0.5, float("inf")) == 6.0

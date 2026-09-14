@@ -321,7 +321,7 @@ class KARCPlanner(BasePlanner):
         conflicts: list = []   # survives a timeout before the first segment is planned
 
         # Steps to bring the fastest robot from v_max to rest, for the timeout fallback.
-        brake_h = max(2, int(max(r.v_max / max(r.a_max, 1e-6) for r in env.robots)
+        brake_h = max(2, int(max(r.v_max / max(getattr(r, "a_max", np.inf), 1e-6) for r in env.robots)
                              / env.dt) + 2)
 
         for j in range(m):
@@ -601,9 +601,12 @@ class KARCPlanner(BasePlanner):
         st = np.asarray(state, dtype=np.float64).copy()
         us, path = [], [st.copy()]
         for _ in range(max(0, int(n_steps))):
-            a = float(np.clip(-st[3] / env.dt, r.a_min, r.a_max))
-            al = float(np.clip(-st[4] / env.dt, r.alpha_min, r.alpha_max))
-            u = np.array([a, al], dtype=np.float64)
+            if not hasattr(r, "a_max"):     # first-order: zero speed is rest
+                u = np.zeros(r.action_dim, dtype=np.float64)
+            else:
+                a = float(np.clip(-st[3] / env.dt, r.a_min, r.a_max))
+                al = float(np.clip(-st[4] / env.dt, r.alpha_min, r.alpha_max))
+                u = np.array([a, al], dtype=np.float64)
             us.append(u)
             st = r.step(st, u, env.dt)
             path.append(st.copy())
@@ -633,7 +636,8 @@ class KARCPlanner(BasePlanner):
             for i in range(env._n)
         ]
         worst = max(
-            bangbang_time(legs[i], 0.0, self._robots[i].v_max, self._robots[i].a_max)
+            bangbang_time(legs[i], 0.0, self._robots[i].v_max,
+                          getattr(self._robots[i], "a_max", np.inf))
             for i in range(env._n)
         )
         return int(np.clip(np.ceil(slack * worst / env.dt), 2, total_h))
@@ -758,7 +762,8 @@ class KARCPlanner(BasePlanner):
             for i in range(env._n)
         ]
         worst = max(
-            bangbang_time(legs[i], 0.0, self._robots[i].v_max, self._robots[i].a_max)
+            bangbang_time(legs[i], 0.0, self._robots[i].v_max,
+                          getattr(self._robots[i], "a_max", np.inf))
             for i in range(env._n)
         )
         return min(env.max_steps, max(10, int(np.ceil(slack * worst / env.dt))))

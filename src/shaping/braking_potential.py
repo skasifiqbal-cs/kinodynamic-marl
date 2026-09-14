@@ -38,6 +38,8 @@ def bangbang_time(d: float, s0: float, v_max: float, a_max: float) -> float:
     v_max, in which case a cruise phase is inserted.
     """
     d = max(0.0, float(d))
+    if not np.isfinite(a_max):          # first-order robot: speed changes instantly
+        return d / v_max
     s0 = min(abs(float(s0)), v_max)
     peak = np.sqrt(a_max * d + 0.5 * s0 * s0)      # from (2*peak^2 - s0^2)/(2a) = d
     if peak <= v_max:

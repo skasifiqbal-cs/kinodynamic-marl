@@ -72,7 +72,7 @@ class OptimizationPlanner(BasePlanner):
         for i in range(env._n):
             d = float(np.linalg.norm(env._goals[i][:2] - env._states[i][:2]))
             r = env.robots[i]
-            worst = max(worst, bangbang_time(d, 0.0, r.v_max, r.a_max))
+            worst = max(worst, bangbang_time(d, 0.0, r.v_max, getattr(r, "a_max", np.inf)))
         return min(env.max_steps, max(10, int(np.ceil(slack * worst / env.dt))))
 
     def act(self, obs_dict: dict, env) -> dict:
