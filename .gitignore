@@ -74,3 +74,4 @@ experiments/
 
 # Compiled paper (build from paper/*.tex)
 paper/*.pdf
+overleaf_cegar_trajopt/

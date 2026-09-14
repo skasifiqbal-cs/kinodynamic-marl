@@ -1,4 +1,4 @@
-"""The figure and the numbers for the worked instance in `paper/cegar_trajopt.tex`.
+"""The figure and the numbers for the worked instance in `overleaf_cegar_trajopt/main.tex`.
 
 Runs `cegar` with `drive=trajopt` ONCE on `open_cross_4_unicycle2` at seed 0 and draws the
 loop on the lower row: the guide and the two optimised candidates it yields, the refuted
@@ -34,7 +34,7 @@ from src.conflict.pairwise import contact_step  # noqa: E402
 from src.env.factory import build_env  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-OUT = ROOT / "paper" / "figs" / "worked_example_trajopt.pdf"
+OUT = ROOT / "overleaf_cegar_trajopt" / "figs" / "worked_example.pdf"
 COL = ["#1f77b4", "#d62728"]
 DASH = ["-", (0, (5, 4))]
 CLEAR = 0.05
@@ -64,9 +64,20 @@ def main():
     env, params = _env_and_params()
     n = env._n
     trace = []
-    log = {"runs": [], "yields": [], "checks": 0, "refuted": 0}
+    log = {"runs": [], "yields": [], "checks": 0, "refuted": 0, "pairs": [], "cores": [],
+           "picks": []}
+    live = [[] for _ in range(n)]      # candidate tuples in the planner's own index order
 
     real_run, real_yield, real_hits = C._topt_run, C._topt_yield_jobs, C._hits
+    real_repair, real_assemble = C._topt_repair, C._assemble
+
+    def phase():
+        if any(t["label"].startswith("solved") for t in trace):
+            return "bisect"
+        return f"round {rnd() + 1}"
+
+    def index(i, states):
+        return next(c for c, cc in enumerate(live[i]) if cc[0] is states)
 
     def rnd():
         return sum("unsat core blames" in t["label"] for t in trace)
@@ -74,6 +85,8 @@ def main():
     def run(env_, pool, jobs, info):
         got = real_run(env_, pool, jobs, info)
         ok = [i for i, _ in got]
+        for i, c in got:
+            live[i].append(c)
         log["runs"].append({
             "round": rnd(), "checks": log["checks"],
             "jobs": [{"robot": i, "prefix": len(pre), "steps": spec[5]["horizon"],
@@ -90,17 +103,29 @@ def main():
                               "cj": cj[0], "len_ci": len(ci[0])})
         return real_yield(env_, i, j, ci, cj, clearance, params_, back)
 
-    def hits(*a, **k):
+    def hits(env_, i, j, ta, tb, clearance):
         log["checks"] += 1
-        got = real_hits(*a, **k)
+        got = real_hits(env_, i, j, ta, tb, clearance)
         log["refuted"] += got is not None
+        log["pairs"].append((phase(), i, index(i, ta), j, index(j, tb), got))
+        return got
+
+    def repair(env_, pool, cand, core_keys, clearance, params_, info):
+        log["cores"].append((phase(), list(core_keys)))
+        return real_repair(env_, pool, cand, core_keys, clearance, params_, info)
+
+    def assemble(env_, cand, pick, clearance, info):
+        got = real_assemble(env_, cand, pick, clearance, info)
+        log["picks"].append((phase(), list(pick), None if got is None else got[2]["steps"]))
         return got
 
     C._topt_run, C._topt_yield_jobs, C._hits = run, yields, hits
+    C._topt_repair, C._assemble = repair, assemble
     try:
         out = C.plan(env, dict(params), CLEAR, trace=trace)
     finally:
         C._topt_run, C._topt_yield_jobs, C._hits = real_run, real_yield, real_hits
+        C._topt_repair, C._assemble = real_repair, real_assemble
     if out is None:
         raise SystemExit("cegar(trajopt) failed on the worked instance -- nothing to draw")
     tracks, _, info = out
@@ -151,6 +176,21 @@ def main():
         print(f"   pair ({i},{j}) min surface gap {min(g):.4f} m at step {int(np.argmin(g)) + 1} "
               "(start = step 0)")
     print(f"   candidate lengths: {[[len(c[0]) for c in cc] for cc in cands]}")
+    print("\nENCODING: every pairwise check in order (refuted ones become tracked clauses)")
+    for ph, i, a, j, b, got in log["pairs"]:
+        if got is not None:
+            print(f"   {ph}: CLAUSE r_{i}_{a}_{j}_{b}: not x_{i}_{a} or not x_{j}_{b}   "
+                  f"contact ({got[0]:.2f}, {got[1]:.2f})")
+    print(f"   total checks {log['checks']}, refuted {log['refuted']}")
+    for ph in sorted({p[0] for p in log["pairs"]}):
+        clear = sum(1 for p in log["pairs"] if p[0] == ph and p[5] is None)
+        bad = sum(1 for p in log["pairs"] if p[0] == ph and p[5] is not None)
+        print(f"   {ph}: {clear + bad} checks, {bad} refuted")
+    for ph, keys in log["cores"]:
+        print(f"   {ph}: UNSAT core tracking literals {['r_%d_%d_%d_%d' % k for k in keys]}")
+    for ph, pick, steps in log["picks"]:
+        print(f"   {ph}: proposal passed pairwise checks: pick {pick} -> "
+              f"{'verified, %d steps' % steps if steps else 'REJECTED by verifier'}")
 
     # ── figure: lower row only ─────────────────────────────────────────────────────
     s0 = np.asarray(env._states[0], float)[:2]
@@ -176,18 +216,18 @@ def main():
     yc = (max(min(ys_c) - 0.4, -0.05), max(ys_c) + 0.6)
     yd_pts = [float(v) for i in (0, 1) for v in (tracks[i][:, 1].min(), tracks[i][:, 1].max())]
     yd = (min(yd_pts) - 0.4, max(yd_pts) + 0.55)
-    spans = [ya[1] - ya[0], yb[1] - yb[0], yc[1] - yc[0], yd[1] - yd[0]]
-    fig, axes = plt.subplots(4, 1, figsize=(7.0, 0.41 * sum(spans) + 1.6),
-                             gridspec_kw={"height_ratios": spans})
+    # Two by two, sized for a full-width IEEE figure. Panels keep their own vertical range, so
+    # the vertical scale differs between panels (the caption says so); the x axis is shared.
+    fig, grid = plt.subplots(2, 2, figsize=(7.16, 3.2), sharex=True)
+    axes = [grid[0, 0], grid[0, 1], grid[1, 0], grid[1, 1]]
 
     def frame(ax, title, ylim):
-        ax.set_title(title, fontsize=8.5, pad=3)
+        ax.set_title(title, fontsize=7.5, pad=2)
         ax.set_xlim(0.0, 17.0)
         ax.set_ylim(*ylim)
-        ax.set_aspect("equal")
-        ax.tick_params(labelsize=6.5)
+        ax.tick_params(labelsize=6)
         ax.grid(alpha=0.15, lw=0.4)
-        ax.set_ylabel("y [m]", fontsize=7)
+        ax.set_ylabel("y [m]", fontsize=6.5)
 
     # (a) guide and the fast candidate it yields.
     ax = axes[0]
@@ -200,10 +240,8 @@ def main():
             label=f"optimised candidate ({len(fast0)} steps)")
     _box(ax, env, env._states[0], 0)
     ax.plot(g0[0], g0[1], "*", color=COL[0], ms=8, zorder=5)
-    ax.legend(fontsize=6.3, loc="lower center", bbox_to_anchor=(0.5, 0.22), ncol=3,
-              framealpha=0.95)
-    frame(ax, "(a) robot 0: RRT path, shortcut, and the trajectory the optimiser returns "
-              "from it", ya)
+    ax.legend(fontsize=5.2, loc="upper right", ncol=1, framealpha=0.95)
+    frame(ax, "(a) robot 0: RRT path, shortcut, optimised candidate", ya)
 
     # (b) first refuted proposal.
     ax = axes[1]
@@ -219,9 +257,9 @@ def main():
         ax.plot(xi[0], xi[1], "x", color="k", ms=10, mew=2.0, zorder=8)
         # +1: `anim` starts at the first executed state, the paper counts the start as step 0.
         ax.annotate(rf"first contact $\xi=({xi[0]:.2f},\,{xi[1]:.2f})$ at step {k + 1}",
-                    (xi[0], 1.75), ha="center", fontsize=7)
-    frame(ax, r"(b) the first proposal is refuted; the clause "
-              r"$\neg x_{0,c_0}\vee\neg x_{1,c_1}$ is learned", yb)
+                    (xi[0], 1.75), ha="center", fontsize=6)
+    frame(ax, r"(b) proposal $x_{0,0}\wedge x_{1,0}$ refuted: learn $\neg x_{0,0}\vee\neg x_{1,0}$",
+          yb)
 
     # (c) yield re-solves in the lower row.
     ax = axes[2]
@@ -229,14 +267,15 @@ def main():
         i = jb["robot"]
         ax.plot(jb["seed"][:, 0], jb["seed"][:, 1], ":", color=COL[i], lw=0.9, zorder=2)
         ax.plot(jb["x0"][0], jb["x0"][1], "o", color=COL[i], ms=4, zorder=5)
+    named = set()
     for i, c in rep_solved:
-        ax.plot(c[0][:, 0], c[0][:, 1], color=COL[i], ls=DASH[i], lw=1.5, zorder=3,
-                label=f"robot {i} yield candidate ({len(c[0])} steps)")
+        ax.plot(c[0][:, 0], c[0][:, 1], color=COL[i], ls=DASH[i], lw=1.2, zorder=3,
+                label=None if i in named else f"robot {i} yields ({len(c[0])} steps, 2 sides)")
+        named.add(i)
     ax.plot([], [], ":", color="0.3", lw=0.9, label="seeds, pushed to both sides")
     ax.plot([], [], "o", color="0.3", ms=4, label="re-solve starts here")
-    ax.legend(fontsize=6.0, loc="upper left", ncol=1, framealpha=0.95)
-    frame(ax, "(c) the core blames {0,1}: each is re-solved from before the contact, "
-              "keeping clear of the other", yc)
+    ax.legend(fontsize=5.2, loc="upper right", ncol=1, framealpha=0.95)
+    frame(ax, "(c) round 2: core names robots 0, 1; yield re-solves", yc)
 
     # (d) verified plan.
     ax = axes[3]
@@ -249,12 +288,12 @@ def main():
         ax.plot(goal[0], goal[1], "*", color=COL[i], ms=8, zorder=5)
         ys += [float(tracks[i][:, 1].min()), float(tracks[i][:, 1].max())]
     ax.annotate(f"closest approach: {gap:.2f} m surface gap",
-                (tracks[0][k][0], max(ys) + 0.15), ha="center", fontsize=7)
-    frame(ax, f"(d) verified plan: {info['steps']} steps = {info['steps'] * env.dt:.1f} s "
-              "after bisection", yd)
-    axes[-1].set_xlabel("x [m]", fontsize=7)
+                (tracks[0][k][0], max(ys) + 0.15), ha="center", fontsize=6)
+    frame(ax, f"(d) verified plan, {info['steps']} steps (certified)", yd)
+    for ax in (axes[2], axes[3]):
+        ax.set_xlabel("x [m]", fontsize=6.5)
 
-    plt.tight_layout(h_pad=0.8)
+    plt.tight_layout(h_pad=0.4, w_pad=0.6)
     OUT.parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(OUT, bbox_inches="tight")
     print("\nwrote", OUT)
