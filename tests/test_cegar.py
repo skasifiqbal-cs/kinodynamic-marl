@@ -65,3 +65,21 @@ def test_contact_step_is_when_first_contact_happens():
     assert contact_step(shape, shape, east[:k], west[:k], 0.05) is None
     assert np.allclose(first_contact(shape, shape, east, west, 0.05),
                        0.5 * (east[k, :2] + west[k, :2]))
+
+
+def test_trajopt_first_order_plan_is_what_the_robot_executes():
+    from omegaconf import OmegaConf
+
+    from src.approach.planning.trajopt import solve_trajectory
+    from src.robot import build_robot
+
+    robot = build_robot(OmegaConf.load("conf/robot/unicycle1_db.yaml"))
+    start, goal = np.array([1.0, 1.0, 0.0]), np.array([4.0, 2.0, 0.0])
+    xs, us, _, ok = solve_trajectory(robot, start, goal, [], 17.0, horizon=90, dt_fixed=0.1,
+                                     goal_tol=0.15, body_discs=3)
+    assert ok and xs.shape == (91, 3) and us.shape == (90, 2)
+    st = start.copy()
+    for u in np.clip(us, robot.action_low, robot.action_high):
+        st = robot.step(st, u, 0.1)
+    assert np.linalg.norm(st[:2] - goal[:2]) <= 0.16
+    assert np.allclose(us[-1], 0.0, atol=1e-6)

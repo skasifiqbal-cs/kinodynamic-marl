@@ -210,7 +210,10 @@ def _topt_seed_jobs(env, i, path, params, clearance):
     rest-to-rest time along the guide; below ~1.3 the optimiser fails in clutter."""
     robot = env.robots[i]
     L = float(np.linalg.norm(np.diff(np.asarray(path, float)[:, :2], axis=0), axis=1).sum())
-    base = (L / robot.v_max + robot.v_max / robot.a_max) / float(env.dt)
+    # Rest-to-rest time: cruise plus the accelerate/brake ramps, which a first-order robot
+    # (no `a_max`) does not have.
+    a_max = getattr(robot, "a_max", None)
+    base = (L / robot.v_max + (robot.v_max / a_max if a_max else 0.0)) / float(env.dt)
     return [(i, np.zeros((0, 2)),
              _topt_spec(env, i, env._states[i], path, np.ceil(k * base), params, clearance))
             for k in params.get("horizon_slack", [1.3, 1.6])]

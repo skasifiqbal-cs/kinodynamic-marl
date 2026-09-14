@@ -192,8 +192,11 @@ def solve_group(
         near = [_near_guide(obstacles, guides[i], float(obstacle_margin) + radii[i])
                 for i in range(n)]
 
+    # First-order robots (no `a_max`: state [x, y, θ], controls [v, ω]) get a 3-row state;
+    # second-order ones [x, y, θ, v, ω] with accelerations as controls.
+    first = [not hasattr(r, "a_max") for r in robots]
     opti = ca.Opti()
-    X = [opti.variable(5, N + 1) for _ in range(n)]
+    X = [opti.variable(3 if first[i] else 5, N + 1) for i in range(n)]
     U = [opti.variable(2, N) for _ in range(n)]
     if dt_fixed is None:
         dt = opti.variable()
@@ -204,6 +207,9 @@ def solve_group(
 
     def f(x, u):
         return ca.vertcat(x[3] * ca.cos(x[2]), x[3] * ca.sin(x[2]), x[4], u[0], u[1])
+
+    def f1(x, u):
+        return ca.vertcat(u[0] * ca.cos(x[2]), u[0] * ca.sin(x[2]), u[1])
 
     # Minimum time, regularised by control effort. N*dt is the trajectory duration --
     # shared by the whole group, so the group finishes when its slowest member does.
@@ -236,13 +242,15 @@ def solve_group(
         s = np.asarray(starts[i], float)
         g = np.asarray(goals[i], float)
 
-        opti.subject_to(X[i][:, 0] == ca.DM(s.reshape(5)))
+        nx = 3 if first[i] else 5
+        opti.subject_to(X[i][:, 0] == ca.DM(s[:nx].reshape(nx)))
+        fi = f1 if first[i] else f
 
         for k in range(N):
-            k1 = f(X[i][:, k], U[i][:, k])
-            k2 = f(X[i][:, k] + 0.5 * dt * k1, U[i][:, k])
-            k3 = f(X[i][:, k] + 0.5 * dt * k2, U[i][:, k])
-            k4 = f(X[i][:, k] + dt * k3, U[i][:, k])
+            k1 = fi(X[i][:, k], U[i][:, k])
+            k2 = fi(X[i][:, k] + 0.5 * dt * k1, U[i][:, k])
+            k3 = fi(X[i][:, k] + 0.5 * dt * k2, U[i][:, k])
+            k4 = fi(X[i][:, k] + dt * k3, U[i][:, k])
             opti.subject_to(
                 X[i][:, k + 1] == X[i][:, k] + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
             )
@@ -250,8 +258,9 @@ def solve_group(
             opti.subject_to(opti.bounded(lo[1], U[i][1, k], hi[1]))
 
         for k in range(N + 1):
-            opti.subject_to(opti.bounded(robot.v_min, X[i][3, k], robot.v_max))
-            opti.subject_to(opti.bounded(robot.omega_min, X[i][4, k], robot.omega_max))
+            if not first[i]:   # a first-order robot's speeds are its controls, bounded above
+                opti.subject_to(opti.bounded(robot.v_min, X[i][3, k], robot.v_max))
+                opti.subject_to(opti.bounded(robot.omega_min, X[i][4, k], robot.omega_max))
             opti.subject_to(opti.bounded(r_self, X[i][0, k], world_size - r_self))
             opti.subject_to(opti.bounded(r_self, X[i][1, k], world_size - r_self))
 
@@ -300,8 +309,11 @@ def solve_group(
             # Arrive at rest -- the env's stop-at-goal gate. MUST be False for the
             # intermediate milestones of a segmented plan: forcing a full stop at every
             # waypoint turns one trajectory into m stop-start hops.
-            opti.subject_to(X[i][3, N] == 0.0)
-            opti.subject_to(X[i][4, N] == 0.0)
+            if first[i]:
+                opti.subject_to(U[i][:, N - 1] == 0.0)
+            else:
+                opti.subject_to(X[i][3, N] == 0.0)
+                opti.subject_to(X[i][4, N] == 0.0)
 
         # Warm start. The guide polyline if the caller supplied one, resampled onto this
         # program's knots by arclength; otherwise a straight line from start to goal.
