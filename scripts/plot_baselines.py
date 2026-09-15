@@ -66,13 +66,15 @@ def summarise(model: str):
 def plot(model: str, rows) -> Path:
     fig, axes = plt.subplots(3, 3, figsize=(10, 7.5), sharex=True)
     for c, fam in enumerate(FAMILIES):
-        for method, (label, _, _) in METHODS.items():
+        for (method, (label, _, _)), (mk, ls, ms) in zip(
+                METHODS.items(), [("o", "-", 9), ("s", "--", 6), ("^", ":", 6)]):
+            st = dict(marker=mk, linestyle=ls, markersize=ms, label=label)
             r = [x for x in rows if x[0] == fam and x[2] == method]
             x = [v[1] for v in r]
             succ = [100 * v[4] / v[3] if v[3] else np.nan for v in r]
-            axes[0, c].plot(x, succ, "o-", label=label)
-            axes[1, c].plot(x, [v[5] for v in r], "o-", label=label)
-            axes[2, c].plot(x, [v[6] for v in r], "o-", label=label)
+            axes[0, c].plot(x, succ, **st)
+            axes[1, c].plot(x, [v[5] for v in r], **st)
+            axes[2, c].plot(x, [v[6] for v in r], **st)
         axes[0, c].set_title(fam.replace("_", " "))
         axes[1, c].set_yscale("log")
         axes[2, c].set_xlabel("robots")
