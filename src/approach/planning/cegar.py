@@ -219,6 +219,18 @@ def _topt_seed_jobs(env, i, path, params, clearance):
             for k in params.get("horizon_slack", [1.3, 1.6])]
 
 
+def _sidestep_bump(t, m):
+    """Lateral offset profile: out over `m` steps, back over the next `m`, zero after.
+
+    Each half is the quintic minimum-jerk polynomial 10v^3 - 15v^4 + 6v^5 (Flash & Hogan
+    1985), the profile Frenet-frame planners use for a lateral offset from a reference
+    path (Werling et al., ICRA 2010). Value and first two derivatives vanish at both ends,
+    so the seed leaves and rejoins the old candidate smoothly.
+    """
+    v = 1.0 - np.abs(np.clip(t / m, 0.0, 2.0) - 1.0)
+    return np.where(t <= 2 * m, v ** 3 * (10.0 - 15.0 * v + 6.0 * v ** 2), 0.0)
+
+
 def _topt_yield_jobs(env, i, j, ci, cj, clearance, params, back):
     """Robot i steps aside for robot j: keep i's candidate up to `back` steps before they
     first meet, then re-solve to the goal keeping clear of j's candidate, on both sides.
@@ -244,8 +256,7 @@ def _topt_yield_jobs(env, i, j, ci, cj, clearance, params, back):
     th = float(fi[k, 2])
     normal = np.array([-np.sin(th), np.cos(th)])
     m = max(k - s, 1)
-    t = np.arange(len(fi) - s)
-    bump = np.where(t <= 2 * m, np.sin(np.pi * t / (2 * m)) ** 2, 0.0)
+    bump = _sidestep_bump(np.arange(len(fi) - s), m)
     r = env.robots[i].shape.bounding_radius
     jobs = []
     for side in (1.0, -1.0):

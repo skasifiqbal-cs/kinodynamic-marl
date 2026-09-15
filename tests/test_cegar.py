@@ -102,3 +102,13 @@ def test_yield_jobs_avoid_a_partner_that_parked_before_the_contact():
     for _, prefix, spec in jobs:
         avoid = spec[-1]["avoid"][0]
         assert len(avoid) == spec[-1]["horizon"] + 1 and np.allclose(avoid[:, 0], 6.0)
+
+
+def test_sidestep_bump_leaves_and_rejoins_the_old_candidate():
+    """The repair seed must start and end on the old path, peaking at the contact step."""
+    from src.approach.planning.cegar import _sidestep_bump
+
+    y = _sidestep_bump(np.arange(41), 10)
+    assert y[0] == 0.0 and y[20] == 0.0 and np.allclose(y[21:], 0.0)
+    assert np.isclose(y[10], 1.0) and y.max() == y[10]
+    assert (np.diff(y[:11]) > 0).all() and (np.diff(y[10:21]) < 0).all()
