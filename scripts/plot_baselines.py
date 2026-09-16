@@ -104,28 +104,30 @@ def table(models) -> Path:
     return path
 
 
-def plot(model: str, rows) -> Path:
-    """K-ARC's layout, turned upright to fit one column: a row per team size.
+MODEL_LABEL = {"unicycle2": "2nd", "unicycle1": "1st"}
 
-    Columns are the scenarios, colour is the method. A method that solved nothing is
-    dropped from its panel, as in K-ARC's figures. The success rate of each method is the
-    x tick label under its box, in the method's colour, so nothing is written on the axes
-    themselves.
+
+def plot(models) -> Path:
+    """K-ARC's layout for both robot models: a row per team size, a column per scenario.
+
+    Each scenario appears twice, once per model, so the two orders sit side by side. A
+    method that solved nothing is dropped from its panel. Outliers are not drawn: with
+    five runs the whiskers already span the range.
     """
-    data = collect(model)
-    # N = 32 and circular 16 are all-or-nothing cells (only one method solves one of them),
-    # so they are reported in prose rather than as panels of empty axes.
-    sizes, skip = SIZES[:-1], {("circular_cross", 16)}
-    fig, axes = plt.subplots(len(sizes), len(FAMILIES), figsize=(7.1, 4.8), sharey=True)
+    data = {m: collect(m) for m in models}
+    sizes = SIZES[:-1]           # N = 32 is all-or-nothing, reported in prose
+    cols = [(fam, m) for fam in FAMILIES for m in models]
+    skip = {("circular_cross", n) for n in (16,)}
+    fig, axes = plt.subplots(len(sizes), len(cols), figsize=(7.1, 4.4), sharey=True)
     colour = dict(zip(METHODS, ["#1f77b4", "#d62728", "#2ca02c"]))
     for r, n in enumerate(sizes):
-        for c, fam in enumerate(FAMILIES):
+        for c, (fam, model) in enumerate(cols):
             ax, labels = axes[r, c], []
             if (fam, n) in skip:
                 ax.set_visible(False)
                 continue
             for pos, (method, (label, _, key)) in enumerate(METHODS.items()):
-                runs = data.get((method, fam, n), [])
+                runs = data[model].get((method, fam, n), [])
                 ok = [x for x in runs if float(x.get(key, 0) or 0) >= 1 and x.get("wall_time")]
                 labels.append(f"{100 * len(ok) // len(runs)}" if runs else "-")
                 if not ok:
@@ -133,42 +135,40 @@ def plot(model: str, rows) -> Path:
                 v = [float(x["wall_time"]) for x in ok]
                 # A cell with no spread draws a box of zero height, which the white median
                 # line then hides: lay a coloured bar under it so the method still reads.
-                ax.plot([pos - 0.28, pos + 0.28], [np.median(v)] * 2, color=colour[method],
-                        linewidth=2.4, zorder=1, solid_capstyle="butt")
-                # Mean makespan of the same runs, a triangle on the same seconds axis: the
-                # cost of the plan next to the cost of finding it.
+                ax.plot([pos - 0.3, pos + 0.3], [np.median(v)] * 2, color=colour[method],
+                        linewidth=2.2, zorder=1, solid_capstyle="butt")
                 span = [float(x["makespan"]) for x in ok if x.get("makespan")]
                 if span:
-                    ax.plot([pos], [np.mean(span)], marker="^", ms=6, zorder=3,
+                    ax.plot([pos], [np.mean(span)], marker="^", ms=5, zorder=3,
                             color=colour[method], markeredgecolor="black",
                             markeredgewidth=0.4)
-                ax.boxplot(v, positions=[pos], widths=0.55, zorder=2, patch_artist=True,
+                ax.boxplot(v, positions=[pos], widths=0.6, zorder=2, patch_artist=True,
+                           showfliers=False,
                            medianprops=dict(color="white", linewidth=0.6),
                            boxprops=dict(facecolor=colour[method], edgecolor=colour[method],
                                          linewidth=0.6),
                            whiskerprops=dict(linewidth=0.5, color=colour[method]),
-                           capprops=dict(linewidth=0.5, color=colour[method]),
-                           flierprops=dict(ms=5, markeredgecolor=colour[method]))
+                           capprops=dict(linewidth=0.5, color=colour[method]))
             ax.set_xlim(-0.7, len(METHODS) - 0.3)
             ax.set_yscale("log")
             ax.set_ylim(3, 1200)
-            ax.tick_params(labelsize=7, length=2, pad=1)
-            ax.set_xticks(range(len(METHODS)), labels, fontsize=7)
+            ax.tick_params(labelsize=6, length=2, pad=1)
+            ax.set_xticks(range(len(METHODS)), labels, fontsize=6)
             for tick, method in zip(ax.get_xticklabels(), METHODS):
                 tick.set_color(colour[method])
             if r == 0:
-                ax.set_title(fam.replace("_cross", "").replace("_", " "), fontsize=9)
+                ax.set_title(f"{fam.split('_')[0]}\n{MODEL_LABEL.get(model, model)} order",
+                             fontsize=7, linespacing=0.95)
             if c == 0:
-                ax.set_ylabel(f"$N = {n}$", fontsize=9)
-    fig.supxlabel("success rate [%] per method", fontsize=8, y=0.052)
+                ax.set_ylabel(f"$N = {n}$", fontsize=8)
     fig.supylabel("runtime [s]", fontsize=8, x=0.012)
     handles = [plt.Rectangle((0, 0), 1, 1, fc=colour[m], label=METHODS[m][0]) for m in METHODS]
-    handles.append(plt.Line2D([], [], marker="^", ms=6, color="0.4", linestyle="",
+    handles.append(plt.Line2D([], [], marker="^", ms=5, color="0.4", linestyle="",
                               markeredgecolor="black", label="mean makespan"))
-    fig.legend(handles=handles, ncol=4, fontsize=8, loc="lower center",
-               bbox_to_anchor=(0.5, 0.0), frameon=False)
-    fig.tight_layout(rect=(0.02, 0.068, 1, 1), h_pad=0.6, w_pad=0.4)
-    path = EXP / f"baselines_{model}.png"
+    fig.legend(handles=handles, ncol=4, fontsize=7, loc="lower center",
+               bbox_to_anchor=(0.5, -0.012), frameon=False)
+    fig.tight_layout(rect=(0.02, 0.045, 1, 1), h_pad=0.5, w_pad=0.25)
+    path = EXP / "baselines.png"
     fig.savefig(path, dpi=300)
     return path
 
@@ -182,5 +182,4 @@ if __name__ == "__main__":
             if runs:
                 print(f"| {fam} | {n} | {method} | {ok}/{runs} | {t:.1f} +- {ts:.1f} "
                       f"| {m:.1f} +- {ms:.1f} |")
-        print("wrote", plot(model, rows))
-    print("wrote", table(tables))
+    print("wrote", plot(tables), "and", table(tables))
