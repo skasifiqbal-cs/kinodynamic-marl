@@ -118,7 +118,6 @@ def plot(models) -> Path:
     data = {m: collect(m) for m in models}
     sizes = SIZES[:-1]           # N = 32 is all-or-nothing, reported in prose
     cols = [(fam, m) for fam in FAMILIES for m in models]
-    skip = {("circular_cross", n) for n in (16,)}
     fig, axes = plt.subplots(len(sizes), len(cols), figsize=(7.1, 4.4), sharey=True)
     colour = dict(zip(METHODS, ["#1f77b4", "#d62728", "#2ca02c"]))
     # The makespan marker keeps the method's full colour while its box is washed out, so
@@ -126,9 +125,6 @@ def plot(models) -> Path:
     for r, n in enumerate(sizes):
         for c, (fam, model) in enumerate(cols):
             ax, labels = axes[r, c], []
-            if (fam, n) in skip:
-                ax.set_visible(False)
-                continue
             for pos, (method, (label, _, key)) in enumerate(METHODS.items()):
                 runs = data[model].get((method, fam, n), [])
                 ok = [x for x in runs if float(x.get(key, 0) or 0) >= 1 and x.get("wall_time")]
