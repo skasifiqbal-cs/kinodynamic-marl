@@ -163,8 +163,11 @@ def plot(models) -> Path:
                 ax.set_title(f"{fam.split('_')[0]}\n{MODEL_LABEL.get(model, model)} order",
                              fontsize=7, linespacing=0.95)
             if c == 0:
-                ax.set_ylabel(f"$N = {n}$", fontsize=8)
-    fig.supylabel("runtime [s]", fontsize=8, x=0.026)
+                # The team size rides inside the panel: as a y label it pushed the axis
+                # label a whole text column away from the axis.
+                ax.set_ylabel("runtime [s]", fontsize=7, labelpad=2)
+            ax.text(0.04, 0.93, f"$N = {n}$", transform=ax.transAxes, fontsize=7,
+                    ha="left", va="top")
     handles = [plt.Rectangle((0, 0), 1, 1, fc=(*mcolors.to_rgb(colour[m]), 0.35),
                              ec=colour[m], label=METHODS[m][0]) for m in METHODS]
     handles.append(plt.Line2D([], [], marker="^", ms=5, color="0.45", linestyle="",
@@ -172,7 +175,7 @@ def plot(models) -> Path:
                               label="mean makespan"))
     fig.legend(handles=handles, ncol=4, fontsize=7, loc="lower center",
                bbox_to_anchor=(0.5, -0.012), frameon=False)
-    fig.tight_layout(rect=(0.028, 0.045, 1, 1), h_pad=0.5, w_pad=0.25)
+    fig.tight_layout(rect=(0.0, 0.045, 1, 1), h_pad=0.5, w_pad=0.25)
     path = EXP / "baselines.png"
     fig.savefig(path, dpi=300)
     return path
