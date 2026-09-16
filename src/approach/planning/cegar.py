@@ -220,15 +220,14 @@ def _topt_seed_jobs(env, i, path, params, clearance):
 
 
 def _sidestep_bump(t, m):
-    """Lateral offset profile: out over `m` steps, back over the next `m`, zero after.
+    """Lateral offset profile over `2 * m` steps from the start of the repair window.
 
-    Each half is the quintic minimum-jerk polynomial 10v^3 - 15v^4 + 6v^5 (Flash & Hogan
-    1985), the profile Frenet-frame planners use for a lateral offset from a reference
-    path (Werling et al., ICRA 2010). Value and first two derivatives vanish at both ends,
-    so the seed leaves and rejoins the old candidate smoothly.
+    The Hann (raised-cosine) window, 0.5 * (1 - cos(2*pi*u)) on u in [0, 1] (Harris, Proc.
+    IEEE 1978): zero at both ends, one in the middle at the contact step, no corner at
+    either end, so the seed leaves and rejoins the old candidate smoothly.
     """
-    v = 1.0 - np.abs(np.clip(t / m, 0.0, 2.0) - 1.0)
-    return np.where(t <= 2 * m, v ** 3 * (10.0 - 15.0 * v + 6.0 * v ** 2), 0.0)
+    u = np.clip(t / (2.0 * m), 0.0, 1.0)
+    return np.where(t <= 2 * m, 0.5 * (1.0 - np.cos(2.0 * np.pi * u)), 0.0)
 
 
 def _topt_yield_jobs(env, i, j, ci, cj, clearance, params, back):
