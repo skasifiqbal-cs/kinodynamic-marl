@@ -105,50 +105,59 @@ def table(models) -> Path:
 
 
 def plot(model: str, rows) -> Path:
-    """Compact box plots of runtime: one panel per scenario, one box per method and size.
+    """K-ARC's layout: a panel per team size, one box per method inside it.
 
-    Five runs per box, so the box is the quartiles and the whiskers the range. Success
-    rates are printed under each tick in legend order; makespan stays in the table.
+    Rows are the scenarios. A method that solved nothing in a cell is dropped from that
+    panel, as in K-ARC's figures; its absence is the result. A success rate below 100% is
+    printed over the box, so a box is never read as five runs when it stands for three.
     """
     data = collect(model)
-    fig, axes = plt.subplots(1, 3, figsize=(7.1, 2.2), sharey=True)
+    fig, axes = plt.subplots(len(FAMILIES), len(SIZES), figsize=(7.1, 3.0),
+                             sharey=True, sharex=True)
     colour = dict(zip(METHODS, ["#1f77b4", "#d62728", "#2ca02c"]))
-    for c, fam in enumerate(FAMILIES):
-        ax = axes[c]
-        for off, (method, (label, _, key)) in zip([-0.26, 0.0, 0.26], METHODS.items()):
-            for pos, n in enumerate(SIZES):
-                v = [float(r["wall_time"]) for r in data.get((method, fam, n), [])
-                     if float(r.get(key, 0) or 0) >= 1 and r.get("wall_time")]
-                if not v:          # nothing solved: a bare cross, so the gap is visible
-                    ax.plot(pos + off, 2.0, marker="x", ms=3, color=colour[method])
-                    continue
-                ax.boxplot(v, positions=[pos + off], widths=0.22, patch_artist=True,
-                           medianprops=dict(color="black", linewidth=0.8),
-                           boxprops=dict(facecolor=colour[method], edgecolor=colour[method],
-                                         linewidth=0.8),
-                           whiskerprops=dict(linewidth=0.5), capprops=dict(linewidth=0.5),
-                           flierprops=dict(ms=2))
-        # Success rate goes under the tick, in legend order, so the figure says how many
-        # runs each box stands for without a second axis.
-        ticks = []
-        for n in SIZES:
-            pct = []
-            for method, (_, _, key) in METHODS.items():
+    for r, fam in enumerate(FAMILIES):
+        for c, n in enumerate(SIZES):
+            ax = axes[r, c]
+            for pos, (method, (label, _, key)) in enumerate(METHODS.items()):
                 runs = data.get((method, fam, n), [])
-                ok = sum(float(r.get(key, 0) or 0) >= 1 for r in runs)
-                pct.append(f"{ok}" if runs else "-")
-            ticks.append(f"{n}\n({'/'.join(pct)})")
-        ax.set_title(fam.replace("_", " "), fontsize=8)
+                ok = [x for x in runs if float(x.get(key, 0) or 0) >= 1 and x.get("wall_time")]
+                if not ok:
+                    continue
+                v = [float(x["wall_time"]) for x in ok]
+                # A cell with no spread draws a box of zero height, which the white median
+                # line then hides: lay a coloured bar under it so the method still reads.
+                ax.plot([pos - 0.28, pos + 0.28], [np.median(v)] * 2, color=colour[method],
+                        linewidth=2.0, zorder=1, solid_capstyle="butt")
+                ax.boxplot(v, positions=[pos], widths=0.55, zorder=2,
+                           patch_artist=True, medianprops=dict(color="white", linewidth=0.7),
+                           boxprops=dict(facecolor=colour[method], edgecolor=colour[method],
+                                         linewidth=0.7),
+                           whiskerprops=dict(linewidth=0.5, color=colour[method]),
+                           capprops=dict(linewidth=0.5, color=colour[method]),
+                           flierprops=dict(ms=2, markeredgecolor=colour[method]))
+                if runs and len(ok) < len(runs):
+                    ax.annotate(f"{100 * len(ok) // len(runs)}%", (pos, max(v)),
+                        textcoords="offset points",
+                        xytext=(0, 3), ha="center", fontsize=5.5, color=colour[method])
+            if not any(data.get((m, fam, n)) and any(
+                    float(x.get(METHODS[m][2], 0) or 0) >= 1
+                    for x in data[(m, fam, n)]) for m in METHODS):
+                ax.text(0.5, 0.5, "none solved", transform=ax.transAxes, ha="center",
+                        va="center", fontsize=6, color="0.5")
+            ax.set_xlim(-0.7, len(METHODS) - 0.3)
+            ax.set_xticks([])
+            ax.tick_params(labelsize=6)
+            if r == 0:
+                ax.set_title(f"$N = {n}$", fontsize=7)
+            if c == 0:
+                ax.set_ylabel(fam.split("_")[0], fontsize=7)
+    for ax in axes.flat:
         ax.set_yscale("log")
-        ax.set_xticks(range(len(SIZES)), ticks, fontsize=6)
-        ax.set_xlim(-0.6, len(SIZES) - 0.4)
-        ax.set_xlabel("robots", fontsize=8)
-        ax.tick_params(labelsize=7)
-    axes[0].set_ylabel("runtime [s]", fontsize=8)
+    fig.supylabel("runtime [s]", fontsize=7, x=0.005)
     fig.legend(handles=[plt.Rectangle((0, 0), 1, 1, fc=colour[m], label=METHODS[m][0])
-                        for m in METHODS], ncol=3, fontsize=7, loc="upper center",
-               bbox_to_anchor=(0.5, 1.0), frameon=False)
-    fig.tight_layout(rect=(0, 0, 1, 0.9))
+                        for m in METHODS], ncol=3, fontsize=6.5, loc="lower center",
+               bbox_to_anchor=(0.5, -0.01), frameon=False)
+    fig.tight_layout(rect=(0.02, 0.05, 1, 1))
     path = EXP / f"baselines_{model}.png"
     fig.savefig(path, dpi=300)
     return path
