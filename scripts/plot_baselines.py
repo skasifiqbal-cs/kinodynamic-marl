@@ -116,7 +116,7 @@ def plot(model: str, rows) -> Path:
     # N = 32 and circular 16 are all-or-nothing cells (only one method solves one of them),
     # so they are reported in prose rather than as panels of empty axes.
     sizes, skip = SIZES[:-1], {("circular_cross", 16)}
-    fig, axes = plt.subplots(len(sizes), len(FAMILIES), figsize=(7.1, 3.9), sharey=True)
+    fig, axes = plt.subplots(len(sizes), len(FAMILIES), figsize=(7.1, 4.8), sharey=True)
     colour = dict(zip(METHODS, ["#1f77b4", "#d62728", "#2ca02c"]))
     for r, n in enumerate(sizes):
         for c, fam in enumerate(FAMILIES):
@@ -135,13 +135,20 @@ def plot(model: str, rows) -> Path:
                 # line then hides: lay a coloured bar under it so the method still reads.
                 ax.plot([pos - 0.28, pos + 0.28], [np.median(v)] * 2, color=colour[method],
                         linewidth=2.4, zorder=1, solid_capstyle="butt")
+                # Mean makespan of the same runs, a triangle on the same seconds axis: the
+                # cost of the plan next to the cost of finding it.
+                span = [float(x["makespan"]) for x in ok if x.get("makespan")]
+                if span:
+                    ax.plot([pos], [np.mean(span)], marker="^", ms=6, zorder=3,
+                            color=colour[method], markeredgecolor="black",
+                            markeredgewidth=0.4)
                 ax.boxplot(v, positions=[pos], widths=0.55, zorder=2, patch_artist=True,
                            medianprops=dict(color="white", linewidth=0.6),
                            boxprops=dict(facecolor=colour[method], edgecolor=colour[method],
                                          linewidth=0.6),
                            whiskerprops=dict(linewidth=0.5, color=colour[method]),
                            capprops=dict(linewidth=0.5, color=colour[method]),
-                           flierprops=dict(ms=3, markeredgecolor=colour[method]))
+                           flierprops=dict(ms=5, markeredgecolor=colour[method]))
             ax.set_xlim(-0.7, len(METHODS) - 0.3)
             ax.set_yscale("log")
             ax.set_ylim(3, 1200)
@@ -153,12 +160,14 @@ def plot(model: str, rows) -> Path:
                 ax.set_title(fam.replace("_cross", "").replace("_", " "), fontsize=9)
             if c == 0:
                 ax.set_ylabel(f"$N = {n}$", fontsize=9)
-    fig.supxlabel("success rate [%] per method", fontsize=8, y=0.075)
+    fig.supxlabel("success rate [%] per method", fontsize=8, y=0.052)
     fig.supylabel("runtime [s]", fontsize=8, x=0.012)
-    fig.legend(handles=[plt.Rectangle((0, 0), 1, 1, fc=colour[m], label=METHODS[m][0])
-                        for m in METHODS], ncol=3, fontsize=8, loc="lower center",
+    handles = [plt.Rectangle((0, 0), 1, 1, fc=colour[m], label=METHODS[m][0]) for m in METHODS]
+    handles.append(plt.Line2D([], [], marker="^", ms=6, color="0.4", linestyle="",
+                              markeredgecolor="black", label="mean makespan"))
+    fig.legend(handles=handles, ncol=4, fontsize=8, loc="lower center",
                bbox_to_anchor=(0.5, 0.0), frameon=False)
-    fig.tight_layout(rect=(0.02, 0.13, 1, 1), h_pad=0.7, w_pad=0.5)
+    fig.tight_layout(rect=(0.02, 0.068, 1, 1), h_pad=0.6, w_pad=0.4)
     path = EXP / f"baselines_{model}.png"
     fig.savefig(path, dpi=300)
     return path
