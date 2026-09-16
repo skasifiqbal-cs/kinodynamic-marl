@@ -113,11 +113,17 @@ def plot(model: str, rows) -> Path:
     themselves.
     """
     data = collect(model)
-    fig, axes = plt.subplots(len(SIZES), len(FAMILIES), figsize=(3.45, 6.4), sharey=True)
+    # N = 32 and circular 16 are all-or-nothing cells (only one method solves one of them),
+    # so they are reported in prose rather than as panels of empty axes.
+    sizes, skip = SIZES[:-1], {("circular_cross", 16)}
+    fig, axes = plt.subplots(len(sizes), len(FAMILIES), figsize=(7.1, 3.9), sharey=True)
     colour = dict(zip(METHODS, ["#1f77b4", "#d62728", "#2ca02c"]))
-    for r, n in enumerate(SIZES):
+    for r, n in enumerate(sizes):
         for c, fam in enumerate(FAMILIES):
             ax, labels = axes[r, c], []
+            if (fam, n) in skip:
+                ax.set_visible(False)
+                continue
             for pos, (method, (label, _, key)) in enumerate(METHODS.items()):
                 runs = data.get((method, fam, n), [])
                 ok = [x for x in runs if float(x.get(key, 0) or 0) >= 1 and x.get("wall_time")]
@@ -128,31 +134,31 @@ def plot(model: str, rows) -> Path:
                 # A cell with no spread draws a box of zero height, which the white median
                 # line then hides: lay a coloured bar under it so the method still reads.
                 ax.plot([pos - 0.28, pos + 0.28], [np.median(v)] * 2, color=colour[method],
-                        linewidth=1.8, zorder=1, solid_capstyle="butt")
+                        linewidth=2.4, zorder=1, solid_capstyle="butt")
                 ax.boxplot(v, positions=[pos], widths=0.55, zorder=2, patch_artist=True,
                            medianprops=dict(color="white", linewidth=0.6),
                            boxprops=dict(facecolor=colour[method], edgecolor=colour[method],
                                          linewidth=0.6),
                            whiskerprops=dict(linewidth=0.5, color=colour[method]),
                            capprops=dict(linewidth=0.5, color=colour[method]),
-                           flierprops=dict(ms=1.5, markeredgecolor=colour[method]))
+                           flierprops=dict(ms=3, markeredgecolor=colour[method]))
             ax.set_xlim(-0.7, len(METHODS) - 0.3)
             ax.set_yscale("log")
             ax.set_ylim(3, 1200)
-            ax.tick_params(labelsize=5.5, length=2, pad=1)
-            ax.set_xticks(range(len(METHODS)), labels, fontsize=5)
+            ax.tick_params(labelsize=7, length=2, pad=1)
+            ax.set_xticks(range(len(METHODS)), labels, fontsize=7)
             for tick, method in zip(ax.get_xticklabels(), METHODS):
                 tick.set_color(colour[method])
             if r == 0:
-                ax.set_title(fam.replace("_cross", "").replace("_", " "), fontsize=7)
+                ax.set_title(fam.replace("_cross", "").replace("_", " "), fontsize=9)
             if c == 0:
-                ax.set_ylabel(f"$N = {n}$", fontsize=7)
-    fig.supxlabel("success rate [%] per method", fontsize=6.5, y=0.035)
-    fig.supylabel("runtime [s]", fontsize=7, x=0.02)
+                ax.set_ylabel(f"$N = {n}$", fontsize=9)
+    fig.supxlabel("success rate [%] per method", fontsize=8, y=0.075)
+    fig.supylabel("runtime [s]", fontsize=8, x=0.012)
     fig.legend(handles=[plt.Rectangle((0, 0), 1, 1, fc=colour[m], label=METHODS[m][0])
-                        for m in METHODS], ncol=3, fontsize=6, loc="lower center",
-               bbox_to_anchor=(0.5, -0.004), frameon=False)
-    fig.tight_layout(rect=(0.03, 0.055, 1, 1), h_pad=0.6, w_pad=0.4)
+                        for m in METHODS], ncol=3, fontsize=8, loc="lower center",
+               bbox_to_anchor=(0.5, 0.0), frameon=False)
+    fig.tight_layout(rect=(0.02, 0.13, 1, 1), h_pad=0.7, w_pad=0.5)
     path = EXP / f"baselines_{model}.png"
     fig.savefig(path, dpi=300)
     return path
