@@ -121,9 +121,8 @@ def plot(models) -> Path:
     skip = {("circular_cross", n) for n in (16,)}
     fig, axes = plt.subplots(len(sizes), len(cols), figsize=(7.1, 4.4), sharey=True)
     colour = dict(zip(METHODS, ["#1f77b4", "#d62728", "#2ca02c"]))
-    # The makespan marker sits on top of its own method's box, so it takes the same hue
-    # darkened while the box is washed out: one reads as the plan, the other as the search.
-    dark = {m: tuple(0.55 * x for x in mcolors.to_rgb(c)) for m, c in colour.items()}
+    # The makespan marker keeps the method's full colour while its box is washed out, so
+    # the solid mark reads as the plan and the pale box as the search that found it.
     for r, n in enumerate(sizes):
         for c, (fam, model) in enumerate(cols):
             ax, labels = axes[r, c], []
@@ -144,8 +143,8 @@ def plot(models) -> Path:
                 span = [float(x["makespan"]) for x in ok if x.get("makespan")]
                 if span:
                     ax.plot([pos], [np.mean(span)], marker="^", ms=5, zorder=3,
-                            color=dark[method], markeredgecolor="black",
-                            markeredgewidth=0.3)
+                            color=colour[method], markeredgecolor="black",
+                            markeredgewidth=0.4)
                 ax.boxplot(v, positions=[pos], widths=0.6, zorder=2, patch_artist=True,
                            showfliers=False,
                            medianprops=dict(color=colour[method], linewidth=1.0),
@@ -165,15 +164,15 @@ def plot(models) -> Path:
                              fontsize=7, linespacing=0.95)
             if c == 0:
                 ax.set_ylabel(f"$N = {n}$", fontsize=8)
-    fig.supylabel("runtime [s]", fontsize=8, x=0.012)
+    fig.supylabel("runtime [s]", fontsize=8, x=0.026)
     handles = [plt.Rectangle((0, 0), 1, 1, fc=(*mcolors.to_rgb(colour[m]), 0.35),
                              ec=colour[m], label=METHODS[m][0]) for m in METHODS]
-    handles.append(plt.Line2D([], [], marker="^", ms=5, color="0.25", linestyle="",
-                              markeredgecolor="black", markeredgewidth=0.3,
+    handles.append(plt.Line2D([], [], marker="^", ms=5, color="0.45", linestyle="",
+                              markeredgecolor="black", markeredgewidth=0.4,
                               label="mean makespan"))
     fig.legend(handles=handles, ncol=4, fontsize=7, loc="lower center",
                bbox_to_anchor=(0.5, -0.012), frameon=False)
-    fig.tight_layout(rect=(0.02, 0.045, 1, 1), h_pad=0.5, w_pad=0.25)
+    fig.tight_layout(rect=(0.028, 0.045, 1, 1), h_pad=0.5, w_pad=0.25)
     path = EXP / "baselines.png"
     fig.savefig(path, dpi=300)
     return path
