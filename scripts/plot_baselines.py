@@ -14,6 +14,7 @@ import re
 import sys
 from pathlib import Path
 
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -120,6 +121,9 @@ def plot(models) -> Path:
     skip = {("circular_cross", n) for n in (16,)}
     fig, axes = plt.subplots(len(sizes), len(cols), figsize=(7.1, 4.4), sharey=True)
     colour = dict(zip(METHODS, ["#1f77b4", "#d62728", "#2ca02c"]))
+    # The makespan marker sits on top of its own method's box, so it takes the same hue
+    # darkened while the box is washed out: one reads as the plan, the other as the search.
+    dark = {m: tuple(0.55 * x for x in mcolors.to_rgb(c)) for m, c in colour.items()}
     for r, n in enumerate(sizes):
         for c, (fam, model) in enumerate(cols):
             ax, labels = axes[r, c], []
@@ -136,17 +140,17 @@ def plot(models) -> Path:
                 # A cell with no spread draws a box of zero height, which the white median
                 # line then hides: lay a coloured bar under it so the method still reads.
                 ax.plot([pos - 0.3, pos + 0.3], [np.median(v)] * 2, color=colour[method],
-                        linewidth=2.2, zorder=1, solid_capstyle="butt")
+                        linewidth=2.2, zorder=1, alpha=0.55, solid_capstyle="butt")
                 span = [float(x["makespan"]) for x in ok if x.get("makespan")]
                 if span:
                     ax.plot([pos], [np.mean(span)], marker="^", ms=5, zorder=3,
-                            color=colour[method], markeredgecolor="black",
-                            markeredgewidth=0.4)
+                            color=dark[method], markeredgecolor="black",
+                            markeredgewidth=0.3)
                 ax.boxplot(v, positions=[pos], widths=0.6, zorder=2, patch_artist=True,
                            showfliers=False,
-                           medianprops=dict(color="white", linewidth=0.6),
-                           boxprops=dict(facecolor=colour[method], edgecolor=colour[method],
-                                         linewidth=0.6),
+                           medianprops=dict(color=colour[method], linewidth=1.0),
+                           boxprops=dict(facecolor=(*mcolors.to_rgb(colour[method]), 0.35),
+                                         edgecolor=colour[method], linewidth=0.6),
                            whiskerprops=dict(linewidth=0.5, color=colour[method]),
                            capprops=dict(linewidth=0.5, color=colour[method]))
             ax.set_xlim(-0.7, len(METHODS) - 0.3)
@@ -162,9 +166,11 @@ def plot(models) -> Path:
             if c == 0:
                 ax.set_ylabel(f"$N = {n}$", fontsize=8)
     fig.supylabel("runtime [s]", fontsize=8, x=0.012)
-    handles = [plt.Rectangle((0, 0), 1, 1, fc=colour[m], label=METHODS[m][0]) for m in METHODS]
-    handles.append(plt.Line2D([], [], marker="^", ms=5, color="0.4", linestyle="",
-                              markeredgecolor="black", label="mean makespan"))
+    handles = [plt.Rectangle((0, 0), 1, 1, fc=(*mcolors.to_rgb(colour[m]), 0.35),
+                             ec=colour[m], label=METHODS[m][0]) for m in METHODS]
+    handles.append(plt.Line2D([], [], marker="^", ms=5, color="0.25", linestyle="",
+                              markeredgecolor="black", markeredgewidth=0.3,
+                              label="mean makespan"))
     fig.legend(handles=handles, ncol=4, fontsize=7, loc="lower center",
                bbox_to_anchor=(0.5, -0.012), frameon=False)
     fig.tight_layout(rect=(0.02, 0.045, 1, 1), h_pad=0.5, w_pad=0.25)
