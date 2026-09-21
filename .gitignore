@@ -72,6 +72,7 @@ graphify-out/
 # Diagnostic sweep outputs (regenerate with scripts/, not tracked)
 experiments/
 
-# Compiled paper (build from paper/*.tex)
-paper/*.pdf
+# Paper sources live here but are not shipped with the code: they go to Overleaf,
+# not to the GitHub remote.
+paper/
 overleaf_cegar_trajopt/

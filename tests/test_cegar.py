@@ -6,8 +6,8 @@ the solver will happily schedule, and a false "touch" forbids a pass that was fi
 """
 import numpy as np
 
-from src.approach.planning.cegar import _hits, _split
-from src.collision.shapes import BoxShape
+from src.core.collision.shapes import BoxShape
+from src.planning.cegar import _hits, _split
 
 
 class _Env:
@@ -55,7 +55,7 @@ def test_hits_holds_the_shorter_candidate_at_its_last_state():
 def test_contact_step_is_when_first_contact_happens():
     """The trajopt repair keeps a candidate up to shortly before this step, so it must be the
     step of the SAME contact `first_contact` reports, not merely a close one."""
-    from src.conflict.pairwise import contact_step, first_contact
+    from src.core.conflict.pairwise import contact_step, first_contact
 
     shape = BoxShape(width=0.5, length=0.25)
     x = np.linspace(1.0, 9.0, 81)
@@ -70,8 +70,8 @@ def test_contact_step_is_when_first_contact_happens():
 def test_trajopt_first_order_plan_is_what_the_robot_executes():
     from omegaconf import OmegaConf
 
-    from src.approach.planning.trajopt import solve_trajectory
-    from src.robot import build_robot
+    from src.core.robot import build_robot
+    from src.planning.trajopt import solve_trajectory
 
     robot = build_robot(OmegaConf.load("conf/robot/unicycle1_db.yaml"))
     start, goal = np.array([1.0, 1.0, 0.0]), np.array([4.0, 2.0, 0.0])
@@ -89,7 +89,7 @@ def test_yield_jobs_avoid_a_partner_that_parked_before_the_contact():
     """Contact after j's candidate ended used to slice j's states to nothing (IndexError)."""
     from types import SimpleNamespace
 
-    from src.approach.planning.cegar import _topt_yield_jobs
+    from src.planning.cegar import _topt_yield_jobs
 
     shape = BoxShape(0.5, 0.25)
     env = SimpleNamespace(robots=[_Rb(shape), _Rb(shape)], dt=0.1, _world_size=17.0,
@@ -106,7 +106,7 @@ def test_yield_jobs_avoid_a_partner_that_parked_before_the_contact():
 
 def test_sidestep_bump_leaves_and_rejoins_the_old_candidate():
     """The repair seed must start and end on the old path, peaking at the contact step."""
-    from src.approach.planning.cegar import _sidestep_bump
+    from src.planning.cegar import _sidestep_bump
 
     y = _sidestep_bump(np.arange(41), 10)
     assert y[0] == 0.0 and y[20] == 0.0 and np.allclose(y[21:], 0.0)

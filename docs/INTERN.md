@@ -23,15 +23,17 @@ kinodynamic planner. Your job: implement the planning methods.
 src/approach/
   base.py              BaseApproach + Controller (the interfaces)
   rollout.py           the shared episode loop (run_episode) + metrics + save_gif
-  rl/                  the RL approach (already done — reference only)
-  planning/
-    base.py            BasePlanner  (read this — it has the env cheat-sheet)
-    __init__.py        build_planner  (the dispatch table — register here)
-    rrt.py             <- implement
-    kinodynamic_rrt.py <- implement
-    optimization.py    done — prioritised minimum-time NLP
-    karc.py            done — K-ARC (segmentation + conflict ladder)
-    trajopt.py         the CasADi program both of those call
+  __init__.py          build_approach (dispatches to planning or rl)
+src/rl/                the RL approach (already done — reference only)
+src/planning/
+  base.py              BasePlanner  (read this — it has the env cheat-sheet)
+  __init__.py          build_planner  (the dispatch table — register here)
+  rrt.py               <- implement
+  kinodynamic_rrt.py   <- implement
+  optimization.py      done — prioritised minimum-time NLP
+  karc.py              done — K-ARC (segmentation + conflict ladder)
+  trajopt.py           the CasADi program both of those call
+src/core/              robots, env, obs, shaping, collision, conflict (shared; don't edit)
 conf/approach/planning.yaml   parameters for each method
 ```
 
@@ -44,9 +46,9 @@ A planner **is a `Controller`**: implement two methods.
 
 ## The recipe (add a new method, e.g. `prm`)
 
-1. **Create** `src/approach/planning/prm.py`:
+1. **Create** `src/planning/prm.py`:
    ```python
-   from src.approach.planning.base import BasePlanner
+   from src.planning.base import BasePlanner
 
    class PRMPlanner(BasePlanner):
        method = "prm"
@@ -57,9 +59,9 @@ A planner **is a `Controller`**: implement two methods.
            # return {agent: control} for this step
            ...
    ```
-2. **Register** it in `src/approach/planning/__init__.py` — add to `_PLANNERS`:
+2. **Register** it in `src/planning/__init__.py` — add to `_PLANNERS`:
    ```python
-   from src.approach.planning.prm import PRMPlanner
+   from src.planning.prm import PRMPlanner
    _PLANNERS = { ..., "prm": PRMPlanner }
    ```
 3. **Add params** in `conf/approach/planning.yaml`:
@@ -89,7 +91,7 @@ All are live attributes on the env passed to `reset(env)` / `act(obs, env)`:
 
 | what | attribute |
 |---|---|
-| obstacles | `env._obstacles` (list of `Obstacle`, `src/collision/shapes.py`) |
+| obstacles | `env._obstacles` (list of `Obstacle`, `src/core/collision/shapes.py`) |
 | goal pose of agent i | `env._goals[i]` → `[x, y, θ]` |
 | current state of agent i | `env._states[i]` |
 | robot model of agent i | `env.robots[i]` |
@@ -105,10 +107,10 @@ Control vector `u`: `[v, ω]` for the kinematic unicycle, `[a, α]`
 
 ## Reuse — don't reinvent
 
-- **Collision checks**: `from src.collision.shapes import collides, collides_wall`.
+- **Collision checks**: `from src.core.collision.shapes import collides, collides_wall`.
   Validate a candidate state against `env._obstacles` (+ `robot.shape`) and the
   world walls (`env._world_size`).
-- **Occupancy grid + cost-to-go**: `src/shaping/dijkstra_potential.py` already
+- **Occupancy grid + cost-to-go**: `src/core/shaping/dijkstra_potential.py` already
   builds a clearance-inflated free-space grid (`DijkstraPotential._free`) and an
   8-connected shortest-path field (`._dist_field(goal)`). Reuse it as a sampling
   domain / goal-bias heuristic for grid-based or informed planners.

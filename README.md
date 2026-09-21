@@ -38,7 +38,7 @@ pip install -e ".[dev,planning]"        # add CasADi + z3 + scipy for approach=p
 ```
 
 `dubins` is **optional** — `DubinsPotential` falls back to a bundled pure-Python
-implementation (`src/shaping/_dubins_py.py`). Without `planning`, the planner tests skip.
+implementation (`src/core/shaping/_dubins_py.py`). Without `planning`, the planner tests skip.
 
 ## Entry points
 
@@ -50,6 +50,28 @@ python train.py                      # train an RL policy
 python evaluate.py                   # render one episode to GIF + report success
 python scripts/fasteval.py           # same scoring, headless and in bulk, no rendering
 ```
+
+## Who owns what
+
+The three packages under `src/` are layered, and the layering is the rule that keeps two
+people out of each other's way:
+
+| Package | Depends on | Touched by |
+|---|---|---|
+| `src/core/` | nothing else in `src/` | either side, by agreement — a change here moves both |
+| `src/planning/` | `src/core/`, `src/approach/` | the planner work (CEGAR, K-ARC, K-CBS) |
+| `src/rl/` | `src/core/`, `src/approach/` | the RL work |
+
+`src/planning/` and `src/rl/` never import each other. If a change seems to need that, it
+belongs in `src/core/` instead.
+
+The guided-RL work lives in `src/rl/` and reads three things out of the other packages,
+none of which it should modify: `src/planning/geometric_rrt.py` (the guide paths),
+`src/core/conflict/margin.py` (braking margins) and `src/core/shaping/braking_potential.py`.
+
+Before pushing: `ruff check . && pytest` — both must pass.
+`tests/test_planning.py::test_adapt_subproblem_reopens_the_previous_segment_and_rescues_it`
+is a known failure on this branch and is not yours.
 
 ## Choosing an experiment
 
@@ -111,7 +133,7 @@ Decoupled Kinodynamic RRT → Composite Kinodynamic RRT**. The two sampling rung
 because a prioritized re-solve cannot change homotopy class — it can only make a robot slow
 down or stop, never route it the other way round an obstacle — so a ladder of trajopt-only
 rungs is not K-ARC's ladder. They share one time-gridded planner,
-`src/approach/planning/krrt.py`: extensions advance a whole number of `env.dt` steps and a
+`src/planning/krrt.py`: extensions advance a whole number of `env.dt` steps and a
 result is padded to exactly the segment horizon, so an RRT trajectory is index-comparable
 with a trajopt one and fixed trajectories are avoided as *moving* obstacles.
 
@@ -188,7 +210,7 @@ and ~8x the wall time — the price of the completeness they buy.
 ## Constructive coordination (ours)
 
 `approach.method=constructive` is **not** a rung, a flag or a variant of the baseline above.
-It is a separate planner in `src/approach/planning/constructive.py` with its own config
+It is a separate planner in `src/planning/constructive.py` with its own config
 block, its own guide generator and its own scheduler; the two share no module, no config
 key and no code path, so neither can be quietly turned into the other by a switch.
 
@@ -196,7 +218,7 @@ Where K-ARC plans segments and then repairs whichever conflicts it finds, this o
 plan that is collision-free by construction and then asks a solver whether the whole team
 can be seated in time at once:
 
-1. **Guides.** One geometric RRT path per robot (`src/approach/planning/geometric_rrt.py`),
+1. **Guides.** One geometric RRT path per robot (`src/planning/geometric_rrt.py`),
    sampled in continuous space and shortcut — obstacle-free, but ignorant of other robots.
 2. **Lanes and roundabouts.** Robots whose guides run together are offset onto parallel
    lanes; robots whose guides meet at a shared hub are routed around it in one consistent
@@ -204,7 +226,7 @@ can be seated in time at once:
 3. **Smooth driving.** Each route is fitted with a blurred, arclength-uniform curve
    (`smooth` is the blur length in metres, so curvature — and with it the cornering cap
    `v <= ω_max/κ` — stays usable) and realised through differential flatness
-   (`src/approach/planning/flat.py`): the flat outputs (x, y) give θ, v, ω, a, α exactly,
+   (`src/planning/flat.py`): the flat outputs (x, y) give θ, v, ω, a, α exactly,
    so the trajectory is dynamically feasible by construction rather than feasible up to a
    bounded discontinuity. A TOPP-style forward/backward sweep sets the speed profile
    under `v_max`, `ω_max`, `a_max`, `α_max`.
@@ -315,7 +337,7 @@ count throws away a loop that was still making progress.
 
 `approach.method=splinecegar` is the `cegar` loop with its geometry layer replaced. A
 candidate motion **is a cubic B-spline**, and a B-spline is its control points
-(`src/approach/planning/splinecegar.py`), which changes three things:
+(`src/planning/splinecegar.py`), which changes three things:
 
 | | `cegar` | `splinecegar` |
 |---|---|---|
@@ -397,26 +419,30 @@ knobs that affect the run.
 ```
 conf/            Hydra configs (approach/ env/ robot/ shaping/ obs/ init/ network/ train/)
 src/
-  approach/      the RL-vs-planning split
-    rl/            IPPO training + the eval controller that loads checkpoints
-    planning/      geometric_rrt + krrt (samplers), rrt, kinodynamic_rrt, optimization,
-                   the CasADi NLP, karc (baseline), and constructive + cegar +
-                   splinecegar + flat + schedule (ours)
-    rollout.py     the episode loop both approaches score with
-  robot/         UnicycleModel, Unicycle2Model, CarModel (RK4)
-  env/           MultiAgentNav (PettingZoo), vectorized wrapper, factory.build_env
-  obs/           egocentric full-state / lidar observation builders
-  shaping/       potentials (BasePotential)
-  collision/     circle + OBB shapes and the overlap tests
-  init/          start/goal initializers (fixed, random, random_heading)
-  networks/      policy and value nets (mlp, gru)
-  viz/           greyscale matplotlib renderer
+  approach/      the shared contract: BaseApproach/Controller, build_approach (the
+                 factory that dispatches to planning or rl), rollout.py (the episode
+                 loop both approaches score with)
+  core/          everything both sides need; imports from neither of them
+    robot/         UnicycleModel, Unicycle2Model, CarModel (RK4)
+    env/           MultiAgentNav (PettingZoo), vectorized wrapper, factory.build_env
+    obs/           egocentric full-state / lidar observation builders
+    shaping/       potentials (BasePotential)
+    collision/     circle + OBB shapes and the overlap tests
+    conflict/      pairwise contact + the dynamics-aware braking/reachability margins
+    init/          start/goal initializers (fixed, random, random_heading)
+    networks/      policy and value nets (mlp, gru)
+    viz/           greyscale matplotlib renderer
+  planning/      geometric_rrt + krrt (samplers), rrt, kinodynamic_rrt, optimization,
+                 the CasADi NLP, karc (baseline), kcbs, and constructive + cegar +
+                 splinecegar + flat + schedule (ours)
+  rl/            IPPO training + the eval controller that loads checkpoints
 scripts/         fasteval.py (bulk metrics), viewer.py (streamlit), karc_trace_gif.py
                  (planning process as a GIF), schedule_sat.py (SMT-LIB2 dump),
                  gen_*_cross.py (scenario generators), numerical diagnostics
 tests/           pytest: robot dynamics, shaping, env contract, planners, renderer, eval
 docs/            task notes for collaborators (INTERN.md, results.md, ...)
-paper/ notes/    write-ups and results
+notes/           results write-ups (paper/ and overleaf_cegar_trajopt/ are on
+                 disk but git-ignored: paper sources go to Overleaf, not GitHub)
 main.py train.py evaluate.py   Hydra entry points
 ```
 
@@ -429,9 +455,9 @@ ruff check . && pytest        # CI runs both on every push (.github/workflows/ci
 ## Extending
 
 - **New potential**: subclass `BasePotential` (`phi(state, goal)->float`), register in
-  `src/shaping/__init__.py:build_potential`, add `conf/shaping/<name>.yaml`.
+  `src/core/shaping/__init__.py:build_potential`, add `conf/shaping/<name>.yaml`.
 - **New robot**: subclass `BaseRobot` (`step`, `reset_state`, action/obs metadata),
-  register in `src/robot/__init__.py:build_robot`, add `conf/robot/<name>.yaml`.
+  register in `src/core/robot/__init__.py:build_robot`, add `conf/robot/<name>.yaml`.
 - **New planner**: subclass `BasePlanner`, register in
-  `src/approach/planning/__init__.py:_PLANNERS`, add a same-named block to
+  `src/planning/__init__.py:_PLANNERS`, add a same-named block to
   `conf/approach/planning.yaml`. See `docs/INTERN.md`.

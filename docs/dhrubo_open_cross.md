@@ -9,7 +9,7 @@ the vertical centreline. Their second-order unicycle is `[x,y,theta,v,omega]` wi
 `[a,alpha]`, which is already `conf/robot/unicycle_db.yaml` — use it unchanged.
 
 This is config generation, not env code. `MultiAgentNav` already handles any number of agents and
-`FixedInitializer` (`src/init/initializer.py:29`) reads starts and goals straight out of the YAML.
+`FixedInitializer` (`src/core/init/initializer.py:29`) reads starts and goals straight out of the YAML.
 Read `conf/env/swap2_unicycle2.yaml` first: it is the N=2 case and the house style for these files.
 
 Write `scripts/gen_open_cross.py` emitting `conf/env/open_cross_{N}_unicycle2.yaml`. Don't
@@ -38,7 +38,7 @@ formula is right at every N, and if it doesn't nothing else you test means anyth
 
 Things that will bite you:
 
-The world is square. `world_size` is a single scalar and `src/obs/full_state.py:96-99` uses it for
+The world is square. `world_size` is a single scalar and `src/core/obs/full_state.py:96-99` uses it for
 both axes, so you cannot build the wide short box their Fig. 2(a) shows. Record it as a deviation
 and move on — don't add rectangular world support.
 
@@ -50,7 +50,7 @@ nothing, and it costs one solve per agent per env.
 
 Collision checking is O(N^2). Time a single N=32 episode before queueing a long run.
 
-The renderer is greyscale and numbers each robot and its goal (`src/viz/renderer.py`), so any N
+The renderer is greyscale and numbers each robot and its goal (`src/core/viz/renderer.py`), so any N
 renders without repeats. Above ~16 robots the bodies get small; raise `fig_px` rather than
 changing the renderer.
 

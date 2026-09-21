@@ -51,7 +51,7 @@ python train.py wandb.enabled=true
 run is simply somewhere the rest of us cannot see. Check `echo $WANDB_ENTITY` first.
 
 At the end, `config.yaml` + `best_agent.pt` are published as an artifact
-(`src/approach/rl/train.py:upload_run_artifact`), which the receiver pulls with:
+(`src/rl/train.py:upload_run_artifact`), which the receiver pulls with:
 
 ```bash
 wandb artifact get $WANDB_ENTITY/kinodynamic-rl/<env>_<shaping>_<network>_<obs>_<timestamp>:latest --root /tmp/check

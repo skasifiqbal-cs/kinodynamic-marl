@@ -28,10 +28,10 @@ from hydra.initialize import initialize_config_dir  # noqa: E402
 from matplotlib.patches import Circle, Rectangle  # noqa: E402
 from omegaconf import OmegaConf  # noqa: E402
 
-from src.approach.planning import cegar as C  # noqa: E402
-from src.approach.planning import flat, geometric_rrt  # noqa: E402
-from src.collision.shapes import shape_distance  # noqa: E402
-from src.env.factory import build_env  # noqa: E402
+from src.core.collision.shapes import shape_distance  # noqa: E402
+from src.core.env.factory import build_env  # noqa: E402
+from src.planning import cegar as C  # noqa: E402
+from src.planning import flat, geometric_rrt  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "paper" / "figs" / "worked_example_cegar.pdf"

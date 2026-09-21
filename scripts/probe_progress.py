@@ -9,7 +9,7 @@ import numpy as np
 from omegaconf import DictConfig
 
 from src.approach import build_approach
-from src.env.factory import build_env
+from src.core.env.factory import build_env
 
 
 @hydra.main(config_path="../conf", config_name="config", version_base="1.3")

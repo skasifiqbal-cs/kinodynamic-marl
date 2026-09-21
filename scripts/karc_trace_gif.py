@@ -26,11 +26,11 @@ import hydra
 import numpy as np  # noqa: E402
 from omegaconf import DictConfig, OmegaConf  # noqa: E402
 
-from src.approach.planning import build_planner  # noqa: E402
 from src.approach.rollout import save_gif  # noqa: E402
-from src.collision.shapes import collides  # noqa: E402
-from src.env.factory import build_env  # noqa: E402
-from src.viz import render_frame_with_shapes  # noqa: E402
+from src.core.collision.shapes import collides  # noqa: E402
+from src.core.env.factory import build_env  # noqa: E402
+from src.core.viz import render_frame_with_shapes  # noqa: E402
+from src.planning import build_planner  # noqa: E402
 
 
 @hydra.main(config_path="../conf", config_name="config", version_base="1.3")

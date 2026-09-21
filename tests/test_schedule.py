@@ -7,8 +7,8 @@ not. Both directions are pinned here on a case whose answer is known by hand.
 """
 import numpy as np
 
-from src.approach.planning.schedule import forbidden, runs
-from src.collision.shapes import CircleShape
+from src.core.collision.shapes import CircleShape
+from src.planning.schedule import forbidden, runs
 
 
 class _Env:

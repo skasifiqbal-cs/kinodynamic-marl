@@ -41,7 +41,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from src.approach import build_approach  # noqa: E402
 from src.approach.rollout import run_episode, summarize  # noqa: E402
-from src.env.factory import build_env  # noqa: E402
+from src.core.env.factory import build_env  # noqa: E402
 
 
 def _score(env, controller, n_episodes: int) -> dict:

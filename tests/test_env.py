@@ -10,7 +10,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def build(env="gap2_unicycle2", shaping="dijkstra"):
-    from src.env.factory import build_env
+    from src.core.env.factory import build_env
     GlobalHydra.instance().clear()
     with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
         cfg = compose("config", overrides=[f"env={env}", f"shaping={shaping}", "init=fixed"])
@@ -89,7 +89,7 @@ def test_checkpoint_obs_dim_mismatch_names_the_cause():
     import pytest
     import torch
 
-    from src.approach.rl.controller import check_obs_dim
+    from src.rl.controller import check_obs_dim
 
     trained_on_swap1 = {"net.0.weight": torch.zeros(128, 11), "net.0.bias": torch.zeros(128)}
     check_obs_dim(trained_on_swap1, 11, "agent_0", "ckpt.pt")          # matching env: silent
@@ -148,7 +148,7 @@ def test_reward_decomposition_pins_every_sign():
 
 def test_wrong_signed_reward_coefficient_is_rejected():
     """An old config carrying a positive effort_penalty must fail loudly, not invert."""
-    from src.env.multiagent_nav import check_reward_signs
+    from src.core.env.multiagent_nav import check_reward_signs
 
     check_reward_signs({"reach": 50.0, "collision": -2.0, "effort_penalty": -0.002})
     check_reward_signs({"collision": 0.0})                       # zero disables, allowed
@@ -173,8 +173,8 @@ def test_circle_obstacle_is_built_encoded_and_collided():
     """
     from omegaconf import OmegaConf
 
-    from src.collision.shapes import CircleShape, collides
-    from src.env.factory import build_env
+    from src.core.collision.shapes import CircleShape, collides
+    from src.core.env.factory import build_env
 
     GlobalHydra.instance().clear()
     with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):

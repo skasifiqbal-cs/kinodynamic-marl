@@ -3,13 +3,13 @@
 We already run IPPO through skrl. MAPPO is the same algorithm with one change: the critic sees
 the global state instead of each agent's own observation. The actors don't change.
 
-The environment side is already done, so don't go near `src/env/`. `state()` is at
-`src/env/multiagent_nav.py:131` and returns the concatenated observations of all agents;
-`state_spaces` is at `:128`; the vectorised path has the same at `src/env/vec_multiagent.py:95,47,125`.
+The environment side is already done, so don't go near `src/core/env/`. `state()` is at
+`src/core/env/multiagent_nav.py:131` and returns the concatenated observations of all agents;
+`state_spaces` is at `:128`; the vectorised path has the same at `src/core/env/vec_multiagent.py:95,47,125`.
 skrl's trainer already calls `env.state()` every step and puts the result in `infos["shared_states"]`
 (`skrl/trainers/torch/base.py:319-336`) — that code runs today under IPPO. Nothing to add there.
 
-Everything you need to touch is in `src/approach/rl/train.py`.
+Everything you need to touch is in `src/rl/train.py`.
 
 Build the critic on the state space rather than the observation space:
 
@@ -57,7 +57,7 @@ rather than overhead: it is what catches a refactor that quietly broke the basel
 a short run of each at the same seed, both curves on one plot.
 
 Two things not to do. Don't add neighbour velocity to the observation. It is missing at
-`src/obs/full_state.py:74-80` and it looks like an easy win, but it is exactly the information
+`src/core/obs/full_state.py:74-80` and it looks like an easy win, but it is exactly the information
 MAPPO's critic is supposed to have and the actors are not — change both at once and the
 comparison means nothing. Separate PR. And don't remove the IPPO path; it is the paper's baseline.
 

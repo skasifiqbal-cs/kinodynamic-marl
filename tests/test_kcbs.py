@@ -4,8 +4,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from src.approach.planning.kcbs import problem_yaml
-from src.collision.shapes import BoxShape, CircleShape, Obstacle
+from src.core.collision.shapes import BoxShape, CircleShape, Obstacle
+from src.planning.kcbs import problem_yaml
 
 
 class Unicycle2Model:          # name-matched to the model the bridge maps

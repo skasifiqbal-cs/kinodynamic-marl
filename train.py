@@ -14,7 +14,7 @@ from omegaconf import DictConfig
 
 @hydra.main(config_path="conf", config_name="config", version_base="1.3")
 def main(cfg: DictConfig) -> None:
-    from src.approach.rl.train import run_training  # import after sys.path is set by hydra
+    from src.rl.train import run_training  # import after sys.path is set by hydra
     run_training(cfg)
 
 

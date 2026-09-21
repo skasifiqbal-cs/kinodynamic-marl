@@ -3,8 +3,8 @@ import numpy as np
 import pytest
 from omegaconf import OmegaConf
 
-from src.shaping.dijkstra_potential import DijkstraPotential
-from src.shaping.euclidean import EuclideanPotential
+from src.core.shaping.dijkstra_potential import DijkstraPotential
+from src.core.shaping.euclidean import EuclideanPotential
 
 
 def test_euclidean_phi_increases_toward_goal():
@@ -64,7 +64,7 @@ def test_shaping_gamma_differs_from_learner_gamma_and_idle_is_free():
     If either constant moves, the report's numbers are stale -- fix the report, not this
     test.
     """
-    from src.shaping.braking_potential import bangbang_time
+    from src.core.shaping.braking_potential import bangbang_time
 
     g_shape = float(OmegaConf.load("conf/shaping/braking.yaml").gamma)
     g_learn = float(OmegaConf.load("conf/train/ppo_default.yaml").discount)
@@ -90,6 +90,6 @@ def test_shaping_gamma_differs_from_learner_gamma_and_idle_is_free():
 
 def test_bangbang_time_of_a_first_order_robot_is_distance_over_speed():
     """No a_max (first-order unicycle): speed changes instantly, so no ramps."""
-    from src.shaping.braking_potential import bangbang_time
+    from src.core.shaping.braking_potential import bangbang_time
 
     assert bangbang_time(3.0, 0.0, 0.5, float("inf")) == 6.0

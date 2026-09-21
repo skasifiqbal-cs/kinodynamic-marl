@@ -42,9 +42,9 @@ import hydra  # noqa: E402
 import numpy as np  # noqa: E402
 from omegaconf import DictConfig  # noqa: E402
 
-from src.approach.planning import geometric_rrt  # noqa: E402
-from src.collision.shapes import Obstacle, collides, shape_distance  # noqa: E402
-from src.env.factory import build_env  # noqa: E402
+from src.core.collision.shapes import Obstacle, collides, shape_distance  # noqa: E402
+from src.core.env.factory import build_env  # noqa: E402
+from src.planning import geometric_rrt  # noqa: E402
 
 
 def _park(env, poses, skip):

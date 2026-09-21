@@ -8,14 +8,14 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from src.conflict import (
+from src.core.conflict import (
     braking_margin,
     geometric_margin,
     inscribed_radius,
     provable_ics,
     reach_disc,
 )
-from src.robot import build_robot, load_robot_cfg
+from src.core.robot import build_robot, load_robot_cfg
 
 
 @pytest.fixture(scope="module")

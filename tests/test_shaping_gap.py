@@ -2,7 +2,7 @@
 from omegaconf import OmegaConf
 
 from scripts.shaping_gap import self_check
-from src.robot import build_robot, load_robot_cfg
+from src.core.robot import build_robot, load_robot_cfg
 
 
 def test_vectorised_rk4_matches_robot_step():
@@ -28,7 +28,7 @@ def test_bangbang_time_is_a_lower_bound_and_tight_outside_overshoot():
     """
     import numpy as np
 
-    from src.shaping.braking_potential import bangbang_time
+    from src.core.shaping.braking_potential import bangbang_time
 
     for v_max, a_max in ((0.5, 0.25), (1.0, 2.0), (0.5, 0.1)):
         for d in (0.0, 0.2, 1.0, 3.0, 7.0):
@@ -51,8 +51,8 @@ def test_braking_potential_is_zero_only_at_rest_on_goal():
     import numpy as np
     from omegaconf import OmegaConf
 
-    from src.robot import build_robot, load_robot_cfg
-    from src.shaping import build_potential
+    from src.core.robot import build_robot, load_robot_cfg
+    from src.core.shaping import build_potential
 
     robot = build_robot(load_robot_cfg("unicycle_db"))
     cfg = OmegaConf.create({"shaping": {"type": "braking", "cell_size": 0.1}})

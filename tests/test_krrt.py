@@ -8,8 +8,8 @@ the planner end to end, where a failure looks like a slightly worse plan.
 """
 import numpy as np
 
-from src.approach.planning import krrt
-from src.robot import build_robot, load_robot_cfg
+from src.core.robot import build_robot, load_robot_cfg
+from src.planning import krrt
 
 
 def _robot():

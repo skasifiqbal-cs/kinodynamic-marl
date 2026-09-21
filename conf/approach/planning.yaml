@@ -72,7 +72,7 @@ approach:
     # sampling-based method" (§IV-A) and Fig. 1(a) shows a per-robot roadmap; these paths are
     # guidance only -- "not used as the final solutions but rather as guidance for the
     # kinodynamic solutions".
-    #   rrt      - geometric RRT in (x, y), no dynamics (src/approach/planning/geometric_rrt.py).
+    #   rrt      - geometric RRT in (x, y), no dynamics (src/planning/geometric_rrt.py).
     #              Sampling-based, so a run is only reproducible per rrt_seed -- which is also
     #              where the paper's trial-to-trial variance comes from.
     #   dijkstra - greedy descent on the clearance-inflated Dijkstra grid used by the shaping
@@ -199,7 +199,7 @@ approach:
     #   prioritized    - re-solve the conflicting robots one at a time, each avoiding the
     #                    trajectories already fixed this round. Cheapest.
     #   decoupled_rrt  - same ordering, but each robot gets a kinodynamic RRT (time-gridded,
-    #                    see src/approach/planning/krrt.py) instead of a nonlinear program.
+    #                    see src/planning/krrt.py) instead of a nonlinear program.
     #   composite_rrt  - ONE tree over the joint state of R'. Complete for the subproblem in
     #                    the limit, exponential in |R'|; last for that reason.
     # NOT K-ARC, kept for ablation and available by naming them here:
@@ -546,7 +546,7 @@ approach:
     trace: false
 
   # K-CBS baseline (Kottinger et al., IROS 2022): official C++ run as a subprocess, see
-  # src/approach/planning/kcbs.py for the build and the three patches. Values below are
+  # src/planning/kcbs.py for the build and the three patches. Values below are
   # db-CBS's own K-CBS settings (example/algorithms.yaml); timeout matches cegar's.
   kcbs:
     binary: ~/kcbs_bench/build/main_kcbs

@@ -9,7 +9,7 @@ import pytest
 
 pytest.importorskip("scipy")
 
-from src.approach.planning.splinecegar import curve, fit, nudge  # noqa: E402
+from src.planning.splinecegar import curve, fit, nudge  # noqa: E402
 
 
 def _s_path(n=40):

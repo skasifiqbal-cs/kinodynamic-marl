@@ -29,8 +29,8 @@ import numpy as np
 from omegaconf import OmegaConf
 
 sys.path.insert(0, ".")
-from src.collision.shapes import build_obstacle  # noqa: E402
-from src.robot import build_robot, load_robot_cfg  # noqa: E402
+from src.core.collision.shapes import build_obstacle  # noqa: E402
+from src.core.robot import build_robot, load_robot_cfg  # noqa: E402
 
 
 def action_levels(lo, hi, step):
@@ -98,7 +98,7 @@ def solve(robot, world, goal_xy, goal_r, stop_speed, dt, obstacles,
 
     # ponytail: free-space test uses the robot's bounding circle, not its true OBB.
     # Conservative (shrinks free space), keeps the lattice check vectorised. Swap for
-    # src.collision.shapes.collides if a scenario ever needs the exact footprint.
+    # src.core.collision.shapes.collides if a scenario ever needs the exact footprint.
     rad = robot.shape.bounding_radius
     free = (X > rad) & (X < world - rad) & (Y > rad) & (Y < world - rad)
     for ob in obstacles:

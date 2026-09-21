@@ -8,7 +8,7 @@ from gymnasium import spaces
 from hydra import compose, initialize_config_dir
 from hydra.core.global_hydra import GlobalHydra
 
-from src.approach.rl.train import build_models
+from src.rl.train import build_models
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -69,7 +69,7 @@ def test_envs_x_agents_holds_the_update_batch_constant_across_n(n, expected):
     """A sweep over N must vary only N. With share_policy an update sees
     num_agents x num_envs x rollouts, so a FIXED num_envs would give N=32 eight times the
     transitions N=4 gets; fixing the product is what makes the comparison controlled."""
-    from src.approach.rl.train import resolve_num_envs
+    from src.rl.train import resolve_num_envs
 
     GlobalHydra.instance().clear()
     with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
@@ -81,7 +81,7 @@ def test_envs_x_agents_holds_the_update_batch_constant_across_n(n, expected):
 
 
 def test_num_envs_is_used_verbatim_when_envs_x_agents_is_unset():
-    from src.approach.rl.train import resolve_num_envs
+    from src.rl.train import resolve_num_envs
 
     GlobalHydra.instance().clear()
     with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
@@ -92,7 +92,7 @@ def test_num_envs_is_used_verbatim_when_envs_x_agents_is_unset():
 
 def test_envs_x_agents_below_the_agent_count_is_rejected():
     """Integer division would silently give num_envs=0 and an empty rollout."""
-    from src.approach.rl.train import resolve_num_envs
+    from src.rl.train import resolve_num_envs
 
     GlobalHydra.instance().clear()
     with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
@@ -105,7 +105,7 @@ def test_envs_x_agents_below_the_agent_count_is_rejected():
 def test_run_dir_name_separates_scenarios():
     """Four scenarios launched in one minute used to share a directory and overwrite each
     other's checkpoints, silently. The env must be part of the name."""
-    from src.approach.rl.train import run_dir_name
+    from src.rl.train import run_dir_name
 
     names = set()
     for n in (4, 8, 16, 32):

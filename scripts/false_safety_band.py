@@ -7,8 +7,8 @@ sweeps two second-order unicycles over relative geometry and speed and, for each
 state, records three verdicts:
 
     geometric   what the family uses          (>= 0 -> accepted as conflict-free)
-    braking     src.conflict.braking_margin   (>= 0 -> provably able to stop)
-    ICS         src.conflict.provable_ics     (True -> collision unavoidable, PROVED)
+    braking     src.core.conflict.braking_margin   (>= 0 -> provably able to stop)
+    ICS         src.core.conflict.provable_ics     (True -> collision unavoidable, PROVED)
 
 The quantity of interest is the FALSE-SAFETY BAND: states where the geometric test
 says conflict-free and the collision is already unavoidable. Those are states the
@@ -33,13 +33,13 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.conflict.margin import (  # noqa: E402
+from src.core.conflict.margin import (  # noqa: E402
     geometric_margin,
     inscribed_radius,
     provable_ics,
     reach_profile,
 )
-from src.robot import build_robot, load_robot_cfg  # noqa: E402
+from src.core.robot import build_robot, load_robot_cfg  # noqa: E402
 
 HORIZON = 6.0
 N_TIMES = 121

@@ -50,7 +50,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.robot import build_robot, load_robot_cfg  # noqa: E402
+from src.core.robot import build_robot, load_robot_cfg  # noqa: E402
 
 # Sound inner approximation of a disc of radius r by a regular K-gon: halfspaces
 # v . n_k <= r*cos(pi/K) give an INSCRIBED polygon, whose circumradius is exactly r.

@@ -5,7 +5,7 @@ import pytest
 
 wandb = pytest.importorskip("wandb")
 
-from src.approach.rl.train import upload_run_artifact  # noqa: E402
+from src.rl.train import upload_run_artifact  # noqa: E402
 
 
 class _FakeArtifact:

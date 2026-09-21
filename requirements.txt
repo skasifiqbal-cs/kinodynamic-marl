@@ -10,7 +10,7 @@ matplotlib>=3.7.0
 Pillow>=10.0.0
 
 # Optional — NOT required. The Dubins potential falls back to the bundled pure-Python
-# implementation (src/shaping/_dubins_py.py) when the `dubins` C extension is absent.
+# implementation (src/core/shaping/_dubins_py.py) when the `dubins` C extension is absent.
 #   dubins>=1.0.1        # needs gcc: sudo apt install python3-dev build-essential
 # Optional — experiment tracking (disabled by default; wandb.enabled=false).
 #   wandb>=0.17.0

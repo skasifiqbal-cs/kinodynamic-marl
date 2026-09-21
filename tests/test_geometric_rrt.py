@@ -1,8 +1,8 @@
 """Geometric RRT for K-ARC's initial paths (Alg. 1 line 3): free, connected, no dynamics."""
 import numpy as np
 
-from src.approach.planning import geometric_rrt
-from src.collision.shapes import CircleShape, Obstacle, collides
+from src.core.collision.shapes import CircleShape, Obstacle, collides
+from src.planning import geometric_rrt
 
 
 def _blocked_corridor():

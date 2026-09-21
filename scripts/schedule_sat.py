@@ -34,8 +34,8 @@ sys.path.insert(0, ".")
 import numpy as np  # noqa: E402
 from hydra import compose, initialize  # noqa: E402
 
-from src.approach.planning import constructive as C  # noqa: E402
-from src.approach.planning import (  # noqa: E402
+from src.planning import constructive as C  # noqa: E402
+from src.planning import (  # noqa: E402
     flat,
     geometric_rrt,
     schedule,  # noqa: E402
@@ -114,7 +114,7 @@ def _candidates(env, cap, params, clearance, dt, smooth, speeds):
 def main(argv):
     import z3
 
-    from src.env.factory import build_env
+    from src.core.env.factory import build_env
 
     with initialize(version_base=None, config_path="../conf"):
         cfg = compose("config", overrides=["approach=planning", "approach.method=karc",
@@ -240,7 +240,7 @@ def main(argv):
 def _gif(env, tracks, path, skip=4, fps=15):
     """The witness, driven. A schedule that only exists as a delay vector is unreadable."""
     from src.approach.rollout import save_gif
-    from src.viz import render_frame_with_shapes
+    from src.core.viz import render_frame_with_shapes
     shapes = [r.shape for r in env.robots]
     frames = []
     for t in range(0, len(tracks[0]), skip):

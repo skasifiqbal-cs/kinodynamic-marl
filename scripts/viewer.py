@@ -70,12 +70,12 @@ def load_checkpoint(ckpt_path: str, run_dir: str):
 
     from skrl.resources.preprocessors.torch import RunningStandardScaler
 
-    from src.env.multiagent_nav import MultiAgentNav
-    from src.init import build_initializer
-    from src.networks import build_policy
-    from src.obs import build_obs_builder
-    from src.robot import build_robot, load_robot_cfg
-    from src.shaping import build_potential
+    from src.core.env.multiagent_nav import MultiAgentNav
+    from src.core.init import build_initializer
+    from src.core.networks import build_policy
+    from src.core.obs import build_obs_builder
+    from src.core.robot import build_robot, load_robot_cfg
+    from src.core.shaping import build_potential
 
     agent_cfgs = list(cfg.env.agents)
     robots = [build_robot(load_robot_cfg(a.robot)) for a in agent_cfgs]
@@ -120,7 +120,7 @@ def load_checkpoint(ckpt_path: str, run_dir: str):
 
 def run_episode(env, policies, preprocessors, device, frame_skip: int = 5, seed: int = 42,
                 progress_cb=None):
-    from src.viz.renderer import render_frame_with_shapes
+    from src.core.viz.renderer import render_frame_with_shapes
 
     max_steps = env.cfg.env.max_steps
     obs_dict, _ = env.reset(seed=seed)

@@ -7,9 +7,9 @@ goal by a hairpin and the traverse blows past the horizon.
 """
 import numpy as np
 
-from src.approach.planning import constructive, flat
-from src.collision.shapes import CircleShape
-from src.robot.unicycle import Unicycle2Model
+from src.core.collision.shapes import CircleShape
+from src.core.robot.unicycle import Unicycle2Model
+from src.planning import constructive, flat
 
 DT = 0.1
 

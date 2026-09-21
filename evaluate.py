@@ -34,7 +34,7 @@ from omegaconf import DictConfig, OmegaConf
 
 from src.approach import build_approach
 from src.approach.rollout import run_episode, save_gif, summarize
-from src.env.factory import build_env
+from src.core.env.factory import build_env
 
 __all__ = ["main", "run_episode", "save_gif"]
 
@@ -66,7 +66,7 @@ def restore_from_checkpoint(cfg: DictConfig) -> DictConfig:
     """Recover the training config sitting next to ``eval.checkpoint``.
 
     Layout is ``<run>/config.yaml`` alongside ``<run>/checkpoints/agent_N.pt``, written
-    by src/approach/rl/train.py. Runs from before that are left alone — better to
+    by src/rl/train.py. Runs from before that are left alone — better to
     evaluate with what the user asked for than to guess the env from a timestamp.
     """
     ckpt = cfg.get("eval", OmegaConf.create({})).get("checkpoint", None)

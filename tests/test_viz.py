@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.collision.shapes import CircleShape
-from src.viz.renderer import _forward_reach, _label_fontsize, render_frame_with_shapes
+from src.core.collision.shapes import CircleShape
+from src.core.viz.renderer import _forward_reach, _label_fontsize, render_frame_with_shapes
 
 
 def _frame(n: int, world: float = 6.0, radius: float = 0.2795, fig_px: int = 480):
@@ -45,7 +45,7 @@ def test_forward_reach_uses_the_box_axis_the_robot_actually_points_along():
     """conf/robot/unicycle_db.yaml sets width as the extent along local x (forward), to
     match dynobench's size[0], and _obb_corners lays the box out on that axis. Taking
     `length` instead draws the heading line out through the robot's side."""
-    from src.collision.shapes import BoxShape
+    from src.core.collision.shapes import BoxShape
 
     assert _forward_reach(BoxShape(width=0.5, length=0.25)) == 0.25   # width/2
     assert _forward_reach(CircleShape(0.13)) == 0.13
@@ -54,7 +54,7 @@ def test_forward_reach_uses_the_box_axis_the_robot_actually_points_along():
 def test_robot_and_goal_labels_go_to_opposite_corners():
     """A robot parked on its own goal is the normal end state. Same-side labels would
     put a0 on top of g0 exactly then."""
-    from src.viz.renderer import _label_pos
+    from src.core.viz.renderer import _label_pos
 
     ax, ay = _label_pos(2.5, 2.5, 0.13, 5.0, side=1)     # robot
     gx, gy = _label_pos(2.5, 2.5, 0.20, 5.0, side=-1)    # its goal, same spot

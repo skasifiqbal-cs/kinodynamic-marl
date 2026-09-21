@@ -2,8 +2,8 @@
 import numpy as np
 import pytest
 
-from src.collision.shapes import CircleShape
-from src.robot.unicycle import Unicycle2Model, UnicycleModel
+from src.core.collision.shapes import CircleShape
+from src.core.robot.unicycle import Unicycle2Model, UnicycleModel
 
 
 def make_dyn(**kw):
@@ -80,7 +80,7 @@ def test_load_robot_cfg_does_not_depend_on_the_launch_directory(tmp_path, monkey
     composition. Resolving only against the cwd made every entry point silently
     dependent on where it was invoked from — scripts/fasteval.py run by absolute path
     from another directory could not find conf/robot/ at all."""
-    from src.robot import load_robot_cfg
+    from src.core.robot import load_robot_cfg
 
     monkeypatch.chdir(tmp_path)
     cfg = load_robot_cfg("unicycle_v2")
@@ -92,7 +92,7 @@ def test_load_robot_cfg_prefers_a_local_override(tmp_path, monkeypatch):
     try a modified robot without editing the shipped one."""
     from omegaconf import OmegaConf
 
-    from src.robot import load_robot_cfg
+    from src.core.robot import load_robot_cfg
 
     d = tmp_path / "conf" / "robot"
     d.mkdir(parents=True)

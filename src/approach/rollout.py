@@ -14,7 +14,7 @@ from src.approach.base import Controller
 
 def _render_frame(env, trails, step, rewards):
     # Lazy import: keep headless scoring free of the viz/matplotlib dependency.
-    from src.viz import render_frame_with_shapes
+    from src.core.viz import render_frame_with_shapes
     return render_frame_with_shapes(
         states=[s.copy() for s in env._states],
         robot_shapes=[r.shape for r in env.robots],

@@ -9,8 +9,8 @@ import numpy as np
 from omegaconf import DictConfig
 
 from src.approach import build_approach
-from src.conflict import braking_margin
-from src.env.factory import build_env
+from src.core.conflict import braking_margin
+from src.core.env.factory import build_env
 
 
 def margins(env):

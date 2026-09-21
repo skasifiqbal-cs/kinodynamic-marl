@@ -8,7 +8,7 @@ from hydra.core.global_hydra import GlobalHydra
 
 pytest.importorskip("casadi", reason='needs the planning extra: pip install -e ".[planning]"')
 
-from src.approach.planning import constructive
+from src.planning import constructive
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -29,9 +29,9 @@ def test_min_time_matches_analytic_bangbang():
     aligned, so the optimum is exactly the bang-bang time the braking potential
     computes. This is what separates a minimum-time program from a tracking MPC.
     """
-    from src.approach.planning.trajopt import solve_trajectory
-    from src.env.factory import build_env
-    from src.shaping.braking_potential import bangbang_time
+    from src.core.env.factory import build_env
+    from src.core.shaping.braking_potential import bangbang_time
+    from src.planning.trajopt import solve_trajectory
 
     env = build_env(_cfg("swap2_unicycle2"))
     env.reset(seed=0)
@@ -55,9 +55,9 @@ def test_min_time_matches_analytic_bangbang():
 
 def test_prioritised_plan_executes_collision_free():
     """The head-on swap IPPO cannot solve. Planned controls must replay cleanly."""
-    from src.approach.planning import build_planner
     from src.approach.rollout import run_episode
-    from src.env.factory import build_env
+    from src.core.env.factory import build_env
+    from src.planning import build_planner
 
     cfg = _cfg("swap2_unicycle2")
     env = build_env(cfg)
@@ -72,9 +72,9 @@ def test_prioritised_plan_executes_collision_free():
 def test_horizon_is_derived_not_hardcoded():
     """A fixed horizon silently makes the program infeasible when dt or the robot
     changes: horizon * env.dt is the time budget. It must cover the traverse."""
-    from src.approach.planning import build_planner
-    from src.env.factory import build_env
-    from src.shaping.braking_potential import bangbang_time
+    from src.core.env.factory import build_env
+    from src.core.shaping.braking_potential import bangbang_time
+    from src.planning import build_planner
 
     for name in ("swap2_unicycle2", "gap2_unicycle2"):
         env = build_env(_cfg(name))
@@ -104,9 +104,9 @@ def test_planning_config_drops_learning_groups():
 
 
 def test_karc_solves_obstacle_scenario_collision_free():
-    from src.approach.planning import build_planner
     from src.approach.rollout import run_episode
-    from src.env.factory import build_env
+    from src.core.env.factory import build_env
+    from src.planning import build_planner
 
     # `execute: true` is not this test's subject, it is its PREMISE: run_episode measures a
     # rollout, and the shipped default is plan-only (K-ARC returns a plan and never drives
@@ -128,7 +128,7 @@ def test_separate_pulls_coinciding_milestones_apart_laterally():
     the robots must stay r_i+r_j+clearance apart at every index, that segment is
     infeasible by construction. No solver rung can repair it; the milestones must move.
     """
-    from src.approach.planning.karc import KARCPlanner
+    from src.planning.karc import KARCPlanner
 
     # Both robots travel along y = 2.5 in opposite directions and meet in the middle.
     ms = [
@@ -153,9 +153,9 @@ def test_separate_pulls_coinciding_milestones_apart_laterally():
 def test_karc_solves_symmetric_head_on_swap():
     """swap2 is the case prioritised resolution cannot fix: whichever robot is ordered
     second has nowhere to yield to. Needs the joint rung AND separated milestones."""
-    from src.approach.planning import build_planner
     from src.approach.rollout import run_episode
-    from src.env.factory import build_env
+    from src.core.env.factory import build_env
+    from src.planning import build_planner
 
     # Both switches this needs are OURS, not K-ARC's, and both are off by default: the
     # `joint` rung (its optimisation-side counterpart to composite_rrt) and `_separate`
@@ -195,8 +195,8 @@ def test_karc_trace_is_off_by_default_and_records_every_stage_when_on():
     """The trace is what scripts/karc_trace_gif.py draws. It must stay off unless asked
     (it retains every intermediate trajectory), and when on it must cover the whole
     algorithm: reference paths, the uncoordinated solve, and each rung that ran."""
-    from src.approach.planning import build_planner
-    from src.env.factory import build_env
+    from src.core.env.factory import build_env
+    from src.planning import build_planner
 
     def plan(trace):
         GlobalHydra.instance().clear()
@@ -254,7 +254,7 @@ def test_karc_trace_is_off_by_default_and_records_every_stage_when_on():
     assert len(ref) == env._n and all(len(a) > 2 for a in ref)
     assert any(abs(float(a[len(a) // 2][2])) > 1e-6 for a in ref), "headings all zero"
 
-    from src.collision.shapes import collides
+    from src.core.collision.shapes import collides
     shapes = [r.shape for r in env.robots]
     hit = any(
         collides(shapes[i], tuple(ref[i][t][:3]), shapes[j], tuple(ref[j][t][:3]))
@@ -271,8 +271,8 @@ def test_trace_commits_the_braking_rollout_for_an_unsolved_segment():
     """
     import numpy as np
 
-    from src.approach.planning.karc import KARCPlanner
-    from src.env.factory import build_env
+    from src.core.env.factory import build_env
+    from src.planning.karc import KARCPlanner
 
     GlobalHydra.instance().clear()
     with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
@@ -293,8 +293,8 @@ def test_trace_commits_the_braking_rollout_for_an_unsolved_segment():
 
 
 def _karc_stats(env_name, **overrides):
-    from src.approach.planning import build_planner
-    from src.env.factory import build_env
+    from src.core.env.factory import build_env
+    from src.planning import build_planner
 
     ov = ["approach=planning", "approach.method=karc", f"env={env_name}", "init=fixed"]
     ov += [f"approach.karc.{k}={v}" for k, v in overrides.items()]
@@ -336,7 +336,7 @@ def test_a_subproblem_is_one_conflicting_pair_not_every_conflicting_robot():
 def test_a_singleton_subproblem_exists_for_an_infeasible_segment():
     """A robot whose own segment is infeasible has no conflict partner. It still needs
     re-solving, so it forms a subproblem of one rather than being dropped."""
-    from src.approach.planning.karc import KARCPlanner
+    from src.planning.karc import KARCPlanner
 
     # No conflicts at all, robot 1 infeasible -> exactly one subproblem, containing it.
     groups = []
@@ -411,8 +411,8 @@ def test_adapt_subproblem_undoes_committed_motion_back_to_a_checkpoint():
     """
     import numpy as np
 
-    from src.approach.planning import build_planner
-    from src.env.factory import build_env
+    from src.core.env.factory import build_env
+    from src.planning import build_planner
 
     GlobalHydra.instance().clear()
     with initialize_config_dir(config_dir=os.path.join(ROOT, "conf"), version_base="1.3"):
@@ -465,9 +465,9 @@ def test_timeout_fails_safely_instead_of_planning_forever():
     a second-order robot is coasting, so a timeout that simply stopped planning would send
     every robot on at its current velocity and score collisions the planner never chose.
     """
-    from src.approach.planning import build_planner
     from src.approach.rollout import run_episode
-    from src.env.factory import build_env
+    from src.core.env.factory import build_env
+    from src.planning import build_planner
 
     cfg = _cfg("open_cross_16_unicycle2",
                **{"approach.method": "karc", "approach.karc.timeout": 5.0})
@@ -492,8 +492,8 @@ def test_terminal_tolerance_stays_strictly_inside_the_env_goal_test():
     open_cross_32_wide: 32/32 segments solved, every robot at rest, two of them at exactly
     0.200 m from a 0.2 m goal -> success=False.
     """
-    from src.approach.planning import build_planner
-    from src.env.factory import build_env
+    from src.core.env.factory import build_env
+    from src.planning import build_planner
 
     cfg = _cfg("open_cross_4_unicycle2", **{"approach.method": "karc"})
     env = build_env(cfg)
@@ -530,8 +530,8 @@ def test_margin_rung_select_keeps_the_ladder_below_the_rung_it_picks():
     """
     import numpy as np
 
-    from src.approach.planning import build_planner
-    from src.env.factory import build_env
+    from src.core.env.factory import build_env
+    from src.planning import build_planner
 
     cfg = _cfg("open_cross_4_unicycle2",
                **{"approach.method": "karc", "approach.karc.rung_select": "margin"})
@@ -585,7 +585,7 @@ def test_a_failed_min_time_probe_cannot_shorten_the_segment():
     """
     from types import SimpleNamespace
 
-    from src.approach.planning.karc import KARCPlanner
+    from src.planning.karc import KARCPlanner
 
     p = KARCPlanner.__new__(KARCPlanner)
     p.stats = {"min_time_solves": 0, "min_time_failures": 0}
@@ -621,8 +621,8 @@ def test_corridor_blockers_follow_distance_not_knot_count():
     the 0.5 x 0.25 body here the disc is 0.559 m across against a 0.25 m lateral extent, and
     the difference is exactly the gap a robot can pass through.
     """
-    from src.approach.planning.karc import KARCPlanner
-    from src.collision.shapes import BoxShape
+    from src.core.collision.shapes import BoxShape
+    from src.planning.karc import KARCPlanner
 
     shape = BoxShape(0.5, 0.25)
     # 4 m of travel, sampled 400 times -- 0.01 m apart.
@@ -659,7 +659,7 @@ def test_guide_repair_blockers_come_only_from_the_subproblem():
     """
     import inspect
 
-    from src.approach.planning.karc import KARCPlanner
+    from src.planning.karc import KARCPlanner
 
     src = inspect.getsource(KARCPlanner._repair_guides)
     assert "for traj, _r in blocking:" in src, "guide blockers must come from `blocking`"
@@ -678,7 +678,7 @@ def test_wait_plan_picks_the_shorter_wait_and_refuses_an_unclearable_pair():
     """
     from types import SimpleNamespace
 
-    from src.approach.planning.karc import KARCPlanner
+    from src.planning.karc import KARCPlanner
 
     class Bot:                      # a point mass with the unicycle state layout
         v_max, a_max, a_min, alpha_max, alpha_min = 0.5, 0.25, -0.25, 1.0, -1.0
@@ -722,7 +722,7 @@ def test_competing_subproblems_get_different_slots_and_distant_ones_may_share():
     outer two share one. Colouring everything differently would serialise resolutions that
     never competed.
     """
-    from src.approach.planning.karc import KARCPlanner
+    from src.planning.karc import KARCPlanner
 
     n = 40
     def row(y, x0, sign):
@@ -752,7 +752,7 @@ def test_detune_only_ever_reduces_authority_and_varies_between_robots():
     """
     from types import SimpleNamespace
 
-    from src.approach.planning.karc import KARCPlanner
+    from src.planning.karc import KARCPlanner
 
     class Bot:
         def __init__(self):
@@ -781,7 +781,7 @@ def test_speed_assignment_orders_a_chain_and_refuses_a_cycle():
     come back flagged, at full authority, for the ladder to resolve geometrically rather
     than be handed a silently wrong schedule.
     """
-    from src.approach.planning.karc import KARCPlanner
+    from src.planning.karc import KARCPlanner
 
     p = KARCPlanner.__new__(KARCPlanner)
     p.params = {"speed_step": 0.15, "speed_floor": 0.5, "speed_rank": "chain"}
@@ -816,7 +816,7 @@ def test_colour_ranks_beat_chain_ranks_on_the_symmetric_ladder():
     Colouring must stay far below that while still giving every conflicting pair different
     ranks, which is the property the offsets rely on.
     """
-    from src.approach.planning.karc import KARCPlanner
+    from src.planning.karc import KARCPlanner
 
     n = 32
     conf = [(2 * k, 2 * k + 1, 1) for k in range(n // 2)]

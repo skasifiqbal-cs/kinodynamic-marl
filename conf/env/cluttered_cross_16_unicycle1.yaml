@@ -16,7 +16,7 @@
 # velocity limits, and runs C++ on a 32-core i9-14900K. Our runtimes are NOT comparable
 # to their published ones and must not be reported as if they were.
 #   world      - square, 17.0 x 17.0. `world_size` is a single scalar and
-#                src/obs/full_state.py:96-99 uses it for both axes, so the wide short box
+#                src/core/obs/full_state.py:96-99 uses it for both axes, so the wide short box
 #                of their Fig. 2(a) is not expressible here.
 #   traverse   - the full 15.0 m width at every N, so the distance term in any
 #                runtime measurement is identical and only crowding varies.

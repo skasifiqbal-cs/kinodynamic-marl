@@ -19,8 +19,8 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.obs.full_state import FullStateObsBuilder  # noqa: E402
-from src.shaping.braking_potential import bangbang_time  # noqa: E402
+from src.core.obs.full_state import FullStateObsBuilder  # noqa: E402
+from src.core.shaping.braking_potential import bangbang_time  # noqa: E402
 
 SIZES = (2, 4, 8, 16, 32)
 WORLD = 17.0     # same square world at every N, so only the robot count varies
@@ -179,7 +179,7 @@ def render(n: int, cluttered: bool = False) -> str:
 # velocity limits, and runs C++ on a 32-core i9-14900K. Our runtimes are NOT comparable
 # to their published ones and must not be reported as if they were.
 #   world      - square, {num(world)} x {num(world)}. `world_size` is a single scalar and
-#                src/obs/full_state.py:96-99 uses it for both axes, so the wide short box
+#                src/core/obs/full_state.py:96-99 uses it for both axes, so the wide short box
 #                of their Fig. 2(a) is not expressible here.
 #   traverse   - the full {num(USABLE)} m width at every N, so the distance term in any
 #                runtime measurement is identical and only crowding varies.
