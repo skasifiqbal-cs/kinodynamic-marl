@@ -4,7 +4,7 @@
     python train.py shaping=braking env=swap1_unicycle2
     python train.py train.timesteps=2000000 train.checkpoint_interval=100000
 
-Writes to runs/{shaping}_{network}_{obs}/{timestamp}/, and saves the config there so
+Writes to runs/{env}_{shaping}_{network}_{obs}/{timestamp}/, and saves the config there so
 `python evaluate.py eval.checkpoint=<that dir>/checkpoints/agent_N.pt` needs no other
 flags.
 """

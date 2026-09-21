@@ -468,10 +468,38 @@ scripts/         fasteval.py (bulk metrics), viewer.py (streamlit), karc_trace_g
                  gen_*_cross.py (scenario generators), numerical diagnostics
 tests/           pytest: robot dynamics, shaping, env contract, planners, renderer, eval
 docs/            task notes for collaborators (INTERN.md, results.md, ...)
+runs/            training output, written by train.py only        (git-ignored)
+experiments/     results from scripts/: CSVs, figures, tables     (git-ignored)
+outputs/         Hydra's per-invocation working dir, disposable   (git-ignored)
 notes/           results write-ups (paper/ and overleaf_cegar_trajopt/ are on
                  disk but git-ignored: paper sources go to Overleaf, not GitHub)
 main.py train.py evaluate.py   Hydra entry points
 ```
+
+## `runs/` vs `experiments/`
+
+Two output directories, different owners. Neither is tracked by git.
+
+| | `runs/` | `experiments/` |
+|---|---|---|
+| written by | `train.py`, nothing else | `scripts/*.py` |
+| path | `runs/{env}_{shaping}_{network}_{obs}/{timestamp}/` — chosen for you | whatever the script's `--out` says, default `experiments/` |
+| holds | `checkpoints/*.pt`, TensorBoard events, `config.yaml` | CSVs, `.png` figures, `.tex` tables, `.smt2` dumps, GIFs |
+| read back by | `eval.checkpoint=<...>.pt` | `scripts/plot_baselines.py`, and you, by hand |
+| regenerating it | costs a training run | rerun the script |
+
+So: **training writes `runs/`, analysis writes `experiments/`.** You never name a
+`runs/` path yourself — you point `eval.checkpoint` at one. Planning has no `runs/`
+entry at all, because there is nothing to train; a planner's numbers go straight to
+`experiments/` via the benchmark scripts.
+
+One exception to the ignore rules: `runs/*/*/config.yaml` is deliberately *not* ignored
+(`.gitignore:29`). It is 4 KB and it is the record of what was run, so committing one
+makes a result reviewable in the diff. Checkpoints and event files stay out — W&B is
+where a full run is published (`train.py ... wandb.enabled=true`).
+
+`experiments/` and `outputs/` are safe to delete when they get large; nothing reads them
+that cannot regenerate them.
 
 ## Tests
 
