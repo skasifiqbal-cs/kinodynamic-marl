@@ -77,6 +77,40 @@ def run_episode(env, controller: Controller, render: bool = False, frame_skip: i
     return stats, frames
 
 
+def run_episodes(env, controller: Controller, n_episodes: int, gif_path=None,
+                 fps: int = 15, frame_skip: int = 2, hold: int = 10,
+                 verbose: bool = True):
+    """Roll ``n_episodes`` out; write them all to one GIF if ``gif_path`` is set.
+
+    The one place multi-episode rendering is defined. ``evaluate.py`` and
+    ``PlanningApproach.run`` both used to carry their own copy of this loop, which is
+    how they drifted: only one of them held the last frame between episodes, and only
+    one of them printed per-episode progress. A planner GIF and an RL GIF of the same
+    episodes now come out the same way because there is only one way left to make them.
+
+    Returns ``(stats_list, frames)``; ``frames`` is empty when not rendering.
+    """
+    render = bool(gif_path)
+    stats_list, frames = [], []
+    for ep in range(n_episodes):
+        if verbose:
+            print(f"Episode {ep + 1}/{n_episodes} ...", end=" ", flush=True)
+        stats, fr = run_episode(env, controller, render=render, frame_skip=frame_skip)
+        stats_list.append(stats)
+        frames.extend(fr)
+        # Freeze the last frame briefly so consecutive episodes read as separate runs
+        # instead of one continuous one.
+        if fr and ep < n_episodes - 1:
+            frames.extend([fr[-1]] * hold)
+        if verbose:
+            print(f"steps={stats['steps']}  success={stats['success']}  "
+                  f"collisions={stats['collisions']:.0f}")
+
+    if render and frames:
+        save_gif(frames, gif_path, fps)
+    return stats_list, frames
+
+
 def save_gif(frames, path, fps: int = 15):
     """Write a list of RGB frames to an animated GIF."""
     from PIL import Image

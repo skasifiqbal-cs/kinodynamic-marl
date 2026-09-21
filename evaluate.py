@@ -33,7 +33,7 @@ from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 
 from src.approach import build_approach
-from src.approach.rollout import run_episode, save_gif, summarize
+from src.approach.rollout import run_episode, run_episodes, save_gif, summarize
 from src.core.env.factory import build_env
 
 __all__ = ["main", "run_episode", "save_gif"]
@@ -94,16 +94,10 @@ def main(cfg: DictConfig) -> None:
     env = build_env(cfg)
     controller = build_approach(cfg).build_controller(env)
 
-    all_stats, all_frames = [], []
-    for ep in range(n_episodes):
-        print(f"Episode {ep+1}/{n_episodes} ...", end=" ", flush=True)
-        stats, frames = run_episode(env, controller, render=True)
-        all_stats.append(stats)
-        all_frames.extend(frames)
-        if frames and ep < n_episodes - 1:
-            all_frames.extend([frames[-1]] * 10)  # brief hold between episodes
-        print(f"steps={stats['steps']}  success={stats['success']}  "
-              f"collisions={stats['collisions']:.0f}  rewards={stats['total_reward']}")
+    # Rendering and the GIF itself live in run_episodes, so this path and
+    # `main.py approach=planning` produce the same GIF from the same episodes.
+    all_stats, all_frames = run_episodes(env, controller, n_episodes,
+                                         gif_path=gif_path, fps=fps)
 
     # summarize() is what fasteval reports; sharing it is what stops the two evaluators
     # from drifting into different definitions of success again.
@@ -112,11 +106,8 @@ def main(cfg: DictConfig) -> None:
     print(f"\nSuccess rate: {success_rate:.0%}   crash_rate: {metrics['crash_rate']:.0%}   "
           f"avg_collisions: {metrics['avg_collisions']:.1f}")
 
-    if all_frames:
-        save_gif(all_frames, gif_path, fps)
-
     use_wandb = cfg.get("wandb", OmegaConf.create({})).get("enabled", False)
-    if use_wandb:
+    if use_wandb and all_frames:
         import wandb
         # cfg.network exists only for the RL approach (planning drops the group).
         net = cfg.network.type if "network" in cfg else cfg.approach.get("method", "n/a")

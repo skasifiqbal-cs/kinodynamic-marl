@@ -9,7 +9,7 @@ from __future__ import annotations
 from omegaconf import DictConfig
 
 from src.approach.base import BaseApproach
-from src.approach.rollout import run_episode, save_gif, summarize
+from src.approach.rollout import run_episodes, summarize
 from src.core.env.factory import build_env
 from src.planning import build_planner
 
@@ -24,7 +24,6 @@ class PlanningApproach(BaseApproach):
         eval_cfg = cfg.get("eval", None)
         n_episodes = int(eval_cfg.get("episodes", 20)) if eval_cfg else 20
         gif_path = eval_cfg.get("gif_path", None) if eval_cfg else None
-        render = bool(gif_path)
 
         env = build_env(cfg)
         planner = self.build_controller(env)
@@ -52,11 +51,10 @@ class PlanningApproach(BaseApproach):
             print(f"STATS,{method}," + ",".join(f"{k}={v}" for k, v in sorted(st.items())))
             return
 
-        stats_list, frames = [], []
-        for ep in range(n_episodes):
-            stats, fr = run_episode(env, planner, render=render)
-            stats_list.append(stats)
-            frames.extend(fr)
+        # Same call evaluate.py makes, so a planner GIF and an RL GIF of the same
+        # episodes are rendered, held between episodes and written identically.
+        stats_list, _ = run_episodes(env, planner, n_episodes, gif_path=gif_path,
+                                     fps=int(eval_cfg.get("fps", 15)) if eval_cfg else 15)
 
         m = summarize(stats_list)
         print(f"  success={m['success_rate']:6.1%}  crash_rate={m['crash_rate']:6.1%}  "
@@ -75,6 +73,3 @@ class PlanningApproach(BaseApproach):
         if stats:
             print("  " + "  ".join(f"{k}={v}" for k, v in sorted(stats.items())))
             print(f"STATS,{method}," + ",".join(f"{k}={v}" for k, v in sorted(stats.items())))
-
-        if render and frames and gif_path:
-            save_gif(frames, gif_path, int(eval_cfg.get("fps", 15)))

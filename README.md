@@ -111,6 +111,33 @@ python scripts/fasteval.py eval.checkpoint=<...>.pt eval.episodes=50
 one-argument `evaluate.py` above work; runs from before it was added still need
 `env=`/`shaping=` by hand.
 
+### Rendering an episode
+
+Same command for both approaches — `evaluate.py` only differs in what it is pointed at:
+
+```bash
+# planner
+python evaluate.py approach=planning approach.method=cegar env=open_cross_8_unicycle2
+
+# RL policy
+python evaluate.py eval.checkpoint=<...>.pt
+
+# same three knobs either way
+python evaluate.py <...> eval.episodes=3 eval.gif_path=out.gif eval.fps=15
+```
+
+| key | default | effect |
+|---|---|---|
+| `eval.gif_path` | `episode.gif` | where the GIF goes; set it to `null` to score without rendering |
+| `eval.episodes` | `1` | episodes per GIF, concatenated with a short freeze between them |
+| `eval.fps` | `15` | playback rate |
+
+Both paths render through `run_episodes` (`src/approach/rollout.py`), so a planner GIF
+and an RL GIF of the same scenario are produced identically — same frame skip, same
+freeze between episodes, same writer. `main.py approach=planning` renders through the
+same function, so it agrees with `evaluate.py` too. Nothing renders when `gif_path` is
+unset, which is how `scripts/fasteval.py` stays free of matplotlib.
+
 ### Sweeping over N
 
 The teams are homogeneous, so `share_policy` puts every robot on one network and
