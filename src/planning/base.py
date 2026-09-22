@@ -52,12 +52,3 @@ class BasePlanner(Controller):
         # Fill in reset(): e.g. self._controls[agent] = deque([...]) of controls.
         self._plan = None
 
-    def _todo(self, what: str) -> NotImplementedError:
-        return NotImplementedError(
-            f"[{self.method}] {what} not implemented yet.\n"
-            f"  Implement in {type(self).__module__} (see class docstring + docs/INTERN.md).\n"
-            f"  reset(env): plan using env._obstacles / env._goals[i] / env.robots[i]\n"
-            f"              (.step, .action_low/.action_high, .shape); validate with\n"
-            f"              src.core.collision.shapes.collides / collides_wall.\n"
-            f"  act(obs, env): return {{agent: control}} for this step."
-        )

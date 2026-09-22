@@ -11,20 +11,16 @@ from src.planning.cegar import CEGARPlanner
 from src.planning.constructive import ConstructivePlanner
 from src.planning.karc import KARCPlanner
 from src.planning.kcbs import KCBSPlanner
-from src.planning.kinodynamic_rrt import KinodynamicRRTPlanner
 from src.planning.optimization import OptimizationPlanner
-from src.planning.rrt import RRTPlanner
 from src.planning.splinecegar import SplineCEGARPlanner
 
 __all__ = [
-    "BasePlanner", "RRTPlanner", "KinodynamicRRTPlanner", "OptimizationPlanner",
+    "BasePlanner", "OptimizationPlanner",
     "KARCPlanner", "KCBSPlanner", "ConstructivePlanner", "CEGARPlanner", "SplineCEGARPlanner",
     "build_planner",
 ]
 
 _PLANNERS = {
-    "rrt": RRTPlanner,
-    "kinodynamic_rrt": KinodynamicRRTPlanner,
     "optimization": OptimizationPlanner,
     "karc": KARCPlanner,
     "kcbs": KCBSPlanner,
@@ -35,8 +31,8 @@ _PLANNERS = {
 
 
 def build_planner(approach_cfg) -> BasePlanner:
-    """``approach_cfg.method`` in {'rrt', 'kinodynamic_rrt', 'optimization', 'karc',
-    'constructive', 'cegar'}.
+    """``approach_cfg.method`` in {'optimization', 'karc', 'kcbs', 'constructive',
+    'cegar', 'splinecegar'}.
 
     ``karc`` is the faithful reimplementation of arXiv:2501.01559 and is the baseline;
     ``constructive`` and ``cegar`` are ours -- the first constructs the coordination from a

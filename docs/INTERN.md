@@ -1,11 +1,11 @@
-# Adding a planning method (intern guide)
+# Adding a planning method
 
 This repo can solve the multi-robot navigation problem two ways, chosen from
 config by the **`approach`** dimension:
 
 ```bash
 python main.py                                          # approach=reinforcement_learning (train IPPO)
-python main.py approach=planning approach.method=rrt    # approach=planning (plan + evaluate)
+python main.py approach=planning approach.method=karc   # approach=planning (plan + evaluate)
 ```
 
 Switch experiments by editing the `env:` and `shaping:` lines in `conf/config.yaml`.
@@ -15,7 +15,7 @@ the "Choosing an experiment" section of the README.
 
 Both share the **same robots, agents, and environment**. Reinforcement learning
 trains a neural policy; planning computes controls online with a classical or
-kinodynamic planner. Your job: implement the planning methods.
+kinodynamic planner. This page is the recipe for adding one.
 
 ## Where things live
 
@@ -28,10 +28,10 @@ src/rl/                the RL approach (already done — reference only)
 src/planning/
   base.py              BasePlanner  (read this — it has the env cheat-sheet)
   __init__.py          build_planner  (the dispatch table — register here)
-  rrt.py               <- implement
-  kinodynamic_rrt.py   <- implement
-  optimization.py      done — prioritised minimum-time NLP
-  karc.py              done — K-ARC (segmentation + conflict ladder)
+  geometric_rrt.py     plan_path() — geometric RRT in (x, y), reusable
+  krrt.py              plan() — control-space RRT, time-gridded on env.dt, reusable
+  optimization.py      prioritised minimum-time NLP
+  karc.py              K-ARC (segmentation + conflict ladder)
   trajopt.py           the CasADi program both of those call
 src/core/              robots, env, obs, shaping, collision, conflict (shared; don't edit)
 conf/approach/planning.yaml   parameters for each method
@@ -80,10 +80,18 @@ A planner **is a `Controller`**: implement two methods.
    python scripts/fasteval.py approach=planning approach.method=prm eval.episodes=100
    ```
 
-`rrt` and `kinodynamic_rrt` are still stubs and carry a step-by-step TODO in their
-docstrings — start with `rrt.py`. `optimization` and `karc` are implemented; read
-`trajopt.py` first if you want to see how they talk to the solver. Those two need
-CasADi: `pip install -e ".[dev,planning]"`.
+Read `trajopt.py` first if you want to see how `optimization` and `karc` talk to the
+solver; both need CasADi (`pip install -e ".[dev,planning]"`).
+
+**Do not write an RRT from scratch.** The search is already here and is used in anger by
+the K-ARC ladder and by our own guides:
+
+| you need | call |
+|---|---|
+| a geometric path in (x, y) | `src.planning.geometric_rrt.plan_path(start, goal, obstacles, world_size, radius, ...)` — returns a piecewise linear path; `shortcut=True` keeps a subsequence of the tree's vertices, so it cannot leave the homotopy class the search found |
+| a dynamically feasible trajectory | `src.planning.krrt.plan(robots, starts, goals, obstacles, world_size, dt, horizon, others=...)` — samples controls and propagates the true dynamics, time-gridded on `env.dt`, and treats fixed trajectories in `others` as moving obstacles |
+
+A new planner's job is the part those do not do: deciding *who goes where and when*.
 
 ## Env cheat-sheet (everything a planner can query)
 

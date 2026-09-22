@@ -7,7 +7,7 @@
     python evaluate.py eval.checkpoint=... env=gap2_unicycle2 eval.episodes=5
 
     # Planning: no checkpoint — the planner computes controls online
-    python evaluate.py approach=planning approach.method=rrt
+    python evaluate.py approach=planning approach.method=karc
 
 Renders. For bulk scoring with no GIF, use scripts/fasteval.py instead.
 

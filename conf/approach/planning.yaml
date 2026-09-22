@@ -11,7 +11,7 @@ approach:
   type: planning
   # karc        = the faithful arXiv:2501.01559 reimplementation (the BASELINE)
   # constructive = ours: constructed coordination + complete scheduling
-  method: karc   # rrt | kinodynamic_rrt | optimization | karc | constructive
+  method: karc   # optimization | karc | kcbs | constructive | cegar | splinecegar
 
   # ── Shared nonlinear-program settings ───────────────────────────────────────
   # Read by every optimisation-based method (`optimization`, `karc`), so the
@@ -347,18 +347,6 @@ approach:
     # trajopt.goal_tol, per priority level. 1.0 makes the `relaxed_goal` rung a
     # no-op (identical to `prioritized`), so it must exceed 1 to do anything.
     relax_per_level: 3.0
-
-  # ── Sampling-based methods ──────────────────────────────────────────────────
-  rrt:
-    max_iters: 5000
-    step_size: 0.3
-    goal_sample_rate: 0.1
-
-  kinodynamic_rrt:
-    max_iters: 10000
-    n_control_samples: 10
-    propagation_dt: 0.05
-    propagation_steps: 5
 
   # `optimization` (prioritised one-shot trajopt, K-ARC's first ladder rung)
   # takes all of its settings from `trajopt` above and needs no block.

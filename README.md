@@ -166,7 +166,10 @@ ablation switches and the commands that exercise each one.
 | `splinecegar` | ours, current: B-spline trajectories, core-guided repair, makespan certificate. |
 | `optimization` | prioritized minimum-time NLP, one robot at a time. |
 | `kcbs` | K-CBS baseline. |
-| `rrt`, `kinodynamic_rrt` | stubs — see [docs/INTERN.md](docs/INTERN.md). |
+
+The RRT *searches* are libraries, not methods: `geometric_rrt.plan_path` (paths in
+(x, y)) and `krrt.plan` (control-space, dynamically feasible). Planners call them — see
+[docs/INTERN.md](docs/INTERN.md).
 
 Everything is set from `conf/approach/planning.yaml`. `approach=planning` also drops the
 `network`/`train` groups, so `--cfg job` shows only knobs that affect the run.
