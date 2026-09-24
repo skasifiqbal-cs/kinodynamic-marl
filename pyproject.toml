@@ -65,3 +65,9 @@ ignore = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# Without this, the `pytest` console script cannot import `src` -- it does not put the
+# invocation directory on sys.path, so every test module fails at collection with
+# ModuleNotFoundError. `python -m pytest` happened to work because it adds the cwd, which
+# is why the breakage went unnoticed. The editable install above also fixes it, but only
+# for someone who ran it; this makes a fresh clone work either way. Needs pytest >= 7.
+pythonpath = ["."]

@@ -107,11 +107,16 @@ A one-line passthrough needs no test.
 ## 8. Before you push
 
 ```bash
-ruff check . && pytest
+ruff check . && python -m pytest
 ```
 
 Both must pass. CI is **not** running yet — `docs/ci-workflow.yml` is waiting to be
 installed as `.github/workflows/ci.yml` — so this is a manual gate, not a safety net.
+
+Bare `pytest` also works now: `pyproject.toml` sets `pythonpath = ["."]`, without which
+the console script cannot import `src` and all 17 test modules fail at collection. If you
+ever see `ModuleNotFoundError: No module named 'src'`, that setting is missing or your
+pytest is older than 7.
 
 One test is a known failure on this branch and is not yours:
 `tests/test_planning.py::test_adapt_subproblem_reopens_the_previous_segment_and_rescues_it`.
